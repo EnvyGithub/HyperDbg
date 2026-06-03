@@ -306,6 +306,32 @@ ConfigureEptHook2(UINT32 CoreId,
 }
 
 /**
+ * @brief [DOWNSTREAM] This function allocates a buffer in VMX Non Root Mode and then invokes a VMCALL to set the hook (inline)
+ * @details this command uses hidden detours, this NOT be called from vmx-root mode
+ *
+ * @param CoreId ID of the target core
+ * @param TargetAddress The address of function or memory address to be hooked
+ * @param HookFunction The function that will be called when hook triggered
+ * @param ProcessId The process id to translate based on that process's cr3
+ * @param OriginalFunction Receives the trampoline address when the hook is built
+ *
+ * @return BOOLEAN Returns true if the hook was successful or false if there was an error
+ */
+BOOLEAN
+ConfigureEptHook2WithTrampoline(UINT32 CoreId,
+                                PVOID  TargetAddress,
+                                PVOID  HookFunction,
+                                UINT32 ProcessId,
+                                PVOID *OriginalFunction)
+{
+    return EptHookInlineHookWithTrampoline(&g_GuestState[CoreId],
+                                           TargetAddress,
+                                           HookFunction,
+                                           ProcessId,
+                                           OriginalFunction);
+}
+
+/**
  * @brief This function allocates a buffer in VMX Non Root Mode and then invokes a VMCALL to set the hook
  * @details this command uses hidden detours, this NOT be called from vmx-root mode
  *

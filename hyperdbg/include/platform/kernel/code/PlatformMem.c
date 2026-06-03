@@ -230,6 +230,28 @@ PlatformMemAllocateZeroedNonPagedPool(PLAT_SIZE NumberOfBytes)
 #endif
 }
 
+/**
+ * @brief Allocates zeroed executable non-paged pool memory.
+ * @param NumberOfBytes Size in bytes.
+ * @return PLAT_PTR Pointer to memory.
+ */
+PLAT_PTR
+PlatformMemAllocateZeroedNonPagedExecutablePool(PLAT_SIZE NumberOfBytes)
+{
+#ifdef _WIN32
+    PLAT_PTR Result = ExAllocatePool2(
+        POOL_FLAG_NON_PAGED_EXECUTE,
+        NumberOfBytes,
+        POOLTAG
+    );
+    if (Result != NULL)
+        RtlSecureZeroMemory(Result, NumberOfBytes);
+    return Result;
+#else
+    return kzalloc(NumberOfBytes, GFP_KERNEL);
+#endif
+}
+
 
 /**
  * @brief Frees a memory pool.

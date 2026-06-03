@@ -850,7 +850,8 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
                          CR3_TYPE                ProcessCr3,
                          PVOID                   TargetFunction,
                          PVOID                   TargetFunctionInSafeMemory,
-                         PVOID                   HookFunction)
+                         PVOID                   HookFunction,
+                         PVOID *                 OriginalFunction)
 {
     PHIDDEN_HOOKS_DETOUR_DETAILS DetourHookDetails;
     SIZE_T                       SizeOfHookedInstructions;
@@ -939,17 +940,16 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
     //
     EptHookWriteAbsoluteJump2(&Hook->Trampoline[SizeOfHookedInstructions], (SIZE_T)TargetFunction + SizeOfHookedInstructions);
 
-    //
-    //
-    //
     // LogInfo("Trampoline: 0x%llx", Hook->Trampoline);
     // LogInfo("HookFunction: 0x%llx", HookFunction);
 
     //
-    // Let the hook function call the original function
+    // [DOWNSTREAM] Write after the trampoline is complete and before the fake page jump is visible.
     //
-    // *OrigFunction = Hook->Trampoline;
-    //
+    if (OriginalFunction != NULL)
+    {
+        *OriginalFunction = Hook->Trampoline;
+    }
 
     //
     // Create the structure to return for the debugger, we do it here because it's the first
@@ -1242,7 +1242,12 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
         //
         // Create Hook
         //
-        if (!EptHookInstructionMemory(HookedPage, ProcessCr3, TargetAddress, (PVOID)TargetAddressInSafeMemory, HookFunction))
+        if (!EptHookInstructionMemory(HookedPage,
+                                      ProcessCr3,
+                                      TargetAddress,
+                                      (PVOID)TargetAddressInSafeMemory,
+                                      HookFunction,
+                                      ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)->OriginalFunction))
         {
             PoolManagerFreePool((UINT64)HookedPage);
 
@@ -1564,6 +1569,32 @@ EptHookInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
                   PVOID                   HookFunction,
                   UINT32                  ProcessId)
 {
+    return EptHookInlineHookWithTrampoline(VCpu,
+                                           TargetAddress,
+                                           HookFunction,
+                                           ProcessId,
+                                           NULL);
+}
+
+/**
+ * @brief [DOWNSTREAM] This function applies EPT hook 2 (inline) to the target EPT table and exposes its trampoline
+ * @details this function should be called from VMX non-root mode
+ *
+ * @param VCpu The virtual processor's state
+ * @param TargetAddress The address of function or memory address to be hooked
+ * @param HookFunction The function that will be called when hook triggered
+ * @param ProcessId The process id to translate based on that process's cr3
+ * @param OriginalFunction Receives the trampoline address when the hook is built
+ *
+ * @return BOOLEAN Returns true if the hook was successful or false if there was an error
+ */
+BOOLEAN
+EptHookInlineHookWithTrampoline(VIRTUAL_MACHINE_STATE * VCpu,
+                                PVOID                   TargetAddress,
+                                PVOID                   HookFunction,
+                                UINT32                  ProcessId,
+                                PVOID *                 OriginalFunction)
+{
     EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 HookingDetail = {0};
 
     //
@@ -1577,8 +1608,9 @@ EptHookInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
     //
     // Set the hooking details
     //
-    HookingDetail.TargetAddress = TargetAddress;
-    HookingDetail.HookFunction  = HookFunction;
+    HookingDetail.TargetAddress    = TargetAddress;
+    HookingDetail.HookFunction     = HookFunction;
+    HookingDetail.OriginalFunction = OriginalFunction;
 
     return EptHookPerformMemoryOrInlineHook(VCpu,
                                             &HookingDetail,

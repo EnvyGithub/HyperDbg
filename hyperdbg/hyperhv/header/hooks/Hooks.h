@@ -161,6 +161,24 @@ EptHookInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
                   UINT32                  ProcessId);
 
 /**
+ * @brief [DOWNSTREAM] Hook in VMX non-root mode (hidden detours) and expose its trampoline
+ *
+ * @param VCpu
+ * @param TargetAddress
+ * @param HookFunction
+ * @param ProcessId
+ * @param OriginalFunction Receives the trampoline address when the hook is built
+ *
+ * @return BOOLEAN
+ */
+BOOLEAN
+EptHookInlineHookWithTrampoline(VIRTUAL_MACHINE_STATE * VCpu,
+                                PVOID                   TargetAddress,
+                                PVOID                   HookFunction,
+                                UINT32                  ProcessId,
+                                PVOID *                 OriginalFunction);
+
+/**
  * @brief This function applies monitor hooks to the target EPT table
  * @details this function should be called from VMX non-root mode
  *

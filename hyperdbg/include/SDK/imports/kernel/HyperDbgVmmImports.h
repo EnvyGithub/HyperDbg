@@ -315,6 +315,13 @@ ConfigureEptHook2(UINT32 CoreId,
                   UINT32 ProcessId);
 
 IMPORT_EXPORT_VMM BOOLEAN
+ConfigureEptHook2WithTrampoline(UINT32 CoreId,
+                                PVOID  TargetAddress,
+                                PVOID  HookFunction,
+                                UINT32 ProcessId,
+                                PVOID *OriginalFunction);
+
+IMPORT_EXPORT_VMM BOOLEAN
 ConfigureEptHook2FromVmxRoot(UINT32 CoreId,
                              PVOID  TargetAddress,
                              PVOID  HookFunction);

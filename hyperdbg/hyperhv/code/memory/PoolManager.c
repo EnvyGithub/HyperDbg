@@ -267,7 +267,17 @@ PoolManagerAllocateAndAddToPoolTable(SIZE_T Size, UINT32 Count, POOL_ALLOCATION_
         //
         // Allocate the buffer
         //
-        SinglePool->Address = (UINT64)PlatformMemAllocateZeroedNonPagedPool(Size);
+        if (Intention == EXEC_TRAMPOLINE)
+        {
+            //
+            // Windows ExAllocatePool2(POOL_FLAG_NON_PAGED) returns NX memory; epthook2 origin trampolines are executed.
+            //
+            SinglePool->Address = (UINT64)PlatformMemAllocateZeroedNonPagedExecutablePool(Size);
+        }
+        else
+        {
+            SinglePool->Address = (UINT64)PlatformMemAllocateZeroedNonPagedPool(Size);
+        }
 
         if (!SinglePool->Address)
         {

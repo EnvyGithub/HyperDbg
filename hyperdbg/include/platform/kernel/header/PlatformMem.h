@@ -67,6 +67,11 @@ PlatformMemAllocateZeroedNonPagedPool(
     PLAT_SIZE NumberOfBytes
 );
 
+PLAT_PTR
+PlatformMemAllocateZeroedNonPagedExecutablePool(
+    PLAT_SIZE NumberOfBytes
+);
+
 
 PLAT_PTR
 PlatformMemFreePool(
