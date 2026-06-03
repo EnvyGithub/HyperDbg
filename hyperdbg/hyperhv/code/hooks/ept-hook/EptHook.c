@@ -1092,9 +1092,36 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
 
         if (HookedEntry->PhysicalBaseAddress == PhysicalBaseAddress)
         {
+            if (EptHiddenHook && HookedEntry->IsExecutionHook)
+            {
+                TargetAddressInSafeMemory = EptHookCalcBreakpointOffset(TargetAddress, HookedEntry);
+
+                if (((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)->HookFunction == NULL)
+                {
+                    HookFunction = (PVOID)AsmGeneralDetourHook;
+                }
+                else
+                {
+                    HookFunction = ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)->HookFunction;
+                }
+
+                if (!EptHookInstructionMemory(HookedEntry,
+                                              ProcessCr3,
+                                              TargetAddress,
+                                              (PVOID)TargetAddressInSafeMemory,
+                                              HookFunction,
+                                              ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)->OriginalFunction))
+                {
+                    VmmCallbackSetLastError(DEBUGGER_ERROR_COULD_NOT_BUILD_THE_EPT_HOOK);
+                    return FALSE;
+                }
+
+                return TRUE;
+            }
+
             //
-            // Means that we find the address and !epthook2 doesn't support
-            // multiple breakpoints in on page
+            // Means that we find the address and this hook type doesn't support
+            // multiple hooks in one page
             //
             VmmCallbackSetLastError(DEBUGGER_ERROR_EPT_MULTIPLE_HOOKS_IN_A_SINGLE_PAGE);
             return FALSE;
@@ -1908,6 +1935,41 @@ EptHookRemoveEntryAndFreePoolFromEptHook2sDetourList(UINT64 Address)
 }
 
 /**
+ * @brief Remove all !epthook2 detour entries on the same page
+ * @param Address Address inside the page to remove
+ * @return BOOLEAN TRUE if at least one entry was removed
+ */
+BOOLEAN
+EptHookRemoveEntriesAndFreePoolFromEptHook2sDetourListByPage(UINT64 Address)
+{
+    BOOLEAN     RemovedAny = FALSE;
+    PLIST_ENTRY CurrentLink;
+    PVOID       PageAddress = PAGE_ALIGN(Address);
+
+    CurrentLink = g_EptHook2sDetourListHead.Flink;
+    while (CurrentLink != &g_EptHook2sDetourListHead)
+    {
+        PLIST_ENTRY NextLink = CurrentLink->Flink;
+        PHIDDEN_HOOKS_DETOUR_DETAILS CurrentHookedDetails =
+            CONTAINING_RECORD(CurrentLink, HIDDEN_HOOKS_DETOUR_DETAILS, OtherHooksList);
+
+        if (PAGE_ALIGN(CurrentHookedDetails->HookedFunctionAddress) == PageAddress)
+        {
+            RemoveEntryList(&CurrentHookedDetails->OtherHooksList);
+            if (!PoolManagerFreePool((UINT64)CurrentHookedDetails))
+            {
+                LogError("Err, something goes wrong, the pool not found in the list of previously allocated pools by pool manager");
+            }
+            RemovedAny = TRUE;
+        }
+
+        CurrentLink = NextLink;
+    }
+
+    return RemovedAny;
+}
+
+/**
  * @brief get the length of active EPT hooks (!epthook and !epthook2)
  * @param IsEptHook2 Whether the length should be for !epthook or !epthook2
  *
@@ -1984,7 +2046,7 @@ EptHookUnHookSingleAddressDetoursAndMonitor(PEPT_HOOKED_PAGE_DETAIL             
     //
     if (HookedEntry->IsExecutionHook)
     {
-        EptHookRemoveEntryAndFreePoolFromEptHook2sDetourList(HookedEntry->VirtualAddress);
+        EptHookRemoveEntriesAndFreePoolFromEptHook2sDetourListByPage(HookedEntry->VirtualAddress);
     }
 
     //
