@@ -836,6 +836,96 @@ EptHookWriteAbsoluteJump2(PCHAR TargetBuffer, SIZE_T TargetAddress)
 }
 
 /**
+ * @brief [DOWNSTREAM] Copy stolen instructions into an executable trampoline
+ *        and relocate the common RIP-relative load form used by recent
+ *        ntoskrnl syscall wrappers.
+ *
+ * @param TrampolineBuffer Destination executable trampoline.
+ * @param HookedInstructions Raw bytes read from the original target.
+ * @param TargetAddress Original target virtual address.
+ * @param SizeOfHookedInstructions Number of original bytes that are overwritten.
+ * @param TrampolineSize Receives the number of bytes written to the trampoline.
+ * @return BOOLEAN Returns true if relocation succeeded.
+ */
+BOOLEAN
+EptHookCopyInstructionsToTrampoline(PCHAR  TrampolineBuffer,
+                                    PCHAR  HookedInstructions,
+                                    SIZE_T TargetAddress,
+                                    SIZE_T SizeOfHookedInstructions,
+                                    SIZE_T * TrampolineSize)
+{
+    SIZE_T ReadOffset;
+    SIZE_T WriteOffset;
+
+    ReadOffset  = 0;
+    WriteOffset = 0;
+
+    while (ReadOffset < SizeOfHookedInstructions)
+    {
+        UINT32 InstructionLength;
+        PCHAR  Instruction;
+
+        Instruction       = HookedInstructions + ReadOffset;
+        InstructionLength = DisassemblerLengthDisassembleEngineInVmxRootOnTargetProcess(Instruction, FALSE);
+
+        if (InstructionLength == 0 || ReadOffset + InstructionLength > SizeOfHookedInstructions)
+        {
+            return FALSE;
+        }
+
+        //
+        // mov rax, qword ptr [rip + disp32]
+        //
+        // HyperDbg's trampoline pool is not guaranteed to be within +/-2GB of
+        // ntoskrnl, so preserving the original disp32 can point at unmapped pool
+        // memory. Expand this common 7-byte form to:
+        //
+        //   mov rax, absolute_address
+        //   mov rax, qword ptr [rax]
+        //
+        if (InstructionLength == 7 &&
+            (UCHAR)Instruction[0] == 0x48 &&
+            (UCHAR)Instruction[1] == 0x8B &&
+            (UCHAR)Instruction[2] == 0x05)
+        {
+            INT32  RipDisplacement;
+            UINT64 AbsoluteAddress;
+
+            if (WriteOffset + 13 + 14 > MAX_EXEC_TRAMPOLINE_SIZE)
+            {
+                return FALSE;
+            }
+
+            RipDisplacement = *((PINT32)&Instruction[3]);
+            AbsoluteAddress = (UINT64)TargetAddress + ReadOffset + InstructionLength + RipDisplacement;
+
+            TrampolineBuffer[WriteOffset + 0] = 0x48;
+            TrampolineBuffer[WriteOffset + 1] = 0xB8;
+            *((PUINT64)&TrampolineBuffer[WriteOffset + 2]) = AbsoluteAddress;
+            TrampolineBuffer[WriteOffset + 10]             = 0x48;
+            TrampolineBuffer[WriteOffset + 11]             = 0x8B;
+            TrampolineBuffer[WriteOffset + 12]             = 0x00;
+            WriteOffset += 13;
+        }
+        else
+        {
+            if (WriteOffset + InstructionLength + 14 > MAX_EXEC_TRAMPOLINE_SIZE)
+            {
+                return FALSE;
+            }
+
+            RtlCopyMemory(TrampolineBuffer + WriteOffset, Instruction, InstructionLength);
+            WriteOffset += InstructionLength;
+        }
+
+        ReadOffset += InstructionLength;
+    }
+
+    *TrampolineSize = WriteOffset;
+    return TRUE;
+}
+
+/**
  * @brief Hook instructions
  *
  * @param Hook The details of hooked pages
@@ -855,8 +945,10 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
 {
     PHIDDEN_HOOKS_DETOUR_DETAILS DetourHookDetails;
     SIZE_T                       SizeOfHookedInstructions;
+    SIZE_T                       SizeOfTrampolineInstructions;
     SIZE_T                       OffsetIntoPage;
     CR3_TYPE                     Cr3OfCurrentProcess;
+    CHAR                         HookedInstructions[MAX_EXEC_TRAMPOLINE_SIZE] = {0};
 
     OffsetIntoPage = ADDRMASK_EPT_PML1_OFFSET((SIZE_T)TargetFunction);
 
@@ -925,20 +1017,29 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
     Cr3OfCurrentProcess = SwitchToProcessMemoryLayoutByCr3(ProcessCr3);
 
     //
-    // The following line can't be used in user mode addresses
-    // RtlCopyMemory(Hook->Trampoline, TargetFunction, SizeOfHookedInstructions);
-    //
-    MemoryMapperReadMemorySafe((UINT64)TargetFunction, Hook->Trampoline, SizeOfHookedInstructions);
+    MemoryMapperReadMemorySafe((UINT64)TargetFunction, HookedInstructions, SizeOfHookedInstructions);
 
     //
     // Restore to original process
     //
     SwitchToPreviousProcess(Cr3OfCurrentProcess);
 
+    if (!EptHookCopyInstructionsToTrampoline(Hook->Trampoline,
+                                             HookedInstructions,
+                                             (SIZE_T)TargetFunction,
+                                             SizeOfHookedInstructions,
+                                             &SizeOfTrampolineInstructions))
+    {
+        PoolManagerFreePool((UINT64)Hook->Trampoline);
+        Hook->Trampoline = NULL;
+        LogError("Err, could not relocate trampoline instructions");
+        return FALSE;
+    }
+
     //
     // Add the absolute jump back to the original function
     //
-    EptHookWriteAbsoluteJump2(&Hook->Trampoline[SizeOfHookedInstructions], (SIZE_T)TargetFunction + SizeOfHookedInstructions);
+    EptHookWriteAbsoluteJump2(&Hook->Trampoline[SizeOfTrampolineInstructions], (SIZE_T)TargetFunction + SizeOfHookedInstructions);
 
     // LogInfo("Trampoline: 0x%llx", Hook->Trampoline);
     // LogInfo("HookFunction: 0x%llx", HookFunction);
