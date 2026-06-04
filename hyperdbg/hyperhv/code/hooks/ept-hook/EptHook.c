@@ -907,6 +907,42 @@ EptHookCopyInstructionsToTrampoline(PCHAR  TrampolineBuffer,
             TrampolineBuffer[WriteOffset + 12]             = 0x00;
             WriteOffset += 13;
         }
+        //
+        // call qword ptr [rip + disp32]
+        //
+        // Some win32k syscall wrappers call a session-global guard through a
+        // RIP-relative indirect call in the first bytes. Relocate it through
+        // R11 so the trampoline can live outside +/-2GB of win32k.
+        //
+        else if (((InstructionLength == 7 &&
+                   (UCHAR)Instruction[0] == 0x48 &&
+                   (UCHAR)Instruction[1] == 0xFF &&
+                   (UCHAR)Instruction[2] == 0x15) ||
+                  (InstructionLength == 6 &&
+                   (UCHAR)Instruction[0] == 0xFF &&
+                   (UCHAR)Instruction[1] == 0x15)))
+        {
+            INT32  RipDisplacement;
+            UINT64 AbsoluteAddress;
+            UINT32 DisplacementOffset;
+
+            if (WriteOffset + 13 + 14 > MAX_EXEC_TRAMPOLINE_SIZE)
+            {
+                return FALSE;
+            }
+
+            DisplacementOffset = InstructionLength == 7 ? 3 : 2;
+            RipDisplacement    = *((PINT32)&Instruction[DisplacementOffset]);
+            AbsoluteAddress    = (UINT64)TargetAddress + ReadOffset + InstructionLength + RipDisplacement;
+
+            TrampolineBuffer[WriteOffset + 0] = 0x49;
+            TrampolineBuffer[WriteOffset + 1] = 0xBB;
+            *((PUINT64)&TrampolineBuffer[WriteOffset + 2]) = AbsoluteAddress;
+            TrampolineBuffer[WriteOffset + 10]             = 0x41;
+            TrampolineBuffer[WriteOffset + 11]             = 0xFF;
+            TrampolineBuffer[WriteOffset + 12]             = 0x13;
+            WriteOffset += 13;
+        }
         else
         {
             if (WriteOffset + InstructionLength + 14 > MAX_EXEC_TRAMPOLINE_SIZE)
