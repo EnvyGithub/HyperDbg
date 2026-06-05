@@ -60,6 +60,39 @@ EptHookCalcBreakpointOffset(_In_ PVOID                    TargetAddress,
 }
 
 /**
+ * @brief Refresh hidden-breakpoint fake page after guest write-through
+ *
+ * @param HookedEntry target hidden-breakpoint page
+ */
+static VOID
+EptHookRefreshHiddenBreakpointFakePage(_Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry)
+{
+    if (HookedEntry == NULL || !HookedEntry->IsHiddenBreakpoint)
+    {
+        return;
+    }
+
+    if (!MemoryMapperReadMemorySafeByPhysicalAddress(HookedEntry->PhysicalBaseAddress, (UINT64)&HookedEntry->FakePageContents, PAGE_SIZE))
+    {
+        return;
+    }
+
+    for (size_t i = 0; i < HookedEntry->CountOfBreakpoints; i++)
+    {
+        UINT64 TargetAddressInFakePageContent;
+
+        if (HookedEntry->BreakpointAddresses[i] == NULL64_ZERO)
+        {
+            continue;
+        }
+
+        TargetAddressInFakePageContent = EptHookCalcBreakpointOffset((PVOID)HookedEntry->BreakpointAddresses[i], HookedEntry);
+        HookedEntry->PreviousBytesOnBreakpointAddresses[i] = *(CHAR *)TargetAddressInFakePageContent;
+        *(BYTE *)TargetAddressInFakePageContent            = 0xcc;
+    }
+}
+
+/**
  * @brief Reserve pre-allocated pools for EPT hooks
  *
  * @param Count number of hooks
@@ -221,6 +254,8 @@ EptHookCreateHookPage(_Inout_ VIRTUAL_MACHINE_STATE * VCpu,
     // Save the physical address
     //
     HookedPage->PhysicalBaseAddress = PhysicalBaseAddress;
+    HookedPage->StartOfTargetPhysicalAddress = PhysicalBaseAddress;
+    HookedPage->EndOfTargetPhysicalAddress   = PhysicalBaseAddress + PAGE_SIZE - 1;
 
     //
     // Fake page content physical address
@@ -2214,6 +2249,12 @@ VOID
 EptHookHandleMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu)
 {
     PVOID TargetPage;
+
+    if (VCpu->MtfEptHookRestorePoint->LastViolation == EPT_HOOKED_LAST_VIOLATION_WRITE)
+    {
+        EptHookRefreshHiddenBreakpointFakePage(VCpu->MtfEptHookRestorePoint);
+    }
+
     //
     // Pointer to the page entry in the page table
     //

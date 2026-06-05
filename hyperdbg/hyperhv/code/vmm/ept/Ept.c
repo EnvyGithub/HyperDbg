@@ -1238,6 +1238,7 @@ EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
                     // of where triggered this event
                     //
                     DispatchEventHiddenHookExecCc(VCpu, (PVOID)GuestRip);
+                    HookedEntry->LastViolation = EPT_HOOKED_LAST_VIOLATION_EXEC;
 
                     //
                     // Pointer to the page entry in the page table
