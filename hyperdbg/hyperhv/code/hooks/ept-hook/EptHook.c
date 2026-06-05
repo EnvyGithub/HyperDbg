@@ -2606,7 +2606,8 @@ EptHookQueryState(PVOID TargetAddress,
     UINT64                  PhysicalAddress;
     SIZE_T                  PhysicalBaseAddress;
     UINT32                  CoreId;
-    PEPT_PML1_ENTRY         TargetPage;
+    PVOID                   TargetEntry;
+    BOOLEAN                 IsLargePage;
     UINT64                  CurrentPfn;
 
     if (TargetAddress == NULL || Query == NULL)
@@ -2633,17 +2634,31 @@ EptHookQueryState(PVOID TargetAddress,
     PhysicalBaseAddress        = (SIZE_T)PAGE_ALIGN(PhysicalAddress);
     Query->PhysicalBaseAddress = PhysicalBaseAddress;
     CoreId                     = KeGetCurrentProcessorNumberEx(NULL);
-    TargetPage                 = EptGetPml1Entry(g_GuestState[CoreId].EptPageTable, PhysicalBaseAddress);
-    if (TargetPage == NULL)
+    IsLargePage                = FALSE;
+    TargetEntry                = EptGetPml1OrPml2Entry(g_GuestState[CoreId].EptPageTable, PhysicalBaseAddress, &IsLargePage);
+    if (TargetEntry == NULL)
     {
         return FALSE;
     }
 
-    Query->CurrentEntry         = TargetPage->AsUInt;
-    Query->CurrentReadAccess    = TargetPage->ReadAccess ? TRUE : FALSE;
-    Query->CurrentWriteAccess   = TargetPage->WriteAccess ? TRUE : FALSE;
-    Query->CurrentExecuteAccess = TargetPage->ExecuteAccess ? TRUE : FALSE;
-    CurrentPfn                  = TargetPage->PageFrameNumber;
+    if (IsLargePage)
+    {
+        PEPT_PML2_ENTRY TargetPage = (PEPT_PML2_ENTRY)TargetEntry;
+        Query->CurrentEntry         = TargetPage->AsUInt;
+        Query->CurrentReadAccess    = TargetPage->ReadAccess ? TRUE : FALSE;
+        Query->CurrentWriteAccess   = TargetPage->WriteAccess ? TRUE : FALSE;
+        Query->CurrentExecuteAccess = TargetPage->ExecuteAccess ? TRUE : FALSE;
+        CurrentPfn                  = PhysicalBaseAddress / PAGE_SIZE;
+    }
+    else
+    {
+        PEPT_PML1_ENTRY TargetPage = (PEPT_PML1_ENTRY)TargetEntry;
+        Query->CurrentEntry         = TargetPage->AsUInt;
+        Query->CurrentReadAccess    = TargetPage->ReadAccess ? TRUE : FALSE;
+        Query->CurrentWriteAccess   = TargetPage->WriteAccess ? TRUE : FALSE;
+        Query->CurrentExecuteAccess = TargetPage->ExecuteAccess ? TRUE : FALSE;
+        CurrentPfn                  = TargetPage->PageFrameNumber;
+    }
 
     LIST_FOR_EACH_LINK(g_EptState->HookedPagesList, EPT_HOOKED_PAGE_DETAIL, PageHookList, CurrEntity)
     {
