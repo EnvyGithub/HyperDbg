@@ -54,6 +54,21 @@ MtfHandleVmexit(VIRTUAL_MACHINE_STATE * VCpu)
     //
     // *** Regular Monitor Trap Flag functionalities ***
     //
+    if (VCpu->MtfEptFallbackRestorePending)
+    {
+        //
+        // MTF is handled
+        //
+        IsMtfHandled = TRUE;
+
+        EptHandleUnknownViolationMonitorTrapFlag(VCpu);
+
+        //
+        // Check for re-enabling external interrupts
+        //
+        HvEnableAndCheckForPreviousExternalInterrupts(VCpu);
+    }
+
     if (VCpu->MtfEptHookRestorePoint)
     {
         //
@@ -70,6 +85,8 @@ MtfHandleVmexit(VIRTUAL_MACHINE_STATE * VCpu)
         // Set it to NULL
         //
         VCpu->MtfEptHookRestorePoint = NULL;
+        VCpu->LastEptViolationRip      = NULL64_ZERO;
+        VCpu->SameRipEptViolationCount = 0;
 
         //
         // Check for re-enabling external interrupts

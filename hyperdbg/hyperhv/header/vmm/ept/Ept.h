@@ -178,7 +178,8 @@ EptSetupPML2Entry(PVMM_EPT_PAGE_TABLE EptPageTable, PEPT_PML2_ENTRY NewEntry, SI
 BOOLEAN
 EptHandlePageHookExit(_Inout_ VIRTUAL_MACHINE_STATE *           VCpu,
                       _In_ VMX_EXIT_QUALIFICATION_EPT_VIOLATION ViolationQualification,
-                      _In_ UINT64                               GuestPhysicalAddr);
+                      _In_ UINT64                               GuestPhysicalAddr,
+                      _In_ BOOLEAN                              ForceMtfPassThrough);
 
 // ----------------------------------------------------------------------------
 // Public Interfaces
@@ -250,6 +251,15 @@ EptLogicalProcessorInitialize(VOID);
  */
 BOOLEAN
 EptHandleEptViolation(VIRTUAL_MACHINE_STATE * VCpu);
+
+/**
+ * @brief Restore an EPT entry that was temporarily opened for one instruction.
+ *
+ * @param VCpu The virtual processor's state
+ * @return VOID
+ */
+VOID
+EptHandleUnknownViolationMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu);
 
 /**
  * @brief Get the PML1 Entry of a special address

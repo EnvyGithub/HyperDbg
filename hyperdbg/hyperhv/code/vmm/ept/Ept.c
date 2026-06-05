@@ -922,6 +922,162 @@ EptLogicalProcessorInitialize(VOID)
     return TRUE;
 }
 
+#define EPT_HOOK_SAME_RIP_VIOLATION_THRESHOLD 1000
+
+static BOOLEAN
+EptSameRipViolationThresholdExceeded(_Inout_ VIRTUAL_MACHINE_STATE * VCpu)
+{
+    if (VCpu == NULL)
+    {
+        return FALSE;
+    }
+
+    if (VCpu->LastEptViolationRip == VCpu->LastVmexitRip)
+    {
+        if (VCpu->SameRipEptViolationCount <= EPT_HOOK_SAME_RIP_VIOLATION_THRESHOLD)
+        {
+            VCpu->SameRipEptViolationCount++;
+        }
+    }
+    else
+    {
+        VCpu->LastEptViolationRip          = VCpu->LastVmexitRip;
+        VCpu->SameRipEptViolationCount    = 1;
+    }
+
+    return VCpu->SameRipEptViolationCount > EPT_HOOK_SAME_RIP_VIOLATION_THRESHOLD;
+}
+
+static VOID
+EptResetSameRipViolationGuard(_Inout_ VIRTUAL_MACHINE_STATE * VCpu)
+{
+    if (VCpu == NULL)
+    {
+        return;
+    }
+
+    VCpu->LastEptViolationRip       = NULL64_ZERO;
+    VCpu->SameRipEptViolationCount  = 0;
+}
+
+static BOOLEAN
+EptAllowHookedPageOneInstructionWithMtf(_Inout_ VIRTUAL_MACHINE_STATE *  VCpu,
+                                        _In_ EPT_HOOKED_PAGE_DETAIL *     HookedEntry)
+{
+    PEPT_PML1_ENTRY TargetPage;
+
+    if (VCpu == NULL || HookedEntry == NULL)
+    {
+        return FALSE;
+    }
+
+    TargetPage = EptGetPml1Entry(VCpu->EptPageTable, HookedEntry->PhysicalBaseAddress);
+    if (TargetPage == NULL)
+    {
+        return FALSE;
+    }
+
+    EptSetPML1AndInvalidateTLB(VCpu,
+                               TargetPage,
+                               HookedEntry->OriginalEntry,
+                               InveptSingleContext);
+
+    VCpu->MtfEptHookRestorePoint = HookedEntry;
+    EptResetSameRipViolationGuard(VCpu);
+    HvEnableMtfAndChangeExternalInterruptState(VCpu);
+    return TRUE;
+}
+
+static BOOLEAN
+EptAllowUnknownPageOneInstructionWithMtf(_Inout_ VIRTUAL_MACHINE_STATE * VCpu,
+                                        _In_ UINT64                       GuestPhysicalAddr)
+{
+    UINT64  PhysicalBaseAddress;
+    PVOID   TargetEntry;
+    BOOLEAN IsLargePage = FALSE;
+
+    if (VCpu == NULL || VCpu->EptPageTable == NULL)
+    {
+        return FALSE;
+    }
+
+    PhysicalBaseAddress = (UINT64)PAGE_ALIGN(GuestPhysicalAddr);
+    TargetEntry         = EptGetPml1OrPml2Entry(VCpu->EptPageTable, PhysicalBaseAddress, &IsLargePage);
+    if (TargetEntry == NULL)
+    {
+        return FALSE;
+    }
+
+    VCpu->MtfEptFallbackPhysicalBaseAddress = PhysicalBaseAddress;
+    VCpu->MtfEptFallbackRestoreLargePage    = IsLargePage;
+    VCpu->MtfEptFallbackRestorePending      = TRUE;
+
+    if (IsLargePage)
+    {
+        PEPT_PML2_ENTRY TargetPage = (PEPT_PML2_ENTRY)TargetEntry;
+        EPT_PML2_ENTRY  TempEntry  = *TargetPage;
+
+        VCpu->MtfEptFallbackOriginalPml2Entry = *TargetPage;
+        TempEntry.ReadAccess                  = 1;
+        TempEntry.WriteAccess                 = 1;
+        TempEntry.ExecuteAccess               = 1;
+        TargetPage->AsUInt                    = TempEntry.AsUInt;
+    }
+    else
+    {
+        PEPT_PML1_ENTRY TargetPage = (PEPT_PML1_ENTRY)TargetEntry;
+        EPT_PML1_ENTRY  TempEntry  = *TargetPage;
+
+        VCpu->MtfEptFallbackOriginalPml1Entry = *TargetPage;
+        TempEntry.ReadAccess                  = 1;
+        TempEntry.WriteAccess                 = 1;
+        TempEntry.ExecuteAccess               = 1;
+        TempEntry.PageFrameNumber             = PhysicalBaseAddress / PAGE_SIZE;
+        TargetPage->AsUInt                    = TempEntry.AsUInt;
+    }
+
+    EptInveptSingleContext(VCpu->EptPointer.AsUInt);
+    EptResetSameRipViolationGuard(VCpu);
+    HvEnableMtfAndChangeExternalInterruptState(VCpu);
+    return TRUE;
+}
+
+VOID
+EptHandleUnknownViolationMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu)
+{
+    PVOID   TargetEntry;
+    BOOLEAN IsLargePage = FALSE;
+
+    if (VCpu == NULL || !VCpu->MtfEptFallbackRestorePending)
+    {
+        return;
+    }
+
+    TargetEntry = EptGetPml1OrPml2Entry(VCpu->EptPageTable,
+                                        VCpu->MtfEptFallbackPhysicalBaseAddress,
+                                        &IsLargePage);
+    if (TargetEntry != NULL && IsLargePage == VCpu->MtfEptFallbackRestoreLargePage)
+    {
+        if (IsLargePage)
+        {
+            ((PEPT_PML2_ENTRY)TargetEntry)->AsUInt = VCpu->MtfEptFallbackOriginalPml2Entry.AsUInt;
+        }
+        else
+        {
+            ((PEPT_PML1_ENTRY)TargetEntry)->AsUInt = VCpu->MtfEptFallbackOriginalPml1Entry.AsUInt;
+        }
+
+        EptInveptSingleContext(VCpu->EptPointer.AsUInt);
+    }
+
+    VCpu->MtfEptFallbackRestorePending      = FALSE;
+    VCpu->MtfEptFallbackRestoreLargePage    = FALSE;
+    VCpu->MtfEptFallbackPhysicalBaseAddress = NULL64_ZERO;
+    VCpu->MtfEptFallbackOriginalPml1Entry.AsUInt = NULL64_ZERO;
+    VCpu->MtfEptFallbackOriginalPml2Entry.AsUInt = NULL64_ZERO;
+    EptResetSameRipViolationGuard(VCpu);
+}
+
 /**
  * @brief Check if this exit is due to a violation caused by a currently hooked page
  * @details If the memory access attempt was RW and the page was marked executable, the page is swapped with
@@ -938,7 +1094,8 @@ _Use_decl_annotations_
 BOOLEAN
 EptHandlePageHookExit(VIRTUAL_MACHINE_STATE *              VCpu,
                       VMX_EXIT_QUALIFICATION_EPT_VIOLATION ViolationQualification,
-                      UINT64                               GuestPhysicalAddr)
+                      UINT64                               GuestPhysicalAddr,
+                      BOOLEAN                              ForceMtfPassThrough)
 {
     PVOID   TargetPage;
     UINT64  CurrentRip;
@@ -970,6 +1127,13 @@ EptHandlePageHookExit(VIRTUAL_MACHINE_STATE *              VCpu,
             // target range. For example we might hook 0x123b000 to 0x123b300 but the hook
             // happens on 0x123b4600, so we perform the necessary checks here
             //
+
+            if (ForceMtfPassThrough &&
+                EptAllowHookedPageOneInstructionWithMtf(VCpu, HookedEntry))
+            {
+                IsHandled = TRUE;
+                break;
+            }
 
             if (GuestPhysicalAddr >= HookedEntry->StartOfTargetPhysicalAddress && GuestPhysicalAddr <= HookedEntry->EndOfTargetPhysicalAddress)
             {
@@ -1097,14 +1261,16 @@ BOOLEAN
 EptHandleEptViolation(VIRTUAL_MACHINE_STATE * VCpu)
 {
     UINT64                               GuestPhysicalAddr;
+    BOOLEAN                              ForceMtfPassThrough;
     VMX_EXIT_QUALIFICATION_EPT_VIOLATION ViolationQualification = {.AsUInt = VCpu->ExitQualification};
 
     //
     // Reading guest physical address
     //
     __vmx_vmread(VMCS_GUEST_PHYSICAL_ADDRESS, &GuestPhysicalAddr);
+    ForceMtfPassThrough = EptSameRipViolationThresholdExceeded(VCpu);
 
-    if (EptHandlePageHookExit(VCpu, ViolationQualification, GuestPhysicalAddr))
+    if (EptHandlePageHookExit(VCpu, ViolationQualification, GuestPhysicalAddr, ForceMtfPassThrough))
     {
         //
         // Handled by page hook code
@@ -1122,9 +1288,12 @@ EptHandleEptViolation(VIRTUAL_MACHINE_STATE * VCpu)
         //
         return TRUE;
     }
+    else if (EptAllowUnknownPageOneInstructionWithMtf(VCpu, GuestPhysicalAddr))
+    {
+        return TRUE;
+    }
 
     LogError("Err, unexpected EPT violation at RIP: %llx", VCpu->LastVmexitRip);
-    DbgBreakPoint();
     //
     // Redo the instruction that caused the exception
     //

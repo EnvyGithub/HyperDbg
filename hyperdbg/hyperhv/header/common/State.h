@@ -367,6 +367,13 @@ typedef struct _VIRTUAL_MACHINE_STATE
     NMI_BROADCASTING_STATE  NmiBroadcastingState;                                   // Shows the state of NMI broadcasting
     VM_EXIT_TRANSPARENCY    TransparencyState;                                      // The state of the debugger in transparent-mode
     PEPT_HOOKED_PAGE_DETAIL MtfEptHookRestorePoint;                                 // It shows the detail of the hooked paged that should be restore in MTF vm-exit
+    BOOLEAN                 MtfEptFallbackRestorePending;                           // TRUE when an unknown EPT violation is temporarily allowed for one instruction
+    BOOLEAN                 MtfEptFallbackRestoreLargePage;                         // TRUE when the fallback restore target is a PML2 large page
+    UINT64                  MtfEptFallbackPhysicalBaseAddress;                      // Physical base address for the fallback MTF restore
+    EPT_PML1_ENTRY          MtfEptFallbackOriginalPml1Entry;                        // Saved PML1 entry for fallback MTF restore
+    EPT_PML2_ENTRY          MtfEptFallbackOriginalPml2Entry;                        // Saved PML2 entry for fallback MTF restore
+    UINT64                  LastEptViolationRip;                                    // Last RIP that caused an EPT violation on this core
+    UINT32                  SameRipEptViolationCount;                               // Consecutive EPT violations at LastEptViolationRip
     UINT8                   LastExceptionOccurredInHost;                            // The vector of last exception occurred in host
     UINT64                  HostIdt;                                                // host Interrupt Descriptor Table (actual type is SEGMENT_DESCRIPTOR_INTERRUPT_GATE_64*)
     UINT64                  HostGdt;                                                // host Global Descriptor Table (actual type is SEGMENT_DESCRIPTOR_32* or SEGMENT_DESCRIPTOR_64*)
