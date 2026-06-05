@@ -218,6 +218,16 @@ typedef struct _EPT_HOOKED_PAGE_DETAIL
     UINT64 HookingTag;
 
     /**
+     * @brief Optional memory monitor metadata that can coexist with a hidden breakpoint page.
+     */
+    SIZE_T MonitorStartOfTargetPhysicalAddress;
+    SIZE_T MonitorEndOfTargetPhysicalAddress;
+    BOOLEAN HasMemoryMonitor;
+    BOOLEAN MonitorReadAccess;
+    BOOLEAN MonitorWriteAccess;
+    BOOLEAN MonitorExecuteAccess;
+
+    /**
      * @brief The base address of the page with fake contents. Used to swap page with fake contents
      * when a hook is hit.
      */

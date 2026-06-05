@@ -92,6 +92,228 @@ EptHookRefreshHiddenBreakpointFakePage(_Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEn
     }
 }
 
+static BOOLEAN
+EptHookIsReadWriteMemoryMonitor(_In_ const EPT_HOOKS_ADDRESS_DETAILS_FOR_MEMORY_MONITOR * MemoryAddressDetails)
+{
+    return MemoryAddressDetails != NULL &&
+           !MemoryAddressDetails->SetHookForExec &&
+           (MemoryAddressDetails->SetHookForRead || MemoryAddressDetails->SetHookForWrite);
+}
+
+static BOOLEAN
+EptHookCaptureMonitorMetadata(_Inout_ EPT_HOOKED_PAGE_DETAIL *                         HookedEntry,
+                              _In_ const EPT_HOOKS_ADDRESS_DETAILS_FOR_MEMORY_MONITOR * MemoryAddressDetails,
+                              _In_ CR3_TYPE                                             ProcessCr3)
+{
+    SIZE_T StartPhysicalAddress;
+    SIZE_T EndPhysicalAddress;
+
+    if (HookedEntry == NULL || MemoryAddressDetails == NULL)
+    {
+        return FALSE;
+    }
+
+    if (MemoryAddressDetails->MemoryType == DEBUGGER_MEMORY_HOOK_PHYSICAL_ADDRESS)
+    {
+        StartPhysicalAddress = (SIZE_T)MemoryAddressDetails->StartAddress;
+        EndPhysicalAddress   = (SIZE_T)MemoryAddressDetails->EndAddress;
+    }
+    else
+    {
+        StartPhysicalAddress = (SIZE_T)VirtualAddressToPhysicalAddressByProcessCr3((PVOID)MemoryAddressDetails->StartAddress,
+                                                                                   ProcessCr3);
+        EndPhysicalAddress   = (SIZE_T)VirtualAddressToPhysicalAddressByProcessCr3((PVOID)MemoryAddressDetails->EndAddress,
+                                                                                   ProcessCr3);
+    }
+
+    if (!StartPhysicalAddress || !EndPhysicalAddress ||
+        (SIZE_T)PAGE_ALIGN(StartPhysicalAddress) != HookedEntry->PhysicalBaseAddress ||
+        (SIZE_T)PAGE_ALIGN(EndPhysicalAddress) != HookedEntry->PhysicalBaseAddress)
+    {
+        VmmCallbackSetLastError(DEBUGGER_ERROR_INVALID_ADDRESS);
+        return FALSE;
+    }
+
+    HookedEntry->HookingTag                          = MemoryAddressDetails->Tag;
+    HookedEntry->MonitorStartOfTargetPhysicalAddress = StartPhysicalAddress;
+    HookedEntry->MonitorEndOfTargetPhysicalAddress   = EndPhysicalAddress;
+    HookedEntry->HasMemoryMonitor                    = TRUE;
+    HookedEntry->MonitorReadAccess                   = MemoryAddressDetails->SetHookForRead;
+    HookedEntry->MonitorWriteAccess                  = MemoryAddressDetails->SetHookForWrite;
+    HookedEntry->MonitorExecuteAccess                = MemoryAddressDetails->SetHookForExec;
+    return TRUE;
+}
+
+static EPT_PML1_ENTRY
+EptHookBuildMonitorChangedEntry(_In_ const EPT_HOOKED_PAGE_DETAIL * HookedEntry)
+{
+    EPT_PML1_ENTRY ChangedEntry = HookedEntry->OriginalEntry;
+
+    ChangedEntry.ReadAccess    = HookedEntry->MonitorReadAccess ? 0 : 1;
+    ChangedEntry.WriteAccess   = HookedEntry->MonitorWriteAccess ? 0 : 1;
+    ChangedEntry.ExecuteAccess = HookedEntry->MonitorExecuteAccess ? 0 : 1;
+    return ChangedEntry;
+}
+
+static EPT_PML1_ENTRY
+EptHookBuildHiddenBreakpointChangedEntry(_In_ const EPT_HOOKED_PAGE_DETAIL * HookedEntry)
+{
+    EPT_PML1_ENTRY ChangedEntry = HookedEntry->OriginalEntry;
+
+    ChangedEntry.ReadAccess       = 0;
+    ChangedEntry.WriteAccess      = 0;
+    ChangedEntry.ExecuteAccess    = 1;
+    ChangedEntry.PageFrameNumber  = HookedEntry->PhysicalBaseAddressOfFakePageContents;
+    return ChangedEntry;
+}
+
+static BOOLEAN
+EptHookApplyChangedEntryOnAllCores(_In_ VIRTUAL_MACHINE_STATE *          VCpu,
+                                   _In_ EPT_HOOKED_PAGE_DETAIL *         HookedEntry,
+                                   _In_ EPT_PML1_ENTRY                   ChangedEntry)
+{
+    ULONG ProcessorsCount;
+
+    if (VCpu == NULL || HookedEntry == NULL)
+    {
+        return FALSE;
+    }
+
+    ProcessorsCount = KeQueryActiveProcessorCount(0);
+    for (size_t i = 0; i < ProcessorsCount; i++)
+    {
+        PEPT_PML1_ENTRY TargetPage = EptGetPml1Entry(g_GuestState[i].EptPageTable, HookedEntry->PhysicalBaseAddress);
+        if (!TargetPage)
+        {
+            VmmCallbackSetLastError(DEBUGGER_ERROR_EPT_FAILED_TO_GET_PML1_ENTRY_OF_TARGET_ADDRESS);
+            return FALSE;
+        }
+
+        TargetPage->AsUInt = ChangedEntry.AsUInt;
+        if (VCpu->CoreId == i && g_GuestState[i].HasLaunched)
+        {
+            EptInveptSingleContext(VCpu->EptPointer.AsUInt);
+        }
+    }
+
+    HookedEntry->ChangedEntry = ChangedEntry;
+    return TRUE;
+}
+
+static BOOLEAN
+EptHookAttachReadWriteMonitorToHiddenBreakpoint(_Inout_ EPT_HOOKED_PAGE_DETAIL *                         HookedEntry,
+                                                _In_ const EPT_HOOKS_ADDRESS_DETAILS_FOR_MEMORY_MONITOR * MemoryAddressDetails,
+                                                _In_ CR3_TYPE                                             ProcessCr3)
+{
+    if (!EptHookIsReadWriteMemoryMonitor(MemoryAddressDetails) || HookedEntry == NULL ||
+        !HookedEntry->IsHiddenBreakpoint)
+    {
+        VmmCallbackSetLastError(DEBUGGER_ERROR_EPT_MULTIPLE_HOOKS_IN_A_SINGLE_PAGE);
+        return FALSE;
+    }
+
+    if (HookedEntry->HasMemoryMonitor && HookedEntry->HookingTag != MemoryAddressDetails->Tag)
+    {
+        VmmCallbackSetLastError(DEBUGGER_ERROR_EPT_MULTIPLE_HOOKS_IN_A_SINGLE_PAGE);
+        return FALSE;
+    }
+
+    return EptHookCaptureMonitorMetadata(HookedEntry, MemoryAddressDetails, ProcessCr3);
+}
+
+static BOOLEAN
+EptHookConvertMonitorPageToHiddenBreakpoint(_In_ VIRTUAL_MACHINE_STATE * VCpu,
+                                            _In_ PVOID                   TargetAddress,
+                                            _In_ CR3_TYPE                ProcessCr3,
+                                            _Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry)
+{
+    CR3_TYPE       Cr3OfCurrentProcess;
+    PVOID          VirtualTarget;
+    UINT64         TargetAddressInFakePageContent;
+    EPT_PML1_ENTRY ChangedEntry;
+
+    if (HookedEntry == NULL || !HookedEntry->HasMemoryMonitor ||
+        HookedEntry->MonitorExecuteAccess || HookedEntry->IsHiddenBreakpoint)
+    {
+        VmmCallbackSetLastError(DEBUGGER_ERROR_EPT_MULTIPLE_HOOKS_IN_A_SINGLE_PAGE);
+        return FALSE;
+    }
+
+    VirtualTarget                    = PAGE_ALIGN(TargetAddress);
+    TargetAddressInFakePageContent   = EptHookCalcBreakpointOffset(TargetAddress, HookedEntry);
+    Cr3OfCurrentProcess              = SwitchToProcessMemoryLayoutByCr3(ProcessCr3);
+    MemoryMapperReadMemorySafe((UINT64)VirtualTarget, &HookedEntry->FakePageContents, PAGE_SIZE);
+    *(BYTE *)TargetAddressInFakePageContent = 0xcc;
+    SwitchToPreviousProcess(Cr3OfCurrentProcess);
+
+    HookedEntry->VirtualAddress                = (UINT64)TargetAddress;
+    HookedEntry->StartOfTargetPhysicalAddress  = HookedEntry->PhysicalBaseAddress;
+    HookedEntry->EndOfTargetPhysicalAddress    = HookedEntry->PhysicalBaseAddress + PAGE_SIZE - 1;
+    HookedEntry->IsHiddenBreakpoint            = TRUE;
+    HookedEntry->IsExecutionHook               = TRUE;
+    HookedEntry->BreakpointAddresses[0]        = (UINT64)TargetAddress;
+    HookedEntry->PreviousBytesOnBreakpointAddresses[0] = 0;
+    HookedEntry->CountOfBreakpoints            = 1;
+
+    ChangedEntry = EptHookBuildHiddenBreakpointChangedEntry(HookedEntry);
+    return EptHookApplyChangedEntryOnAllCores(VCpu, HookedEntry, ChangedEntry);
+}
+
+static BOOLEAN
+EptHookDetachMonitorFromHiddenBreakpoint(_Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry)
+{
+    if (HookedEntry == NULL || !HookedEntry->IsHiddenBreakpoint || !HookedEntry->HasMemoryMonitor)
+    {
+        return FALSE;
+    }
+
+    HookedEntry->HookingTag                          = NULL64_ZERO;
+    HookedEntry->MonitorStartOfTargetPhysicalAddress = NULL64_ZERO;
+    HookedEntry->MonitorEndOfTargetPhysicalAddress   = NULL64_ZERO;
+    HookedEntry->HasMemoryMonitor                    = FALSE;
+    HookedEntry->MonitorReadAccess                   = FALSE;
+    HookedEntry->MonitorWriteAccess                  = FALSE;
+    HookedEntry->MonitorExecuteAccess                = FALSE;
+    return TRUE;
+}
+
+static BOOLEAN
+EptHookDowngradeHiddenBreakpointToMonitor(_Inout_ EPT_HOOKED_PAGE_DETAIL *             HookedEntry,
+                                          _In_ BOOLEAN                                  ApplyDirectlyFromVmxRoot,
+                                          _Inout_ EPT_SINGLE_HOOK_UNHOOKING_DETAILS *   TargetUnhookingDetails)
+{
+    EPT_PML1_ENTRY ChangedEntry;
+
+    if (HookedEntry == NULL || !HookedEntry->HasMemoryMonitor || TargetUnhookingDetails == NULL)
+    {
+        return FALSE;
+    }
+
+    ChangedEntry = EptHookBuildMonitorChangedEntry(HookedEntry);
+    HookedEntry->StartOfTargetPhysicalAddress = HookedEntry->MonitorStartOfTargetPhysicalAddress;
+    HookedEntry->EndOfTargetPhysicalAddress   = HookedEntry->MonitorEndOfTargetPhysicalAddress;
+    HookedEntry->IsHiddenBreakpoint           = FALSE;
+    HookedEntry->IsExecutionHook              = FALSE;
+    HookedEntry->CountOfBreakpoints           = 0;
+    RtlZeroMemory(HookedEntry->BreakpointAddresses, sizeof(HookedEntry->BreakpointAddresses));
+    RtlZeroMemory(HookedEntry->PreviousBytesOnBreakpointAddresses, sizeof(HookedEntry->PreviousBytesOnBreakpointAddresses));
+    HookedEntry->ChangedEntry = ChangedEntry;
+
+    TargetUnhookingDetails->PhysicalAddress = HookedEntry->PhysicalBaseAddress;
+    TargetUnhookingDetails->OriginalEntry   = ChangedEntry.AsUInt;
+    if (ApplyDirectlyFromVmxRoot)
+    {
+        TargetUnhookingDetails->CallerNeedsToRestoreEntryAndInvalidateEpt = TRUE;
+    }
+    else
+    {
+        TargetUnhookingDetails->CallerNeedsToRestoreEntryAndInvalidateEpt = FALSE;
+        KeGenericCallDpc(DpcRoutineRemoveHookAndInvalidateSingleEntryOnAllCores, TargetUnhookingDetails);
+    }
+
+    return TRUE;
+}
+
 /**
  * @brief Reserve pre-allocated pools for EPT hooks
  *
@@ -561,7 +783,18 @@ EptHookPerformPageHook(VIRTUAL_MACHINE_STATE * VCpu,
 
     if (HookedEntry != NULL)
     {
-        return EptHookUpdateHookPage(TargetAddress, HookedEntry);
+        if (HookedEntry->IsHiddenBreakpoint)
+        {
+            return EptHookUpdateHookPage(TargetAddress, HookedEntry);
+        }
+
+        if (HookedEntry->HasMemoryMonitor && !HookedEntry->MonitorExecuteAccess)
+        {
+            return EptHookConvertMonitorPageToHiddenBreakpoint(VCpu, TargetAddress, ProcessCr3, HookedEntry);
+        }
+
+        VmmCallbackSetLastError(DEBUGGER_ERROR_EPT_MULTIPLE_HOOKS_IN_A_SINGLE_PAGE);
+        return FALSE;
     }
     else
     {
@@ -1291,6 +1524,13 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
                 return TRUE;
             }
 
+            if (!EptHiddenHook && HookedEntry->IsHiddenBreakpoint)
+            {
+                return EptHookAttachReadWriteMonitorToHiddenBreakpoint(HookedEntry,
+                                                                       (EPT_HOOKS_ADDRESS_DETAILS_FOR_MEMORY_MONITOR *)HookingDetails,
+                                                                       ProcessCr3);
+            }
+
             //
             // Means that we find the address and this hook type doesn't support
             // multiple hooks in one page
@@ -1387,6 +1627,13 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
             VmmCallbackSetLastError(DEBUGGER_ERROR_INVALID_ADDRESS);
             return FALSE;
         }
+
+        HookedPage->MonitorStartOfTargetPhysicalAddress = HookedPage->StartOfTargetPhysicalAddress;
+        HookedPage->MonitorEndOfTargetPhysicalAddress   = HookedPage->EndOfTargetPhysicalAddress;
+        HookedPage->HasMemoryMonitor                    = TRUE;
+        HookedPage->MonitorReadAccess                   = ((EPT_HOOKS_ADDRESS_DETAILS_FOR_MEMORY_MONITOR *)HookingDetails)->SetHookForRead;
+        HookedPage->MonitorWriteAccess                  = ((EPT_HOOKS_ADDRESS_DETAILS_FOR_MEMORY_MONITOR *)HookingDetails)->SetHookForWrite;
+        HookedPage->MonitorExecuteAccess                = ((EPT_HOOKS_ADDRESS_DETAILS_FOR_MEMORY_MONITOR *)HookingDetails)->SetHookForExec;
     }
 
     //
@@ -2350,6 +2597,31 @@ EptHookUnHookSingleAddressHiddenBreakpoint(PEPT_HOOKED_PAGE_DETAIL             H
             //
             if (HookedEntry->CountOfBreakpoints == 1)
             {
+                if (HookedEntry->HasMemoryMonitor)
+                {
+                    if (!EptHookDowngradeHiddenBreakpointToMonitor(HookedEntry,
+                                                                    ApplyDirectlyFromVmxRoot,
+                                                                    TargetUnhookingDetails))
+                    {
+                        return FALSE;
+                    }
+
+                    if (EptHookGetCountOfEpthooks(FALSE) == 0)
+                    {
+                        if (ApplyDirectlyFromVmxRoot)
+                        {
+                            TargetUnhookingDetails->RemoveBreakpointInterception = TRUE;
+                        }
+                        else
+                        {
+                            TargetUnhookingDetails->RemoveBreakpointInterception = FALSE;
+                            BroadcastDisableBreakpointExitingOnExceptionBitmapAllCores();
+                        }
+                    }
+
+                    return TRUE;
+                }
+
                 //
                 // Set the unhooking details
                 //
@@ -2543,6 +2815,15 @@ EptHookPerformUnHookSingleAddress(UINT64                              VirtualAdd
         //
         if (CurrEntity->IsHiddenBreakpoint)
         {
+            if (HookingTag != NULL64_ZERO && CurrEntity->HasMemoryMonitor && CurrEntity->HookingTag == HookingTag)
+            {
+                TargetUnhookingDetails->CallerNeedsToRestoreEntryAndInvalidateEpt = FALSE;
+                TargetUnhookingDetails->RemoveBreakpointInterception              = FALSE;
+                TargetUnhookingDetails->PhysicalAddress                           = NULL64_ZERO;
+                TargetUnhookingDetails->OriginalEntry                             = NULL64_ZERO;
+                return EptHookDetachMonitorFromHiddenBreakpoint(CurrEntity);
+            }
+
             //
             // It's a hidden breakpoint
             //
