@@ -335,6 +335,40 @@ IMPORT_EXPORT_VMM BOOLEAN
 ConfigureEptHookMonitorFromVmxRoot(UINT32                                         CoreId,
                                    EPT_HOOKS_ADDRESS_DETAILS_FOR_MEMORY_MONITOR * MemoryAddressDetails);
 
+typedef struct _EPT_HOOK_STATE_QUERY
+{
+    UINT32  Size;
+    UINT32  ProcessId;
+    UINT64  VirtualAddress;
+    UINT64  PhysicalBaseAddress;
+    UINT64  CurrentEntry;
+    UINT64  OriginalEntry;
+    UINT64  ChangedEntry;
+    UINT64  HookingTag;
+    UINT64  BreakpointCount;
+    BOOLEAN HookFound;
+    BOOLEAN IsHiddenBreakpoint;
+    BOOLEAN IsHiddenBreakpointDegraded;
+    BOOLEAN HasMemoryMonitor;
+    BOOLEAN MonitorReadAccess;
+    BOOLEAN MonitorWriteAccess;
+    BOOLEAN MonitorExecuteAccess;
+    BOOLEAN CurrentReadAccess;
+    BOOLEAN CurrentWriteAccess;
+    BOOLEAN CurrentExecuteAccess;
+    BOOLEAN ChangedReadAccess;
+    BOOLEAN ChangedWriteAccess;
+    BOOLEAN ChangedExecuteAccess;
+    BOOLEAN CurrentUsesFakePage;
+    BOOLEAN ChangedUsesFakePage;
+    UCHAR   Reserved[6];
+} EPT_HOOK_STATE_QUERY, *PEPT_HOOK_STATE_QUERY;
+
+IMPORT_EXPORT_VMM BOOLEAN
+ConfigureEptHookQueryState(PVOID TargetAddress,
+                           UINT32 ProcessId,
+                           PEPT_HOOK_STATE_QUERY Query);
+
 IMPORT_EXPORT_VMM BOOLEAN
 ConfigureEptHookModifyInstructionFetchState(UINT32  CoreId,
                                             PVOID   PhysicalAddress,

@@ -333,6 +333,11 @@ EptHookUnHookSingleAddressFromVmxRoot(UINT64                              Virtua
 UINT32
 EptHookGetCountOfEpthooks(BOOLEAN IsEptHook2);
 
+BOOLEAN
+EptHookQueryState(PVOID TargetAddress,
+                  UINT32 ProcessId,
+                  PEPT_HOOK_STATE_QUERY Query);
+
 /**
  * @brief Remove an entry from g_EptHook2sDetourListHead
  *

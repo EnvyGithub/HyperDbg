@@ -2598,6 +2598,82 @@ EptHookGetCountOfEpthooks(BOOLEAN IsEptHook2)
     return Count;
 }
 
+BOOLEAN
+EptHookQueryState(PVOID TargetAddress,
+                  UINT32 ProcessId,
+                  PEPT_HOOK_STATE_QUERY Query)
+{
+    UINT64                  PhysicalAddress;
+    SIZE_T                  PhysicalBaseAddress;
+    UINT32                  CoreId;
+    PEPT_PML1_ENTRY         TargetPage;
+    UINT64                  CurrentPfn;
+
+    if (TargetAddress == NULL || Query == NULL)
+    {
+        return FALSE;
+    }
+
+    RtlZeroMemory(Query, sizeof(*Query));
+    Query->Size           = sizeof(*Query);
+    Query->ProcessId      = ProcessId;
+    Query->VirtualAddress = (UINT64)TargetAddress;
+
+    if (ProcessId == DEBUGGER_EVENT_APPLY_TO_ALL_PROCESSES || ProcessId == 0)
+    {
+        ProcessId = HANDLE_TO_UINT32(PsGetCurrentProcessId());
+    }
+
+    PhysicalAddress = VirtualAddressToPhysicalAddressByProcessId(PAGE_ALIGN(TargetAddress), ProcessId);
+    if (PhysicalAddress == NULL64_ZERO)
+    {
+        return FALSE;
+    }
+
+    PhysicalBaseAddress        = (SIZE_T)PAGE_ALIGN(PhysicalAddress);
+    Query->PhysicalBaseAddress = PhysicalBaseAddress;
+    CoreId                     = KeGetCurrentProcessorNumberEx(NULL);
+    TargetPage                 = EptGetPml1Entry(g_GuestState[CoreId].EptPageTable, PhysicalBaseAddress);
+    if (TargetPage == NULL)
+    {
+        return FALSE;
+    }
+
+    Query->CurrentEntry         = TargetPage->AsUInt;
+    Query->CurrentReadAccess    = TargetPage->ReadAccess ? TRUE : FALSE;
+    Query->CurrentWriteAccess   = TargetPage->WriteAccess ? TRUE : FALSE;
+    Query->CurrentExecuteAccess = TargetPage->ExecuteAccess ? TRUE : FALSE;
+    CurrentPfn                  = TargetPage->PageFrameNumber;
+
+    LIST_FOR_EACH_LINK(g_EptState->HookedPagesList, EPT_HOOKED_PAGE_DETAIL, PageHookList, CurrEntity)
+    {
+        if (CurrEntity->PhysicalBaseAddress != PhysicalBaseAddress)
+        {
+            continue;
+        }
+
+        Query->HookFound                 = TRUE;
+        Query->OriginalEntry             = CurrEntity->OriginalEntry.AsUInt;
+        Query->ChangedEntry              = CurrEntity->ChangedEntry.AsUInt;
+        Query->HookingTag                = CurrEntity->HookingTag;
+        Query->BreakpointCount           = CurrEntity->CountOfBreakpoints;
+        Query->IsHiddenBreakpoint        = CurrEntity->IsHiddenBreakpoint;
+        Query->IsHiddenBreakpointDegraded = CurrEntity->IsHiddenBreakpointDegraded;
+        Query->HasMemoryMonitor          = CurrEntity->HasMemoryMonitor;
+        Query->MonitorReadAccess         = CurrEntity->MonitorReadAccess;
+        Query->MonitorWriteAccess        = CurrEntity->MonitorWriteAccess;
+        Query->MonitorExecuteAccess      = CurrEntity->MonitorExecuteAccess;
+        Query->ChangedReadAccess         = CurrEntity->ChangedEntry.ReadAccess ? TRUE : FALSE;
+        Query->ChangedWriteAccess        = CurrEntity->ChangedEntry.WriteAccess ? TRUE : FALSE;
+        Query->ChangedExecuteAccess      = CurrEntity->ChangedEntry.ExecuteAccess ? TRUE : FALSE;
+        Query->CurrentUsesFakePage       = CurrentPfn == CurrEntity->PhysicalBaseAddressOfFakePageContents ? TRUE : FALSE;
+        Query->ChangedUsesFakePage       = CurrEntity->ChangedEntry.PageFrameNumber == CurrEntity->PhysicalBaseAddressOfFakePageContents ? TRUE : FALSE;
+        break;
+    }
+
+    return TRUE;
+}
+
 /**
  * @brief Remove single hook of detours type
  *
