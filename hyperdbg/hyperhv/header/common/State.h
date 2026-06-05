@@ -261,6 +261,12 @@ typedef struct _EPT_HOOKED_PAGE_DETAIL
     BOOLEAN IsHiddenBreakpoint;
 
     /**
+     * @brief TRUE when a hidden breakpoint page is degraded to X=0 emulated INT3
+     * because an execute monitor exists on the same physical page.
+     */
+    BOOLEAN IsHiddenBreakpointDegraded;
+
+    /**
      * @brief This field shows whether the hook is for MMIO shadowing or not
      */
     BOOLEAN IsMmioShadowing;
