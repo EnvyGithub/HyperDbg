@@ -13,6 +13,15 @@
  */
 #include "pch.h"
 
+#define HDBGWB_COMPANION_MONITOR_TAG_PREFIX 0x4A31000000000000ui64
+#define HDBGWB_COMPANION_MONITOR_TAG_PREFIX_MASK 0xFFFF000000000000ui64
+
+static BOOLEAN
+EptHookIsCompanionRefreshableMonitorTag(_In_ UINT64 Tag)
+{
+    return (Tag & HDBGWB_COMPANION_MONITOR_TAG_PREFIX_MASK) == HDBGWB_COMPANION_MONITOR_TAG_PREFIX;
+}
+
 /**
  * @brief Check whether the desired PhysicalAddress is already in the g_EptState->HookedPagesList hooks or not
  *
@@ -194,13 +203,16 @@ EptHookApplyChangedEntryOnAllCores(_In_ VIRTUAL_MACHINE_STATE *          VCpu,
     ProcessorsCount = KeQueryActiveProcessorCount(0);
     for (size_t i = 0; i < ProcessorsCount; i++)
     {
-        PEPT_PML1_ENTRY TargetPage = EptGetPml1Entry(g_GuestState[i].EptPageTable, HookedEntry->PhysicalBaseAddress);
-        if (!TargetPage)
+        if (!EptGetPml1Entry(g_GuestState[i].EptPageTable, HookedEntry->PhysicalBaseAddress))
         {
             VmmCallbackSetLastError(DEBUGGER_ERROR_EPT_FAILED_TO_GET_PML1_ENTRY_OF_TARGET_ADDRESS);
             return FALSE;
         }
+    }
 
+    for (size_t i = 0; i < ProcessorsCount; i++)
+    {
+        PEPT_PML1_ENTRY TargetPage = EptGetPml1Entry(g_GuestState[i].EptPageTable, HookedEntry->PhysicalBaseAddress);
         TargetPage->AsUInt = ChangedEntry.AsUInt;
         if (VCpu->CoreId == i && g_GuestState[i].HasLaunched)
         {
@@ -259,6 +271,18 @@ EptHookHasPendingDegradedReplay(_In_ const EPT_HOOKED_PAGE_DETAIL * HookedEntry)
 }
 
 static BOOLEAN
+EptHookCanLeaveDegradedReplayState(_In_ const EPT_HOOKED_PAGE_DETAIL * HookedEntry)
+{
+    if (EptHookHasPendingDegradedReplay(HookedEntry))
+    {
+        VmmCallbackSetLastError(DEBUGGER_ERROR_EPT_MULTIPLE_HOOKS_IN_A_SINGLE_PAGE);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static BOOLEAN
 EptHookApplyDegradedHiddenBreakpointState(_In_ VIRTUAL_MACHINE_STATE *  VCpu,
                                           _Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry)
 {
@@ -273,7 +297,10 @@ EptHookApplyDegradedHiddenBreakpointState(_In_ VIRTUAL_MACHINE_STATE *  VCpu,
     HookedEntry->IsHiddenBreakpoint         = TRUE;
     HookedEntry->IsHiddenBreakpointDegraded = TRUE;
     HookedEntry->IsExecutionHook            = TRUE;
-    EptHookResetDegradedReplayState(HookedEntry);
+    if (!EptHookHasPendingDegradedReplay(HookedEntry))
+    {
+        EptHookResetDegradedReplayState(HookedEntry);
+    }
     EptHookSetHiddenBreakpointFullPageRange(HookedEntry);
 
     ChangedEntry = EptHookBuildDegradedHiddenBreakpointChangedEntry(HookedEntry);
@@ -378,6 +405,11 @@ EptHookApplyMonitorOnlySafeState(_In_ VIRTUAL_MACHINE_STATE *  VCpu,
 {
     EPT_PML1_ENTRY ChangedEntry;
 
+    if (!EptHookCanLeaveDegradedReplayState(HookedEntry))
+    {
+        return FALSE;
+    }
+
     HookedEntry->StartOfTargetPhysicalAddress = HookedEntry->MonitorStartOfTargetPhysicalAddress;
     HookedEntry->EndOfTargetPhysicalAddress   = HookedEntry->MonitorEndOfTargetPhysicalAddress;
     HookedEntry->IsHiddenBreakpoint           = FALSE;
@@ -400,6 +432,11 @@ EptHookApplyHiddenBreakpointSafeState(_In_ VIRTUAL_MACHINE_STATE *  VCpu,
                                       _Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry)
 {
     EPT_PML1_ENTRY ChangedEntry;
+
+    if (!EptHookCanLeaveDegradedReplayState(HookedEntry))
+    {
+        return FALSE;
+    }
 
     EptHookRefreshHiddenBreakpointFakePage(HookedEntry);
     HookedEntry->IsHiddenBreakpoint         = TRUE;
@@ -448,6 +485,61 @@ EptHookEnforcePageStateInvariant(_In_ VIRTUAL_MACHINE_STATE *  VCpu,
 }
 
 static BOOLEAN
+EptHookRollbackHookedEntry(_In_ VIRTUAL_MACHINE_STATE *        VCpu,
+                           _Inout_ EPT_HOOKED_PAGE_DETAIL *    HookedEntry,
+                           _In_ const EPT_HOOKED_PAGE_DETAIL * Snapshot)
+{
+    if (HookedEntry == NULL || Snapshot == NULL)
+    {
+        return FALSE;
+    }
+
+    *HookedEntry = *Snapshot;
+    if (EptHookCurrentEntryMatchesChangedEntry(VCpu, HookedEntry))
+    {
+        return TRUE;
+    }
+
+    LogWarning("Err, failed EPT transition; rolling page metadata back");
+    return EptHookApplyChangedEntryOnAllCores(VCpu, HookedEntry, Snapshot->ChangedEntry);
+}
+
+static BOOLEAN
+EptHookApplyMonitorMetadataWithRollback(_In_ VIRTUAL_MACHINE_STATE *                             VCpu,
+                                        _Inout_ EPT_HOOKED_PAGE_DETAIL *                         HookedEntry,
+                                        _In_ const EPT_HOOKS_ADDRESS_DETAILS_FOR_MEMORY_MONITOR * MemoryAddressDetails,
+                                        _In_ CR3_TYPE                                             ProcessCr3,
+                                        _In_ BOOLEAN                                              ForceDegraded)
+{
+    EPT_HOOKED_PAGE_DETAIL Snapshot;
+    BOOLEAN                Applied;
+
+    if (HookedEntry == NULL || MemoryAddressDetails == NULL)
+    {
+        return FALSE;
+    }
+
+    Snapshot = *HookedEntry;
+    if (!EptHookCaptureMonitorMetadata(HookedEntry, MemoryAddressDetails, ProcessCr3))
+    {
+        return FALSE;
+    }
+
+    Applied = ForceDegraded ? EptHookApplyDegradedHiddenBreakpointState(VCpu, HookedEntry) :
+                              EptHookEnforcePageStateInvariant(VCpu, HookedEntry);
+    if (!Applied)
+    {
+        if (!EptHookRollbackHookedEntry(VCpu, HookedEntry, &Snapshot))
+        {
+            return FALSE;
+        }
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static BOOLEAN
 EptHookAttachReadWriteMonitorToHiddenBreakpoint(_In_ VIRTUAL_MACHINE_STATE *                                VCpu,
                                                 _Inout_ EPT_HOOKED_PAGE_DETAIL *                            HookedEntry,
                                                 _In_ const EPT_HOOKS_ADDRESS_DETAILS_FOR_MEMORY_MONITOR * MemoryAddressDetails,
@@ -466,12 +558,7 @@ EptHookAttachReadWriteMonitorToHiddenBreakpoint(_In_ VIRTUAL_MACHINE_STATE *    
         return FALSE;
     }
 
-    if (!EptHookCaptureMonitorMetadata(HookedEntry, MemoryAddressDetails, ProcessCr3))
-    {
-        return FALSE;
-    }
-
-    return EptHookEnforcePageStateInvariant(VCpu, HookedEntry);
+    return EptHookApplyMonitorMetadataWithRollback(VCpu, HookedEntry, MemoryAddressDetails, ProcessCr3, FALSE);
 }
 
 static BOOLEAN
@@ -493,12 +580,7 @@ EptHookAttachExecuteMonitorToHiddenBreakpoint(_In_ VIRTUAL_MACHINE_STATE *      
         return FALSE;
     }
 
-    if (!EptHookCaptureMonitorMetadata(HookedEntry, MemoryAddressDetails, ProcessCr3))
-    {
-        return FALSE;
-    }
-
-    return EptHookApplyDegradedHiddenBreakpointState(VCpu, HookedEntry);
+    return EptHookApplyMonitorMetadataWithRollback(VCpu, HookedEntry, MemoryAddressDetails, ProcessCr3, TRUE);
 }
 
 static BOOLEAN
@@ -522,10 +604,30 @@ EptHookAttachMonitorToHiddenBreakpoint(_In_ VIRTUAL_MACHINE_STATE *             
 }
 
 static BOOLEAN
-EptHookConvertMonitorPageToDegradedHiddenBreakpoint(_In_ VIRTUAL_MACHINE_STATE *  VCpu,
-                                                   _In_ PVOID                    TargetAddress,
-                                                   _Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry)
+EptHookRefreshMonitorOnSamePage(_In_ VIRTUAL_MACHINE_STATE *                                VCpu,
+                                _Inout_ EPT_HOOKED_PAGE_DETAIL *                            HookedEntry,
+                                _In_ const EPT_HOOKS_ADDRESS_DETAILS_FOR_MEMORY_MONITOR *    MemoryAddressDetails,
+                                _In_ CR3_TYPE                                                ProcessCr3)
 {
+    if (HookedEntry == NULL || MemoryAddressDetails == NULL ||
+        !HookedEntry->HasMemoryMonitor || HookedEntry->IsHiddenBreakpoint ||
+        HookedEntry->HookingTag != MemoryAddressDetails->Tag ||
+        !EptHookIsCompanionRefreshableMonitorTag(MemoryAddressDetails->Tag))
+    {
+        VmmCallbackSetLastError(DEBUGGER_ERROR_EPT_MULTIPLE_HOOKS_IN_A_SINGLE_PAGE);
+        return FALSE;
+    }
+
+    return EptHookApplyMonitorMetadataWithRollback(VCpu, HookedEntry, MemoryAddressDetails, ProcessCr3, FALSE);
+}
+
+static BOOLEAN
+EptHookConvertMonitorPageToDegradedHiddenBreakpoint(_In_ VIRTUAL_MACHINE_STATE *  VCpu,
+                                                    _In_ PVOID                    TargetAddress,
+                                                    _Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry)
+{
+    EPT_HOOKED_PAGE_DETAIL Snapshot;
+
     if (HookedEntry == NULL || !HookedEntry->HasMemoryMonitor ||
         !HookedEntry->MonitorExecuteAccess || HookedEntry->IsHiddenBreakpoint)
     {
@@ -533,12 +635,22 @@ EptHookConvertMonitorPageToDegradedHiddenBreakpoint(_In_ VIRTUAL_MACHINE_STATE *
         return FALSE;
     }
 
+    Snapshot = *HookedEntry;
     HookedEntry->VirtualAddress                         = (UINT64)TargetAddress;
     HookedEntry->BreakpointAddresses[0]                 = (UINT64)TargetAddress;
     HookedEntry->PreviousBytesOnBreakpointAddresses[0]  = 0;
     HookedEntry->CountOfBreakpoints                     = 1;
 
-    return EptHookApplyDegradedHiddenBreakpointState(VCpu, HookedEntry);
+    if (!EptHookApplyDegradedHiddenBreakpointState(VCpu, HookedEntry))
+    {
+        if (!EptHookRollbackHookedEntry(VCpu, HookedEntry, &Snapshot))
+        {
+            return FALSE;
+        }
+        return FALSE;
+    }
+
+    return TRUE;
 }
 
 static BOOLEAN
@@ -551,6 +663,7 @@ EptHookConvertMonitorPageToHiddenBreakpoint(_In_ VIRTUAL_MACHINE_STATE * VCpu,
     PVOID          VirtualTarget;
     UINT64         TargetAddressInFakePageContent;
     EPT_PML1_ENTRY ChangedEntry;
+    EPT_HOOKED_PAGE_DETAIL Snapshot;
 
     if (HookedEntry != NULL && HookedEntry->HasMemoryMonitor &&
         HookedEntry->MonitorExecuteAccess && !HookedEntry->IsHiddenBreakpoint)
@@ -564,6 +677,7 @@ EptHookConvertMonitorPageToHiddenBreakpoint(_In_ VIRTUAL_MACHINE_STATE * VCpu,
         return FALSE;
     }
 
+    Snapshot                         = *HookedEntry;
     VirtualTarget                    = PAGE_ALIGN(TargetAddress);
     TargetAddressInFakePageContent   = EptHookCalcBreakpointOffset(TargetAddress, HookedEntry);
     Cr3OfCurrentProcess              = SwitchToProcessMemoryLayoutByCr3(ProcessCr3);
@@ -584,10 +698,23 @@ EptHookConvertMonitorPageToHiddenBreakpoint(_In_ VIRTUAL_MACHINE_STATE * VCpu,
     ChangedEntry = EptHookBuildHiddenBreakpointChangedEntry(HookedEntry);
     if (!EptHookApplyChangedEntryOnAllCores(VCpu, HookedEntry, ChangedEntry))
     {
+        if (!EptHookRollbackHookedEntry(VCpu, HookedEntry, &Snapshot))
+        {
+            return FALSE;
+        }
         return FALSE;
     }
 
-    return EptHookEnforcePageStateInvariant(VCpu, HookedEntry);
+    if (!EptHookEnforcePageStateInvariant(VCpu, HookedEntry))
+    {
+        if (!EptHookRollbackHookedEntry(VCpu, HookedEntry, &Snapshot))
+        {
+            return FALSE;
+        }
+        return FALSE;
+    }
+
+    return TRUE;
 }
 
 static VOID
@@ -641,6 +768,11 @@ EptHookDetachMonitorFromHiddenBreakpoint(_Inout_ EPT_HOOKED_PAGE_DETAIL *       
         return FALSE;
     }
 
+    if (!EptHookCanLeaveDegradedReplayState(HookedEntry))
+    {
+        return FALSE;
+    }
+
     if (!HookedEntry->IsHiddenBreakpointDegraded)
     {
         EptHookClearMonitorMetadata(HookedEntry);
@@ -670,6 +802,11 @@ EptHookDowngradeHiddenBreakpointToMonitor(_Inout_ EPT_HOOKED_PAGE_DETAIL *      
     EPT_PML1_ENTRY ChangedEntry;
 
     if (HookedEntry == NULL || !HookedEntry->HasMemoryMonitor || TargetUnhookingDetails == NULL)
+    {
+        return FALSE;
+    }
+
+    if (!EptHookCanLeaveDegradedReplayState(HookedEntry))
     {
         return FALSE;
     }
@@ -1922,6 +2059,14 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
                                                               HookedEntry,
                                                               (EPT_HOOKS_ADDRESS_DETAILS_FOR_MEMORY_MONITOR *)HookingDetails,
                                                               ProcessCr3);
+            }
+
+            if (!EptHiddenHook && HookedEntry->HasMemoryMonitor && !HookedEntry->IsHiddenBreakpoint)
+            {
+                return EptHookRefreshMonitorOnSamePage(VCpu,
+                                                       HookedEntry,
+                                                       (EPT_HOOKS_ADDRESS_DETAILS_FOR_MEMORY_MONITOR *)HookingDetails,
+                                                       ProcessCr3);
             }
 
             //
