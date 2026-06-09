@@ -45,12 +45,11 @@ EventInjectInterruption(INTERRUPT_TYPE InterruptionType, EXCEPTION_VECTORS Vecto
 VOID
 EventInjectBreakpoint()
 {
-    UINT32 ExitInstrLength;
+    const UINT32 BreakpointInstructionLength = sizeof(BYTE);
 
     EventInjectInterruption(INTERRUPT_TYPE_SOFTWARE_EXCEPTION, EXCEPTION_VECTOR_BREAKPOINT, FALSE, 0);
 
-    VmxVmread32P(VMCS_VMEXIT_INSTRUCTION_LENGTH, &ExitInstrLength);
-    VmxVmwrite64(VMCS_CTRL_VMENTRY_INSTRUCTION_LENGTH, ExitInstrLength);
+    VmxVmwrite64(VMCS_CTRL_VMENTRY_INSTRUCTION_LENGTH, BreakpointInstructionLength);
 }
 
 /**
