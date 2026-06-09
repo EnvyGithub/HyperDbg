@@ -346,6 +346,8 @@ typedef struct _EPT_HOOK_STATE_QUERY
     UINT64  ChangedEntry;
     UINT64  HookingTag;
     UINT64  BreakpointCount;
+    UINT64  DegradedBreakpointMtfReplayCount;
+    UINT64  DegradedBreakpointReplayOverflowCount;
     BOOLEAN HookFound;
     BOOLEAN IsHiddenBreakpoint;
     BOOLEAN IsHiddenBreakpointDegraded;

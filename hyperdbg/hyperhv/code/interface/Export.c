@@ -742,6 +742,14 @@ VmFuncVmxBroadcastUninitialize()
 VOID
 VmFuncEventInjectBreakpoint()
 {
+    UINT32 CoreId = KeGetCurrentProcessorNumberEx(NULL);
+
+    if (g_GuestState[CoreId].DegradedHiddenBreakpointInjectionActive)
+    {
+        EventInjectBreakpointCurrentRip();
+        return;
+    }
+
     EventInjectBreakpoint();
 }
 

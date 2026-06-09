@@ -219,6 +219,45 @@ EptHookSetHiddenBreakpointFullPageRange(_Inout_ EPT_HOOKED_PAGE_DETAIL * HookedE
     HookedEntry->EndOfTargetPhysicalAddress   = HookedEntry->PhysicalBaseAddress + PAGE_SIZE - 1;
 }
 
+static VOID
+EptHookResetDegradedReplayState(_Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry)
+{
+    if (HookedEntry == NULL)
+    {
+        return;
+    }
+
+    RtlZeroMemory(HookedEntry->DegradedBreakpointReplayStage,
+                  sizeof(HookedEntry->DegradedBreakpointReplayStage));
+    RtlZeroMemory(HookedEntry->DegradedBreakpointReplayAddress,
+                  sizeof(HookedEntry->DegradedBreakpointReplayAddress));
+    RtlZeroMemory(HookedEntry->DegradedBreakpointReplayOwnerProcessId,
+                  sizeof(HookedEntry->DegradedBreakpointReplayOwnerProcessId));
+    RtlZeroMemory(HookedEntry->DegradedBreakpointReplayOwnerThreadId,
+                  sizeof(HookedEntry->DegradedBreakpointReplayOwnerThreadId));
+    HookedEntry->DegradedBreakpointMtfReplayCount = 0;
+    HookedEntry->DegradedBreakpointReplayOverflowCount = 0;
+}
+
+static BOOLEAN
+EptHookHasPendingDegradedReplay(_In_ const EPT_HOOKED_PAGE_DETAIL * HookedEntry)
+{
+    if (HookedEntry == NULL)
+    {
+        return FALSE;
+    }
+
+    for (size_t i = 0; i < MaximumDegradedReplaySlots; i++)
+    {
+        if (HookedEntry->DegradedBreakpointReplayStage[i] != EptHookDegradedReplayNone)
+        {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
 static BOOLEAN
 EptHookApplyDegradedHiddenBreakpointState(_In_ VIRTUAL_MACHINE_STATE *  VCpu,
                                           _Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry)
@@ -234,6 +273,7 @@ EptHookApplyDegradedHiddenBreakpointState(_In_ VIRTUAL_MACHINE_STATE *  VCpu,
     HookedEntry->IsHiddenBreakpoint         = TRUE;
     HookedEntry->IsHiddenBreakpointDegraded = TRUE;
     HookedEntry->IsExecutionHook            = TRUE;
+    EptHookResetDegradedReplayState(HookedEntry);
     EptHookSetHiddenBreakpointFullPageRange(HookedEntry);
 
     ChangedEntry = EptHookBuildDegradedHiddenBreakpointChangedEntry(HookedEntry);
@@ -344,6 +384,10 @@ EptHookApplyMonitorOnlySafeState(_In_ VIRTUAL_MACHINE_STATE *  VCpu,
     HookedEntry->IsHiddenBreakpointDegraded   = FALSE;
     HookedEntry->IsExecutionHook              = HookedEntry->MonitorExecuteAccess ? TRUE : FALSE;
     HookedEntry->CountOfBreakpoints           = 0;
+    if (!EptHookHasPendingDegradedReplay(HookedEntry))
+    {
+        EptHookResetDegradedReplayState(HookedEntry);
+    }
     RtlZeroMemory(HookedEntry->BreakpointAddresses, sizeof(HookedEntry->BreakpointAddresses));
     RtlZeroMemory(HookedEntry->PreviousBytesOnBreakpointAddresses, sizeof(HookedEntry->PreviousBytesOnBreakpointAddresses));
 
@@ -361,6 +405,10 @@ EptHookApplyHiddenBreakpointSafeState(_In_ VIRTUAL_MACHINE_STATE *  VCpu,
     HookedEntry->IsHiddenBreakpoint         = TRUE;
     HookedEntry->IsHiddenBreakpointDegraded = FALSE;
     HookedEntry->IsExecutionHook            = TRUE;
+    if (!EptHookHasPendingDegradedReplay(HookedEntry))
+    {
+        EptHookResetDegradedReplayState(HookedEntry);
+    }
     EptHookSetHiddenBreakpointFullPageRange(HookedEntry);
 
     ChangedEntry = EptHookBuildHiddenBreakpointChangedEntry(HookedEntry);
@@ -528,6 +576,7 @@ EptHookConvertMonitorPageToHiddenBreakpoint(_In_ VIRTUAL_MACHINE_STATE * VCpu,
     HookedEntry->IsHiddenBreakpoint            = TRUE;
     HookedEntry->IsHiddenBreakpointDegraded    = FALSE;
     HookedEntry->IsExecutionHook               = TRUE;
+    EptHookResetDegradedReplayState(HookedEntry);
     HookedEntry->BreakpointAddresses[0]        = (UINT64)TargetAddress;
     HookedEntry->PreviousBytesOnBreakpointAddresses[0] = 0;
     HookedEntry->CountOfBreakpoints            = 1;
@@ -601,6 +650,10 @@ EptHookDetachMonitorFromHiddenBreakpoint(_Inout_ EPT_HOOKED_PAGE_DETAIL *       
     EptHookRefreshHiddenBreakpointFakePage(HookedEntry);
     EptHookClearMonitorMetadata(HookedEntry);
     HookedEntry->IsHiddenBreakpointDegraded = FALSE;
+    if (!EptHookHasPendingDegradedReplay(HookedEntry))
+    {
+        EptHookResetDegradedReplayState(HookedEntry);
+    }
     EptHookSetHiddenBreakpointFullPageRange(HookedEntry);
     ChangedEntry = EptHookBuildHiddenBreakpointChangedEntry(HookedEntry);
     return EptHookApplyEntryForHiddenBreakpointTransition(HookedEntry,
@@ -628,6 +681,10 @@ EptHookDowngradeHiddenBreakpointToMonitor(_Inout_ EPT_HOOKED_PAGE_DETAIL *      
     HookedEntry->IsHiddenBreakpointDegraded   = FALSE;
     HookedEntry->IsExecutionHook              = FALSE;
     HookedEntry->CountOfBreakpoints           = 0;
+    if (!EptHookHasPendingDegradedReplay(HookedEntry))
+    {
+        EptHookResetDegradedReplayState(HookedEntry);
+    }
     RtlZeroMemory(HookedEntry->BreakpointAddresses, sizeof(HookedEntry->BreakpointAddresses));
     RtlZeroMemory(HookedEntry->PreviousBytesOnBreakpointAddresses, sizeof(HookedEntry->PreviousBytesOnBreakpointAddresses));
     HookedEntry->ChangedEntry = ChangedEntry;
@@ -2501,6 +2558,323 @@ EptHookMonitorFromVmxRoot(VIRTUAL_MACHINE_STATE *                        VCpu,
                                             TRUE);
 }
 
+static BOOLEAN
+EptHookFindDegradedHiddenBreakpointIndex(_In_ EPT_HOOKED_PAGE_DETAIL * HookedEntry,
+                                         _In_ UINT64                   ExactAddress,
+                                         _Out_ size_t *                BreakpointIndex)
+{
+    if (HookedEntry == NULL || BreakpointIndex == NULL)
+    {
+        return FALSE;
+    }
+
+    for (size_t i = 0; i < HookedEntry->CountOfBreakpoints; i++)
+    {
+        if (HookedEntry->BreakpointAddresses[i] == ExactAddress)
+        {
+            *BreakpointIndex = i;
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+static EptHookDegradedReplayState
+EptHookLoadDegradedReplayStageAcquire(_In_ EPT_HOOKED_PAGE_DETAIL * HookedEntry,
+                                      _In_ size_t                   ReplayIndex)
+{
+    EptHookDegradedReplayState ReplayStage =
+        (EptHookDegradedReplayState)InterlockedCompareExchange(&HookedEntry->DegradedBreakpointReplayStage[ReplayIndex],
+                                                               EptHookDegradedReplayNone,
+                                                               EptHookDegradedReplayNone);
+
+    if (ReplayStage == EptHookDegradedReplayExecutePre ||
+        ReplayStage == EptHookDegradedReplayAllowOriginal)
+    {
+        KeMemoryBarrier();
+    }
+
+    return ReplayStage;
+}
+
+static VOID
+EptHookPublishDegradedReplaySlot(_Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry,
+                                 _In_ size_t                      ReplayIndex,
+                                 _In_ UINT64                      ExactAddress,
+                                 _In_ UINT32                      OwnerProcessId,
+                                 _In_ UINT32                      OwnerThreadId,
+                                 _In_ EptHookDegradedReplayState  ReplayStage)
+{
+    HookedEntry->DegradedBreakpointReplayAddress[ReplayIndex]        = ExactAddress;
+    HookedEntry->DegradedBreakpointReplayOwnerProcessId[ReplayIndex] = OwnerProcessId;
+    HookedEntry->DegradedBreakpointReplayOwnerThreadId[ReplayIndex]  = OwnerThreadId;
+    KeMemoryBarrier();
+    InterlockedExchange(&HookedEntry->DegradedBreakpointReplayStage[ReplayIndex], ReplayStage);
+}
+
+static BOOLEAN
+EptHookFindDegradedReplaySlot(_In_ EPT_HOOKED_PAGE_DETAIL * HookedEntry,
+                              _In_ UINT64                   ExactAddress,
+                              _In_ UINT32                   OwnerProcessId,
+                              _In_ UINT32                   OwnerThreadId,
+                              _Out_ size_t *                ReplayIndex)
+{
+    if (HookedEntry == NULL || ReplayIndex == NULL)
+    {
+        return FALSE;
+    }
+
+    for (size_t i = 0; i < MaximumDegradedReplaySlots; i++)
+    {
+        EptHookDegradedReplayState ReplayStage = EptHookLoadDegradedReplayStageAcquire(HookedEntry, i);
+
+        if ((ReplayStage == EptHookDegradedReplayExecutePre ||
+             ReplayStage == EptHookDegradedReplayAllowOriginal) &&
+            HookedEntry->DegradedBreakpointReplayAddress[i] == ExactAddress &&
+            HookedEntry->DegradedBreakpointReplayOwnerProcessId[i] == OwnerProcessId &&
+            HookedEntry->DegradedBreakpointReplayOwnerThreadId[i] == OwnerThreadId)
+        {
+            *ReplayIndex = i;
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+static BOOLEAN
+EptHookAllocateDegradedReplaySlot(_Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry,
+                                  _In_ UINT64                      ExactAddress,
+                                  _In_ UINT32                      OwnerProcessId,
+                                  _In_ UINT32                      OwnerThreadId,
+                                  _In_ EptHookDegradedReplayState  InitialStage,
+                                  _Out_ size_t *                   ReplayIndex)
+{
+    if (HookedEntry == NULL || ReplayIndex == NULL)
+    {
+        return FALSE;
+    }
+
+    for (size_t i = 0; i < MaximumDegradedReplaySlots; i++)
+    {
+        if (InterlockedCompareExchange(&HookedEntry->DegradedBreakpointReplayStage[i],
+                                       EptHookDegradedReplayClaimed,
+                                       EptHookDegradedReplayNone) == EptHookDegradedReplayNone)
+        {
+            EptHookPublishDegradedReplaySlot(HookedEntry,
+                                             i,
+                                             ExactAddress,
+                                             OwnerProcessId,
+                                             OwnerThreadId,
+                                             InitialStage);
+            *ReplayIndex = i;
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+static VOID
+EptHookClearDegradedReplaySlot(_Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry,
+                               _In_ size_t                      ReplayIndex)
+{
+    InterlockedExchange(&HookedEntry->DegradedBreakpointReplayStage[ReplayIndex],
+                        EptHookDegradedReplayClaimed);
+    HookedEntry->DegradedBreakpointReplayAddress[ReplayIndex]        = NULL64_ZERO;
+    HookedEntry->DegradedBreakpointReplayOwnerProcessId[ReplayIndex] = 0;
+    HookedEntry->DegradedBreakpointReplayOwnerThreadId[ReplayIndex]  = 0;
+    KeMemoryBarrier();
+    InterlockedExchange(&HookedEntry->DegradedBreakpointReplayStage[ReplayIndex],
+                        EptHookDegradedReplayNone);
+}
+
+static VOID
+EptHookArmDegradedMtfReplay(_Inout_ VIRTUAL_MACHINE_STATE * VCpu,
+                            _In_ UINT64                      ExactAddress)
+{
+    VCpu->DegradedBreakpointMtfReplayAddress = ExactAddress;
+    VCpu->DegradedBreakpointMtfReplayPending = TRUE;
+}
+
+static VOID
+EptHookDispatchDegradedCurrentRipBreakpoint(_Inout_ VIRTUAL_MACHINE_STATE * VCpu,
+                                            _In_ UINT64                     ExactAddress)
+{
+    BOOLEAN PreviousInjectionState;
+
+    PreviousInjectionState = VCpu->DegradedHiddenBreakpointInjectionActive;
+    VCpu->DegradedHiddenBreakpointInjectionActive = TRUE;
+    DispatchEventHiddenHookExecCc(VCpu, (PVOID)ExactAddress);
+    VCpu->DegradedHiddenBreakpointInjectionActive = PreviousInjectionState;
+}
+
+static VOID
+EptHookSetDegradedReplayOutcome(_Out_ BOOLEAN *IgnoreReadOrWriteOrExec,
+                                _Out_ BOOLEAN *IsTriggeringPostEventAllowed,
+                                _In_ BOOLEAN   Ignore,
+                                _In_ BOOLEAN   PostAllowed)
+{
+    *IgnoreReadOrWriteOrExec      = Ignore;
+    *IsTriggeringPostEventAllowed = PostAllowed;
+}
+
+static BOOLEAN
+EptHookSuppressDegradedCurrentPass(_Out_ BOOLEAN *IgnoreReadOrWriteOrExec,
+                                  _Out_ BOOLEAN *IsTriggeringPostEventAllowed)
+{
+    EptHookSetDegradedReplayOutcome(IgnoreReadOrWriteOrExec,
+                                    IsTriggeringPostEventAllowed,
+                                    TRUE,
+                                    FALSE);
+    return TRUE;
+}
+
+static BOOLEAN
+EptHookStartDegradedBreakpointStop(_Inout_ VIRTUAL_MACHINE_STATE *  VCpu,
+                                   _Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry,
+                                   _In_ UINT64                      ExactAddress,
+                                   _In_ UINT32                      OwnerProcessId,
+                                   _In_ UINT32                      OwnerThreadId,
+                                   _Out_ BOOLEAN *                  IgnoreReadOrWriteOrExec,
+                                   _Out_ BOOLEAN *                  IsTriggeringPostEventAllowed)
+{
+    size_t BreakpointIndex;
+    size_t ReplayIndex;
+
+    if (!(HookedEntry->IsHiddenBreakpoint &&
+          HookedEntry->IsHiddenBreakpointDegraded &&
+          EptHookFindDegradedHiddenBreakpointIndex(HookedEntry, ExactAddress, &BreakpointIndex)))
+    {
+        return FALSE;
+    }
+
+    if (!EptHookAllocateDegradedReplaySlot(HookedEntry,
+                                          ExactAddress,
+                                          OwnerProcessId,
+                                          OwnerThreadId,
+                                          EptHookDegradedReplayExecutePre,
+                                          &ReplayIndex))
+    {
+        InterlockedIncrement64((volatile LONG64 *)&HookedEntry->DegradedBreakpointReplayOverflowCount);
+        return EptHookSuppressDegradedCurrentPass(IgnoreReadOrWriteOrExec,
+                                                  IsTriggeringPostEventAllowed);
+    }
+
+    EptHookDispatchDegradedCurrentRipBreakpoint(VCpu, ExactAddress);
+    return EptHookSuppressDegradedCurrentPass(IgnoreReadOrWriteOrExec,
+                                              IsTriggeringPostEventAllowed);
+}
+
+static BOOLEAN
+EptHookRunDegradedExecutePre(_Inout_ VIRTUAL_MACHINE_STATE *  VCpu,
+                             _Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry,
+                             _In_ EPT_HOOKS_CONTEXT *         LastContext,
+                             _In_ UINT64                      ExactAddress,
+                             _In_ size_t                      ReplayIndex,
+                             _Out_ BOOLEAN *                  IgnoreReadOrWriteOrExec,
+                             _Out_ BOOLEAN *                  IsTriggeringPostEventAllowed)
+{
+    BOOLEAN ExecutePreIgnored;
+    BOOLEAN ExecutePrePostAllowed = FALSE;
+    UINT32  PreviousFlags         = LastContext->Flags;
+
+    LastContext->Flags = PreviousFlags | EPT_HOOKS_CONTEXT_FLAG_DEGRADED_HIDDEN_BREAKPOINT_REPLAY;
+    ExecutePreIgnored = DispatchEventHiddenHookPageReadWriteExecuteExecutePreEvent(VCpu,
+                                                                                   LastContext,
+                                                                                   &ExecutePrePostAllowed);
+    LastContext->Flags = PreviousFlags;
+
+    if (ExecutePreIgnored)
+    {
+        InterlockedExchange(&HookedEntry->DegradedBreakpointReplayStage[ReplayIndex],
+                            EptHookDegradedReplayAllowOriginal);
+        EptHookSetDegradedReplayOutcome(IgnoreReadOrWriteOrExec,
+                                        IsTriggeringPostEventAllowed,
+                                        TRUE,
+                                        FALSE);
+        return TRUE;
+    }
+
+    EptHookArmDegradedMtfReplay(VCpu, ExactAddress);
+    EptHookClearDegradedReplaySlot(HookedEntry, ReplayIndex);
+    EptHookSetDegradedReplayOutcome(IgnoreReadOrWriteOrExec,
+                                    IsTriggeringPostEventAllowed,
+                                    FALSE,
+                                    ExecutePrePostAllowed);
+    return TRUE;
+}
+
+static BOOLEAN
+EptHookAllowDegradedOriginalReplay(_Inout_ VIRTUAL_MACHINE_STATE *  VCpu,
+                                   _Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry,
+                                   _In_ UINT64                      ExactAddress,
+                                   _In_ size_t                      ReplayIndex,
+                                   _Out_ BOOLEAN *                  IgnoreReadOrWriteOrExec,
+                                   _Out_ BOOLEAN *                  IsTriggeringPostEventAllowed)
+{
+    EptHookArmDegradedMtfReplay(VCpu, ExactAddress);
+    EptHookClearDegradedReplaySlot(HookedEntry, ReplayIndex);
+    EptHookSetDegradedReplayOutcome(IgnoreReadOrWriteOrExec,
+                                    IsTriggeringPostEventAllowed,
+                                    FALSE,
+                                    FALSE);
+    return TRUE;
+}
+
+static BOOLEAN
+EptHookHandleDegradedHiddenBreakpointHit(_Inout_ VIRTUAL_MACHINE_STATE *  VCpu,
+                                         _Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry,
+                                         _In_ EPT_HOOKS_CONTEXT *         LastContext,
+                                         _In_ UINT64                      ExactAddress,
+                                         _Out_ BOOLEAN *                  IgnoreReadOrWriteOrExec,
+                                         _Out_ BOOLEAN *                  IsTriggeringPostEventAllowed)
+{
+    size_t ReplayIndex;
+    UINT32 OwnerProcessId = HANDLE_TO_UINT32(PsGetCurrentProcessId());
+    UINT32 OwnerThreadId  = HANDLE_TO_UINT32(PsGetCurrentThreadId());
+
+    if (!EptHookFindDegradedReplaySlot(HookedEntry,
+                                       ExactAddress,
+                                       OwnerProcessId,
+                                       OwnerThreadId,
+                                       &ReplayIndex))
+    {
+        return EptHookStartDegradedBreakpointStop(VCpu,
+                                                 HookedEntry,
+                                                 ExactAddress,
+                                                 OwnerProcessId,
+                                                 OwnerThreadId,
+                                                 IgnoreReadOrWriteOrExec,
+                                                 IsTriggeringPostEventAllowed);
+    }
+
+    switch (EptHookLoadDegradedReplayStageAcquire(HookedEntry, ReplayIndex))
+    {
+    case EptHookDegradedReplayExecutePre:
+        return EptHookRunDegradedExecutePre(VCpu,
+                                            HookedEntry,
+                                            LastContext,
+                                            ExactAddress,
+                                            ReplayIndex,
+                                            IgnoreReadOrWriteOrExec,
+                                            IsTriggeringPostEventAllowed);
+
+    case EptHookDegradedReplayAllowOriginal:
+        return EptHookAllowDegradedOriginalReplay(VCpu,
+                                                  HookedEntry,
+                                                  ExactAddress,
+                                                  ReplayIndex,
+                                                  IgnoreReadOrWriteOrExec,
+                                                  IsTriggeringPostEventAllowed);
+
+    default:
+        EptHookClearDegradedReplaySlot(HookedEntry, ReplayIndex);
+        return FALSE;
+    }
+}
+
 /**
  * @brief Handles page hooks (trigger events)
  *
@@ -2547,6 +2921,8 @@ EptHookHandleHookedPage(VIRTUAL_MACHINE_STATE *              VCpu,
     LastContext->HookingTag      = HookedEntryDetails->HookingTag;
     LastContext->PhysicalAddress = PhysicalAddress;
     LastContext->VirtualAddress  = ExactAccessedVirtualAddress;
+    LastContext->Flags           = 0;
+    LastContext->Reserved        = 0;
 
     if (!ViolationQualification.EptReadable && ViolationQualification.ReadAccess)
     {
@@ -2607,18 +2983,19 @@ EptHookHandleHookedPage(VIRTUAL_MACHINE_STATE *              VCpu,
         // Trigger the event related to Monitor Execute and Monitor Read & Execute and
         // Monitor Write & Execute and Monitor Read & Write & Execute
         //
-        *IgnoreReadOrWriteOrExec = DispatchEventHiddenHookPageReadWriteExecuteExecutePreEvent(VCpu, LastContext, &IsTriggeringPostEventAllowed);
-
-        if (HookedEntryDetails->IsHiddenBreakpoint && HookedEntryDetails->IsHiddenBreakpointDegraded)
+        if (!(HookedEntryDetails->HasMemoryMonitor &&
+              HookedEntryDetails->MonitorExecuteAccess &&
+              EptHookHandleDegradedHiddenBreakpointHit(VCpu,
+                                                       HookedEntryDetails,
+                                                       LastContext,
+                                                       ExactAccessedVirtualAddress,
+                                                       IgnoreReadOrWriteOrExec,
+                                                       &IsTriggeringPostEventAllowed)))
         {
-            for (size_t i = 0; i < HookedEntryDetails->CountOfBreakpoints; i++)
-            {
-                if (HookedEntryDetails->BreakpointAddresses[i] == ExactAccessedVirtualAddress)
-                {
-                    DispatchEventHiddenHookExecCc(VCpu, (PVOID)ExactAccessedVirtualAddress);
-                    break;
-                }
-            }
+            *IgnoreReadOrWriteOrExec =
+                DispatchEventHiddenHookPageReadWriteExecuteExecutePreEvent(VCpu,
+                                                                           LastContext,
+                                                                           &IsTriggeringPostEventAllowed);
         }
 
         //
@@ -2842,6 +3219,8 @@ EptHookQueryState(PVOID TargetAddress,
         Query->ChangedEntry              = CurrEntity->ChangedEntry.AsUInt;
         Query->HookingTag                = CurrEntity->HookingTag;
         Query->BreakpointCount           = CurrEntity->CountOfBreakpoints;
+        Query->DegradedBreakpointMtfReplayCount = CurrEntity->DegradedBreakpointMtfReplayCount;
+        Query->DegradedBreakpointReplayOverflowCount = CurrEntity->DegradedBreakpointReplayOverflowCount;
         Query->IsHiddenBreakpoint        = CurrEntity->IsHiddenBreakpoint;
         Query->IsHiddenBreakpointDegraded = CurrEntity->IsHiddenBreakpointDegraded;
         Query->HasMemoryMonitor          = CurrEntity->HasMemoryMonitor;
@@ -2939,6 +3318,19 @@ EptHookHandleMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu)
     if (VCpu->MtfEptHookRestorePoint->LastViolation == EPT_HOOKED_LAST_VIOLATION_WRITE)
     {
         EptHookRefreshHiddenBreakpointFakePage(VCpu->MtfEptHookRestorePoint);
+    }
+
+    if (VCpu->DegradedBreakpointMtfReplayPending)
+    {
+        if (VCpu->MtfEptHookRestorePoint->LastViolation == EPT_HOOKED_LAST_VIOLATION_EXEC &&
+            VCpu->DegradedBreakpointMtfReplayAddress ==
+                VCpu->MtfEptHookRestorePoint->LastContextState.VirtualAddress)
+        {
+            InterlockedIncrement64((volatile LONG64 *)&VCpu->MtfEptHookRestorePoint->DegradedBreakpointMtfReplayCount);
+        }
+
+        VCpu->DegradedBreakpointMtfReplayPending = FALSE;
+        VCpu->DegradedBreakpointMtfReplayAddress = NULL64_ZERO;
     }
 
     //

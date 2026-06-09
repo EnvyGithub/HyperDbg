@@ -37,6 +37,15 @@ typedef EPT_PTE       EPT_PML1_ENTRY, *PEPT_PML1_ENTRY;
  *
  */
 #define MaximumHiddenBreakpointsOnPage 40
+#define MaximumDegradedReplaySlots 64
+
+typedef enum _EPT_HOOK_DEGRADED_REPLAY_STATE
+{
+    EptHookDegradedReplayNone       = 0,
+    EptHookDegradedReplayExecutePre = 1,
+    EptHookDegradedReplayAllowOriginal = 2,
+    EptHookDegradedReplayClaimed    = 3,
+} EptHookDegradedReplayState;
 
 //////////////////////////////////////////////////
 //					  Enums		    			//
@@ -302,6 +311,38 @@ typedef struct _EPT_HOOKED_PAGE_DETAIL
     CHAR PreviousBytesOnBreakpointAddresses[MaximumHiddenBreakpointsOnPage];
 
     /**
+     * @brief Per-breakpoint replay stage for degraded hidden breakpoints.
+     */
+    LONG DegradedBreakpointReplayStage[MaximumDegradedReplaySlots];
+
+    /**
+     * @brief Addresses that still need degraded replay even if the debugger
+     * removes the software breakpoint while stopped on the injected #BP.
+     */
+    UINT64 DegradedBreakpointReplayAddress[MaximumDegradedReplaySlots];
+
+    /**
+     * @brief Owner process for each degraded replay slot.
+     */
+    UINT32 DegradedBreakpointReplayOwnerProcessId[MaximumDegradedReplaySlots];
+
+    /**
+     * @brief Owner thread for each degraded replay slot.
+     */
+    UINT32 DegradedBreakpointReplayOwnerThreadId[MaximumDegradedReplaySlots];
+
+    /**
+     * @brief Count of MTF restores that completed the final original-instruction
+     * replay for degraded hidden breakpoints.
+     */
+    UINT64 DegradedBreakpointMtfReplayCount;
+
+    /**
+     * @brief Count of degraded replay slots exhaustion events.
+     */
+    UINT64 DegradedBreakpointReplayOverflowCount;
+
+    /**
      * @brief Count of breakpoints (multiple breakpoints on a single page)
      * this is only used in hidden breakpoints (not hidden detours)
      */
@@ -367,6 +408,9 @@ typedef struct _VIRTUAL_MACHINE_STATE
     NMI_BROADCASTING_STATE  NmiBroadcastingState;                                   // Shows the state of NMI broadcasting
     VM_EXIT_TRANSPARENCY    TransparencyState;                                      // The state of the debugger in transparent-mode
     PEPT_HOOKED_PAGE_DETAIL MtfEptHookRestorePoint;                                 // It shows the detail of the hooked paged that should be restore in MTF vm-exit
+    BOOLEAN                 DegradedHiddenBreakpointInjectionActive;                 // TRUE while degraded replay asks the adapter to inject a current-RIP #BP
+    UINT64                  DegradedBreakpointMtfReplayAddress;                      // Address whose degraded original instruction is being restored by this core's MTF
+    BOOLEAN                 DegradedBreakpointMtfReplayPending;                      // TRUE while this core owns a degraded original-instruction MTF replay
     BOOLEAN                 MtfEptFallbackRestorePending;                           // TRUE when an unknown EPT violation is temporarily allowed for one instruction
     BOOLEAN                 MtfEptFallbackRestoreLargePage;                         // TRUE when the fallback restore target is a PML2 large page
     UINT64                  MtfEptFallbackPhysicalBaseAddress;                      // Physical base address for the fallback MTF restore

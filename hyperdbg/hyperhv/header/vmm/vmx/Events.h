@@ -108,6 +108,9 @@ VOID
 EventInjectBreakpoint();
 
 VOID
+EventInjectBreakpointCurrentRip();
+
+VOID
 EventInjectInterruption(INTERRUPT_TYPE    InterruptionType,
                         EXCEPTION_VECTORS Vector,
                         BOOLEAN           DeliverErrorCode,

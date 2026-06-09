@@ -337,7 +337,11 @@ typedef struct _EPT_HOOKS_CONTEXT
     UINT64 HookingTag; // This is same as the event tag
     UINT64 PhysicalAddress;
     UINT64 VirtualAddress;
+    UINT32 Flags;
+    UINT32 Reserved;
 } EPT_HOOKS_CONTEXT, *PEPT_HOOKS_CONTEXT;
+
+#define EPT_HOOKS_CONTEXT_FLAG_DEGRADED_HIDDEN_BREAKPOINT_REPLAY 0x00000001u
 
 /**
  * @brief Setting details for EPT Hooks (!monitor)

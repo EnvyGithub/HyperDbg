@@ -53,6 +53,17 @@ EventInjectBreakpoint()
 }
 
 /**
+ * @brief Inject #BP for an INT3 located at the current guest RIP.
+ *
+ * @return VOID
+ */
+VOID
+EventInjectBreakpointCurrentRip()
+{
+    EventInjectBreakpoint();
+}
+
+/**
  * @brief Inject #GP to the guest (Event Injection)
  *
  * @return VOID
