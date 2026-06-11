@@ -89,6 +89,7 @@ EptHookRefreshHiddenBreakpointFakePage(_Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEn
     for (size_t i = 0; i < HookedEntry->CountOfBreakpoints; i++)
     {
         UINT64 TargetAddressInFakePageContent;
+        BOOLEAN DuplicateAddress = FALSE;
 
         if (HookedEntry->BreakpointAddresses[i] == NULL64_ZERO)
         {
@@ -96,8 +97,22 @@ EptHookRefreshHiddenBreakpointFakePage(_Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEn
         }
 
         TargetAddressInFakePageContent = EptHookCalcBreakpointOffset((PVOID)HookedEntry->BreakpointAddresses[i], HookedEntry);
-        HookedEntry->PreviousBytesOnBreakpointAddresses[i] = *(CHAR *)TargetAddressInFakePageContent;
-        *(BYTE *)TargetAddressInFakePageContent            = 0xcc;
+        for (size_t j = 0; j < i; j++)
+        {
+            if (HookedEntry->BreakpointAddresses[j] == HookedEntry->BreakpointAddresses[i])
+            {
+                HookedEntry->PreviousBytesOnBreakpointAddresses[i] = HookedEntry->PreviousBytesOnBreakpointAddresses[j];
+                DuplicateAddress                                  = TRUE;
+                break;
+            }
+        }
+
+        if (!DuplicateAddress)
+        {
+            HookedEntry->PreviousBytesOnBreakpointAddresses[i] = *(CHAR *)TargetAddressInFakePageContent;
+        }
+
+        *(BYTE *)TargetAddressInFakePageContent = 0xcc;
     }
 }
 
@@ -682,6 +697,7 @@ EptHookConvertMonitorPageToHiddenBreakpoint(_In_ VIRTUAL_MACHINE_STATE * VCpu,
     TargetAddressInFakePageContent   = EptHookCalcBreakpointOffset(TargetAddress, HookedEntry);
     Cr3OfCurrentProcess              = SwitchToProcessMemoryLayoutByCr3(ProcessCr3);
     MemoryMapperReadMemorySafe((UINT64)VirtualTarget, &HookedEntry->FakePageContents, PAGE_SIZE);
+    HookedEntry->PreviousBytesOnBreakpointAddresses[0] = *(BYTE *)TargetAddressInFakePageContent;
     *(BYTE *)TargetAddressInFakePageContent = 0xcc;
     SwitchToPreviousProcess(Cr3OfCurrentProcess);
 
@@ -1044,6 +1060,7 @@ EptHookCreateHookPage(_Inout_ VIRTUAL_MACHINE_STATE * VCpu,
     // RtlCopyBytes(&HookedPage->FakePageContents, VirtualTarget, PAGE_SIZE);
     //
     MemoryMapperReadMemorySafe((UINT64)VirtualTarget, &HookedPage->FakePageContents, PAGE_SIZE);
+    HookedPage->PreviousBytesOnBreakpointAddresses[0] = *(BYTE *)TargetAddressInFakePageContent;
 
     //
     // we set the breakpoint on the fake page
@@ -1170,6 +1187,7 @@ EptHookUpdateHookPage(_In_ PVOID                       TargetAddress,
 {
     UINT64 TargetAddressInFakePageContent = 0;
     BYTE   OriginalByte                   = 0;
+    BOOLEAN DuplicateAddress              = FALSE;
 
     if (HookedEntry == NULL)
         return FALSE;
@@ -1198,7 +1216,26 @@ EptHookUpdateHookPage(_In_ PVOID                       TargetAddress,
     if (!HookedEntry->IsHiddenBreakpointDegraded)
     {
         TargetAddressInFakePageContent = EptHookCalcBreakpointOffset(TargetAddress, HookedEntry);
-        OriginalByte                   = *(BYTE *)TargetAddressInFakePageContent;
+        for (size_t i = 0; i < HookedEntry->CountOfBreakpoints; i++)
+        {
+            if (HookedEntry->BreakpointAddresses[i] == (UINT64)TargetAddress)
+            {
+                //
+                // A duplicate breakpoint shares the same fake-page 0xcc byte.
+                // Inherit the canonical original byte from the first owner, but
+                // still keep TargetAddressInFakePageContent valid for the
+                // idempotent 0xcc write below.
+                //
+                OriginalByte     = HookedEntry->PreviousBytesOnBreakpointAddresses[i];
+                DuplicateAddress = TRUE;
+                break;
+            }
+        }
+
+        if (!DuplicateAddress)
+        {
+            OriginalByte = *(BYTE *)TargetAddressInFakePageContent;
+        }
     }
 
     //
@@ -3564,8 +3601,10 @@ EptHookUnHookSingleAddressHiddenBreakpoint(PEPT_HOOKED_PAGE_DETAIL             H
     // is the HookedEntry that should be remove (not the first one as it has the
     // correct PreviousByte)
     //
-    for (size_t i = 0; i < HookedEntry->CountOfBreakpoints; i++)
+    for (size_t SearchIndex = HookedEntry->CountOfBreakpoints; SearchIndex > 0; SearchIndex--)
     {
+        size_t i = SearchIndex - 1;
+
         if (HookedEntry->BreakpointAddresses[i] == VirtualAddress)
         {
             //
