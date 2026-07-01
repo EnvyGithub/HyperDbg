@@ -982,6 +982,16 @@ EptAllowHookedPageOneInstructionWithMtf(_Inout_ VIRTUAL_MACHINE_STATE *  VCpu,
                                HookedEntry->OriginalEntry,
                                InveptSingleContext);
 
+    //
+    // Diagnostic-only: see the identical comment at the #BP-driven arm site
+    // in EptCheckAndHandleEptHookBreakpoints. No effect on control flow.
+    //
+    if (VCpu->MtfEptHookRestorePoint != NULL && VCpu->MtfEptHookRestorePoint != HookedEntry)
+    {
+        InterlockedIncrement64((volatile LONG64 *)&VCpu->MtfEptHookRestorePoint->MtfStarvedByOtherHitCount);
+    }
+    InterlockedIncrement64((volatile LONG64 *)&HookedEntry->MtfArmedCount);
+
     VCpu->MtfEptHookRestorePoint = HookedEntry;
     EptResetSameRipViolationGuard(VCpu);
     HvEnableMtfAndChangeExternalInterruptState(VCpu);
@@ -1175,6 +1185,17 @@ EptHandlePageHookExit(VIRTUAL_MACHINE_STATE *              VCpu,
                                                TargetPage,
                                                HookedEntry->OriginalEntry,
                                                InveptSingleContext);
+
+                    //
+                    // Diagnostic-only: see the identical comment at the #BP-driven arm
+                    // site in EptCheckAndHandleEptHookBreakpoints. No effect on control
+                    // flow.
+                    //
+                    if (VCpu->MtfEptHookRestorePoint != NULL && VCpu->MtfEptHookRestorePoint != HookedEntry)
+                    {
+                        InterlockedIncrement64((volatile LONG64 *)&VCpu->MtfEptHookRestorePoint->MtfStarvedByOtherHitCount);
+                    }
+                    InterlockedIncrement64((volatile LONG64 *)&HookedEntry->MtfArmedCount);
 
                     //
                     // Next we have to save the current hooked entry to restore on the next instruction's vm-exit
@@ -1421,6 +1442,18 @@ EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
                                                TargetPage,
                                                HookedEntry->OriginalEntry,
                                                InveptSingleContext);
+
+                    //
+                    // Diagnostic-only: if a previous entry's restore was still pending
+                    // (never reached its own MTF completion) and is about to be
+                    // overwritten by this different entry, count it against the starved
+                    // entry. No effect on control flow.
+                    //
+                    if (VCpu->MtfEptHookRestorePoint != NULL && VCpu->MtfEptHookRestorePoint != HookedEntry)
+                    {
+                        InterlockedIncrement64((volatile LONG64 *)&VCpu->MtfEptHookRestorePoint->MtfStarvedByOtherHitCount);
+                    }
+                    InterlockedIncrement64((volatile LONG64 *)&HookedEntry->MtfArmedCount);
 
                     //
                     // Next we have to save the current hooked entry to restore on the next instruction's vm-exit

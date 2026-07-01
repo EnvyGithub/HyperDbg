@@ -348,6 +348,16 @@ typedef struct _EPT_HOOKED_PAGE_DETAIL
      */
     UINT64 CountOfBreakpoints;
 
+    /**
+     * @brief Diagnostic-only counters for tracing whether this entry's
+     * MTF restore-to-fake-page cycle completes reliably. Non-evicting,
+     * monotonically increasing; read-only from companion-driver via
+     * EptHookQueryState. No effect on hook behavior.
+     */
+    UINT64 MtfArmedCount;
+    UINT64 MtfRestoreCompletedCount;
+    UINT64 MtfStarvedByOtherHitCount;
+
 } EPT_HOOKED_PAGE_DETAIL, *PEPT_HOOKED_PAGE_DETAIL;
 
 /**

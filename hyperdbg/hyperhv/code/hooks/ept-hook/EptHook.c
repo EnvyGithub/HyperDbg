@@ -3414,6 +3414,9 @@ EptHookQueryState(PVOID TargetAddress,
         Query->ChangedExecuteAccess      = CurrEntity->ChangedEntry.ExecuteAccess ? TRUE : FALSE;
         Query->CurrentUsesFakePage       = CurrentPfn == CurrEntity->PhysicalBaseAddressOfFakePageContents ? TRUE : FALSE;
         Query->ChangedUsesFakePage       = CurrEntity->ChangedEntry.PageFrameNumber == CurrEntity->PhysicalBaseAddressOfFakePageContents ? TRUE : FALSE;
+        Query->MtfArmedCount             = CurrEntity->MtfArmedCount;
+        Query->MtfRestoreCompletedCount  = CurrEntity->MtfRestoreCompletedCount;
+        Query->MtfStarvedByOtherHitCount = CurrEntity->MtfStarvedByOtherHitCount;
         break;
     }
 
@@ -3527,6 +3530,12 @@ EptHookHandleMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu)
                                TargetPage,
                                VCpu->MtfEptHookRestorePoint->ChangedEntry,
                                InveptSingleContext);
+
+    //
+    // Diagnostic-only: this entry's restore-to-fake-page cycle completed.
+    // No effect on control flow.
+    //
+    InterlockedIncrement64((volatile LONG64 *)&VCpu->MtfEptHookRestorePoint->MtfRestoreCompletedCount);
 
     //
     // Check to trigger the post event (for events relating the !monitor command

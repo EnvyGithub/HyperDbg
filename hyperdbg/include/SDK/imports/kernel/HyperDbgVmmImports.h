@@ -364,6 +364,9 @@ typedef struct _EPT_HOOK_STATE_QUERY
     BOOLEAN CurrentUsesFakePage;
     BOOLEAN ChangedUsesFakePage;
     UCHAR   Reserved[6];
+    UINT64  MtfArmedCount;
+    UINT64  MtfRestoreCompletedCount;
+    UINT64  MtfStarvedByOtherHitCount;
 } EPT_HOOK_STATE_QUERY, *PEPT_HOOK_STATE_QUERY;
 
 IMPORT_EXPORT_VMM BOOLEAN
