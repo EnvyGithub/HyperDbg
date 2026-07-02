@@ -367,6 +367,9 @@ typedef struct _EPT_HOOK_STATE_QUERY
     UINT64  MtfArmedCount;
     UINT64  MtfRestoreCompletedCount;
     UINT64  MtfStarvedByOtherHitCount;
+    UINT64  MtfArmedByBpCount;
+    UINT64  MtfArmedByRwCount;
+    UINT64  MtfArmedByThresholdCount;
 } EPT_HOOK_STATE_QUERY, *PEPT_HOOK_STATE_QUERY;
 
 IMPORT_EXPORT_VMM BOOLEAN

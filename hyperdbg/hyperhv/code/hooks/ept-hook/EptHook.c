@@ -3417,6 +3417,9 @@ EptHookQueryState(PVOID TargetAddress,
         Query->MtfArmedCount             = CurrEntity->MtfArmedCount;
         Query->MtfRestoreCompletedCount  = CurrEntity->MtfRestoreCompletedCount;
         Query->MtfStarvedByOtherHitCount = CurrEntity->MtfStarvedByOtherHitCount;
+        Query->MtfArmedByBpCount         = CurrEntity->MtfArmedByBpCount;
+        Query->MtfArmedByRwCount         = CurrEntity->MtfArmedByRwCount;
+        Query->MtfArmedByThresholdCount  = CurrEntity->MtfArmedByThresholdCount;
         break;
     }
 

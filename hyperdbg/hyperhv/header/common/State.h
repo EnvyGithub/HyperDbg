@@ -358,6 +358,19 @@ typedef struct _EPT_HOOKED_PAGE_DETAIL
     UINT64 MtfRestoreCompletedCount;
     UINT64 MtfStarvedByOtherHitCount;
 
+    /**
+     * @brief Diagnostic-only per-site breakdown of MtfArmedCount. The three
+     * arm sites (BP-driven exact-address hit, general R/W/X EPT-violation
+     * handling, same-RIP violation-threshold pass-through) share one
+     * MtfArmedCount; these disambiguate which site produced each increment.
+     * MtfArmedByBpCount + MtfArmedByRwCount + MtfArmedByThresholdCount ==
+     * MtfArmedCount. Non-evicting, monotonically increasing; read-only from
+     * companion-driver via EptHookQueryState. No effect on hook behavior.
+     */
+    UINT64 MtfArmedByBpCount;
+    UINT64 MtfArmedByRwCount;
+    UINT64 MtfArmedByThresholdCount;
+
 } EPT_HOOKED_PAGE_DETAIL, *PEPT_HOOKED_PAGE_DETAIL;
 
 /**
