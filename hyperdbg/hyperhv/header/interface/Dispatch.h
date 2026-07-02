@@ -64,7 +64,7 @@ DispatchEventException(VIRTUAL_MACHINE_STATE * VCpu);
 VOID
 DispatchEventExternalInterrupts(VIRTUAL_MACHINE_STATE * VCpu);
 
-VOID
+VMM_CALLBACK_TRIGGERING_EVENT_STATUS_TYPE
 DispatchEventHiddenHookExecCc(VIRTUAL_MACHINE_STATE * VCpu, PVOID Context);
 
 VOID

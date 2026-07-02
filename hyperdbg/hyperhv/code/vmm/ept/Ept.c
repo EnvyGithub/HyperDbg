@@ -1425,6 +1425,8 @@ EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
             {
                 if (HookedEntry->BreakpointAddresses[i] == GuestRip)
                 {
+                    VMM_CALLBACK_TRIGGERING_EVENT_STATUS_TYPE HiddenExecStatus;
+
                     //
                     // We found an address that matches the details, let's trigger the event
                     //
@@ -1433,62 +1435,65 @@ EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
                     // As the context to event trigger, we send the rip
                     // of where triggered this event
                     //
-                    DispatchEventHiddenHookExecCc(VCpu, (PVOID)GuestRip);
+                    HiddenExecStatus = DispatchEventHiddenHookExecCc(VCpu, (PVOID)GuestRip);
                     HookedEntry->LastViolation = EPT_HOOKED_LAST_VIOLATION_EXEC;
 
-                    //
-                    // Pointer to the page entry in the page table
-                    //
-                    TargetPage = EptGetPml1Entry(VCpu->EptPageTable, HookedEntry->PhysicalBaseAddress);
-
-                    //
-                    // Restore to its original entry for one instruction
-                    //
-                    EptHookFlushPendingMtfRestoreOnOverwrite(VCpu, HookedEntry);
-
-                    EptSetPML1AndInvalidateTLB(VCpu,
-                                               TargetPage,
-                                               HookedEntry->OriginalEntry,
-                                               InveptSingleContext);
-
-                    //
-                    // Diagnostic-only: if a previous entry's restore was still pending
-                    // (never reached its own MTF completion) and is about to be
-                    // overwritten by this different entry, count it against the starved
-                    // entry. No effect on control flow.
-                    //
-                    if (VCpu->MtfEptHookRestorePoint != NULL && VCpu->MtfEptHookRestorePoint != HookedEntry)
+                    if (HiddenExecStatus != VMM_CALLBACK_TRIGGERING_EVENT_STATUS_SUCCESSFUL_IGNORE_EVENT)
                     {
-                        InterlockedIncrement64((volatile LONG64 *)&VCpu->MtfEptHookRestorePoint->MtfStarvedByOtherHitCount);
+                        //
+                        // Pointer to the page entry in the page table
+                        //
+                        TargetPage = EptGetPml1Entry(VCpu->EptPageTable, HookedEntry->PhysicalBaseAddress);
+
+                        //
+                        // Restore to its original entry for one instruction
+                        //
+                        EptHookFlushPendingMtfRestoreOnOverwrite(VCpu, HookedEntry);
+
+                        EptSetPML1AndInvalidateTLB(VCpu,
+                                                   TargetPage,
+                                                   HookedEntry->OriginalEntry,
+                                                   InveptSingleContext);
+
+                        //
+                        // Diagnostic-only: if a previous entry's restore was still pending
+                        // (never reached its own MTF completion) and is about to be
+                        // overwritten by this different entry, count it against the starved
+                        // entry. No effect on control flow.
+                        //
+                        if (VCpu->MtfEptHookRestorePoint != NULL && VCpu->MtfEptHookRestorePoint != HookedEntry)
+                        {
+                            InterlockedIncrement64((volatile LONG64 *)&VCpu->MtfEptHookRestorePoint->MtfStarvedByOtherHitCount);
+                        }
+                        InterlockedIncrement64((volatile LONG64 *)&HookedEntry->MtfArmedCount);
+                        InterlockedIncrement64((volatile LONG64 *)&HookedEntry->MtfArmedByBpCount);
+
+                        //
+                        // Next we have to save the current hooked entry to restore on the next instruction's vm-exit
+                        //
+                        VCpu->MtfEptHookRestorePoint = HookedEntry;
+
+                        //
+                        // The following codes are added because we realized if the execution takes long then
+                        // the execution might be switched to another routines, thus, MTF might conclude on
+                        // another routine and we might (and will) trigger the same instruction soon
+                        //
+                        // The following code is not necessary on local debugging (VMI Mode), however, I don't
+                        // know why? just things are not reasonable here for me
+                        // another weird thing that I observed is the fact if you don't touch the routine related
+                        // to the I/O in and out instructions in VMWare then it works perfectly, just touching I/O
+                        // for serial is problematic, it might be a VMWare nested-virtualization bug, however, the
+                        // below approached proved to be work on both Debug Mode and WMI Mode
+                        // If you remove the below codes then when epthook is triggered then the execution stucks
+                        // on the same instruction on where the hooks is triggered, so 'p' and 't' commands for
+                        // steppings won't work
+                        //
+
+                        //
+                        // We have to set Monitor trap flag and give it the HookedEntry to work with
+                        //
+                        HvEnableMtfAndChangeExternalInterruptState(VCpu);
                     }
-                    InterlockedIncrement64((volatile LONG64 *)&HookedEntry->MtfArmedCount);
-                    InterlockedIncrement64((volatile LONG64 *)&HookedEntry->MtfArmedByBpCount);
-
-                    //
-                    // Next we have to save the current hooked entry to restore on the next instruction's vm-exit
-                    //
-                    VCpu->MtfEptHookRestorePoint = HookedEntry;
-
-                    //
-                    // The following codes are added because we realized if the execution takes long then
-                    // the execution might be switched to another routines, thus, MTF might conclude on
-                    // another routine and we might (and will) trigger the same instruction soon
-                    //
-                    // The following code is not necessary on local debugging (VMI Mode), however, I don't
-                    // know why? just things are not reasonable here for me
-                    // another weird thing that I observed is the fact if you don't touch the routine related
-                    // to the I/O in and out instructions in VMWare then it works perfectly, just touching I/O
-                    // for serial is problematic, it might be a VMWare nested-virtualization bug, however, the
-                    // below approached proved to be work on both Debug Mode and WMI Mode
-                    // If you remove the below codes then when epthook is triggered then the execution stucks
-                    // on the same instruction on where the hooks is triggered, so 'p' and 't' commands for
-                    // steppings won't work
-                    //
-
-                    //
-                    // We have to set Monitor trap flag and give it the HookedEntry to work with
-                    //
-                    HvEnableMtfAndChangeExternalInterruptState(VCpu);
 
                     //
                     // Indicate that we handled the ept violation

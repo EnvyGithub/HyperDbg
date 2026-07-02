@@ -1028,9 +1028,9 @@ DispatchEventExternalInterrupts(VIRTUAL_MACHINE_STATE * VCpu)
  *
  * @param VCpu The virtual processor's state
  * @param Context The context of the caller
- * @return VOID
+ * @return VMM_CALLBACK_TRIGGERING_EVENT_STATUS_TYPE
  */
-VOID
+VMM_CALLBACK_TRIGGERING_EVENT_STATUS_TYPE
 DispatchEventHiddenHookExecCc(VIRTUAL_MACHINE_STATE * VCpu, PVOID Context)
 {
     BOOLEAN PostEventTriggerReq = FALSE;
@@ -1047,11 +1047,11 @@ DispatchEventHiddenHookExecCc(VIRTUAL_MACHINE_STATE * VCpu, PVOID Context)
     // Triggering the pre-event (This command only support the
     // pre-event, the post-event doesn't make sense in this command)
     //
-    VmmCallbackTriggerEvents(HIDDEN_HOOK_EXEC_CC,
-                             VMM_CALLBACK_CALLING_STAGE_PRE_EVENT_EMULATION,
-                             Context,
-                             &PostEventTriggerReq,
-                             VCpu->Regs); // it will crash if we pass it NULL
+    return VmmCallbackTriggerEvents(HIDDEN_HOOK_EXEC_CC,
+                                    VMM_CALLBACK_CALLING_STAGE_PRE_EVENT_EMULATION,
+                                    Context,
+                                    &PostEventTriggerReq,
+                                    VCpu->Regs); // it will crash if we pass it NULL
 }
 
 /**
