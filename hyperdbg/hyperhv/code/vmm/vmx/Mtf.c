@@ -79,19 +79,21 @@ MtfHandleVmexit(VIRTUAL_MACHINE_STATE * VCpu)
         //
         // Restore the previous state
         //
-        EptHookHandleMonitorTrapFlag(VCpu);
+        if (EptHookHandleMonitorTrapFlag(VCpu))
+        {
+            //
+            // Set it to NULL
+            //
+            VCpu->MtfEptHookRestorePoint = NULL;
+            VCpu->MtfEptHookRestoreDeferredCount = 0;
+            VCpu->LastEptViolationRip      = NULL64_ZERO;
+            VCpu->SameRipEptViolationCount = 0;
 
-        //
-        // Set it to NULL
-        //
-        VCpu->MtfEptHookRestorePoint = NULL;
-        VCpu->LastEptViolationRip      = NULL64_ZERO;
-        VCpu->SameRipEptViolationCount = 0;
-
-        //
-        // Check for re-enabling external interrupts
-        //
-        HvEnableAndCheckForPreviousExternalInterrupts(VCpu);
+            //
+            // Check for re-enabling external interrupts
+            //
+            HvEnableAndCheckForPreviousExternalInterrupts(VCpu);
+        }
     }
 
     //

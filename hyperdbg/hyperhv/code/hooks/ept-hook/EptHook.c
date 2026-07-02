@@ -15,6 +15,7 @@
 
 #define HDBGWB_COMPANION_MONITOR_TAG_PREFIX 0x4A31000000000000ui64
 #define HDBGWB_COMPANION_MONITOR_TAG_PREFIX_MASK 0xFFFF000000000000ui64
+#define HDBGWB_MTF_RESTORE_MAX_DEFER_COUNT 16u
 
 static BOOLEAN
 EptHookIsCompanionRefreshableMonitorTag(_In_ UINT64 Tag)
@@ -3423,6 +3424,8 @@ EptHookQueryState(PVOID TargetAddress,
         Query->MtfLastExitRip            = CurrEntity->MtfLastExitRip;
         Query->MtfLastContextVirtualAddress =
             CurrEntity->MtfLastContextVirtualAddress;
+        Query->MtfRestoreDeferredCount   = CurrEntity->MtfRestoreDeferredCount;
+        Query->MtfLastDeferredExitRip    = CurrEntity->MtfLastDeferredExitRip;
         break;
     }
 
@@ -3588,18 +3591,60 @@ EptHookFlushPendingMtfRestoreOnOverwrite(VIRTUAL_MACHINE_STATE * VCpu,
     (VOID)EptHookRestoreMtfRestorePointToChangedEntry(VCpu, VCpu->MtfEptHookRestorePoint);
 }
 
+static BOOLEAN
+EptHookShouldDeferHiddenBreakpointMtfRestore(_In_ VIRTUAL_MACHINE_STATE *       VCpu,
+                                             _In_ EPT_HOOKED_PAGE_DETAIL const * HookedEntry)
+{
+    UINT64 ExitRip;
+    UINT64 ContextVa;
+
+    if (VCpu == NULL || HookedEntry == NULL)
+    {
+        return FALSE;
+    }
+
+    if (!HookedEntry->IsHiddenBreakpoint ||
+        HookedEntry->LastViolation != EPT_HOOKED_LAST_VIOLATION_EXEC)
+    {
+        return FALSE;
+    }
+
+    if (VCpu->MtfEptHookRestoreDeferredCount >= HDBGWB_MTF_RESTORE_MAX_DEFER_COUNT)
+    {
+        return FALSE;
+    }
+
+    ExitRip   = VCpu->LastVmexitRip;
+    ContextVa = HookedEntry->LastContextState.VirtualAddress;
+    if (ExitRip == NULL64_ZERO || ContextVa == NULL64_ZERO)
+    {
+        return FALSE;
+    }
+
+    return (UINT64)PAGE_ALIGN(ExitRip) != (UINT64)PAGE_ALIGN(ContextVa);
+}
+
 /**
  * @brief Handle vm-exits for Monitor Trap Flag to restore previous state
  *
  * @param VCpu The virtual processor's state
- * @return VOID
+ * @return TRUE if the hooked page was restored, FALSE if restore remains pending
  */
-VOID
+BOOLEAN
 EptHookHandleMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu)
 {
     VCpu->MtfEptHookRestorePoint->MtfLastExitRip = VCpu->LastVmexitRip;
     VCpu->MtfEptHookRestorePoint->MtfLastContextVirtualAddress =
         VCpu->MtfEptHookRestorePoint->LastContextState.VirtualAddress;
+
+    if (EptHookShouldDeferHiddenBreakpointMtfRestore(VCpu, VCpu->MtfEptHookRestorePoint))
+    {
+        VCpu->MtfEptHookRestorePoint->MtfLastDeferredExitRip = VCpu->LastVmexitRip;
+        InterlockedIncrement64((volatile LONG64 *)&VCpu->MtfEptHookRestorePoint->MtfRestoreDeferredCount);
+        VCpu->MtfEptHookRestoreDeferredCount++;
+        VCpu->IgnoreMtfUnset = TRUE;
+        return FALSE;
+    }
 
     if (VCpu->MtfEptHookRestorePoint->LastViolation == EPT_HOOKED_LAST_VIOLATION_WRITE)
     {
@@ -3658,6 +3703,8 @@ EptHookHandleMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu)
     // (we call it here, because this callback might change the EPTP entries and invalidate EPTP)
     //
     VmmCallbackRestoreEptState(VCpu->CoreId);
+
+    return TRUE;
 }
 
 /**

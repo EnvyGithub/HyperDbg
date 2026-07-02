@@ -438,7 +438,7 @@ EptHookFlushPendingMtfRestoreOnOverwrite(VIRTUAL_MACHINE_STATE * VCpu,
  * @brief Handle vm-exits for Monitor Trap Flag to restore previous state
  *
  * @param VCpu The virtual processor's state
- * @return VOID
+ * @return TRUE if the hooked page was restored, FALSE if restore remains pending
  */
-VOID
+BOOLEAN
 EptHookHandleMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu);

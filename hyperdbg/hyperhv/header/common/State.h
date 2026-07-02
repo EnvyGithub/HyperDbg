@@ -380,6 +380,8 @@ typedef struct _EPT_HOOKED_PAGE_DETAIL
      */
     UINT64 MtfLastExitRip;
     UINT64 MtfLastContextVirtualAddress;
+    UINT64 MtfRestoreDeferredCount;
+    UINT64 MtfLastDeferredExitRip;
 
 } EPT_HOOKED_PAGE_DETAIL, *PEPT_HOOKED_PAGE_DETAIL;
 
@@ -441,6 +443,7 @@ typedef struct _VIRTUAL_MACHINE_STATE
     NMI_BROADCASTING_STATE  NmiBroadcastingState;                                   // Shows the state of NMI broadcasting
     VM_EXIT_TRANSPARENCY    TransparencyState;                                      // The state of the debugger in transparent-mode
     PEPT_HOOKED_PAGE_DETAIL MtfEptHookRestorePoint;                                 // It shows the detail of the hooked paged that should be restore in MTF vm-exit
+    UINT32                  MtfEptHookRestoreDeferredCount;                         // Count of consecutive off-page MTF deferrals for the current restore point
     BOOLEAN                 DegradedHiddenBreakpointInjectionActive;                 // TRUE while degraded replay asks the adapter to inject a current-RIP #BP
     UINT64                  DegradedBreakpointMtfReplayAddress;                      // Address whose degraded original instruction is being restored by this core's MTF
     BOOLEAN                 DegradedBreakpointMtfReplayPending;                      // TRUE while this core owns a degraded original-instruction MTF replay

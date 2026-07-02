@@ -372,6 +372,8 @@ typedef struct _EPT_HOOK_STATE_QUERY
     UINT64  MtfArmedByThresholdCount;
     UINT64  MtfLastExitRip;
     UINT64  MtfLastContextVirtualAddress;
+    UINT64  MtfRestoreDeferredCount;
+    UINT64  MtfLastDeferredExitRip;
 } EPT_HOOK_STATE_QUERY, *PEPT_HOOK_STATE_QUERY;
 
 IMPORT_EXPORT_VMM BOOLEAN
