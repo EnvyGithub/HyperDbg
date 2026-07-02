@@ -16,11 +16,25 @@
 #define HDBGWB_COMPANION_MONITOR_TAG_PREFIX 0x4A31000000000000ui64
 #define HDBGWB_COMPANION_MONITOR_TAG_PREFIX_MASK 0xFFFF000000000000ui64
 #define HDBGWB_MTF_RESTORE_MAX_DEFER_COUNT 16u
+#define HDBGWB_CANONICAL_USER_TOP 0x0000800000000000ui64
+#define HDBGWB_CANONICAL_KERNEL_BASE 0xFFFF800000000000ui64
 
 static BOOLEAN
 EptHookIsCompanionRefreshableMonitorTag(_In_ UINT64 Tag)
 {
     return (Tag & HDBGWB_COMPANION_MONITOR_TAG_PREFIX_MASK) == HDBGWB_COMPANION_MONITOR_TAG_PREFIX;
+}
+
+static BOOLEAN
+EptHookIsUserCanonicalAddress(_In_ UINT64 Address)
+{
+    return Address != NULL64_ZERO && Address < HDBGWB_CANONICAL_USER_TOP;
+}
+
+static BOOLEAN
+EptHookIsKernelCanonicalAddress(_In_ UINT64 Address)
+{
+    return Address >= HDBGWB_CANONICAL_KERNEL_BASE;
 }
 
 /**
@@ -3609,11 +3623,6 @@ EptHookShouldDeferHiddenBreakpointMtfRestore(_In_ VIRTUAL_MACHINE_STATE *       
         return FALSE;
     }
 
-    if (VCpu->MtfEptHookRestoreDeferredCount >= HDBGWB_MTF_RESTORE_MAX_DEFER_COUNT)
-    {
-        return FALSE;
-    }
-
     ExitRip   = VCpu->LastVmexitRip;
     ContextVa = HookedEntry->LastContextState.VirtualAddress;
     if (ExitRip == NULL64_ZERO || ContextVa == NULL64_ZERO)
@@ -3621,7 +3630,17 @@ EptHookShouldDeferHiddenBreakpointMtfRestore(_In_ VIRTUAL_MACHINE_STATE *       
         return FALSE;
     }
 
-    return (UINT64)PAGE_ALIGN(ExitRip) != (UINT64)PAGE_ALIGN(ContextVa);
+    if ((UINT64)PAGE_ALIGN(ExitRip) == (UINT64)PAGE_ALIGN(ContextVa))
+    {
+        return FALSE;
+    }
+
+    if (EptHookIsUserCanonicalAddress(ContextVa) && EptHookIsKernelCanonicalAddress(ExitRip))
+    {
+        return TRUE;
+    }
+
+    return VCpu->MtfEptHookRestoreDeferredCount < HDBGWB_MTF_RESTORE_MAX_DEFER_COUNT;
 }
 
 /**
@@ -3641,7 +3660,11 @@ EptHookHandleMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu)
     {
         VCpu->MtfEptHookRestorePoint->MtfLastDeferredExitRip = VCpu->LastVmexitRip;
         InterlockedIncrement64((volatile LONG64 *)&VCpu->MtfEptHookRestorePoint->MtfRestoreDeferredCount);
-        VCpu->MtfEptHookRestoreDeferredCount++;
+        if (!(EptHookIsUserCanonicalAddress(VCpu->MtfEptHookRestorePoint->LastContextState.VirtualAddress) &&
+              EptHookIsKernelCanonicalAddress(VCpu->LastVmexitRip)))
+        {
+            VCpu->MtfEptHookRestoreDeferredCount++;
+        }
         VCpu->IgnoreMtfUnset = TRUE;
         return FALSE;
     }
