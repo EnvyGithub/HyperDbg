@@ -349,10 +349,13 @@ typedef struct _EPT_HOOKED_PAGE_DETAIL
     UINT64 CountOfBreakpoints;
 
     /**
-     * @brief Diagnostic-only counters for tracing whether this entry's
-     * MTF restore-to-fake-page cycle completes reliably. Non-evicting,
-     * monotonically increasing; read-only from companion-driver via
-     * EptHookQueryState. No effect on hook behavior.
+     * @brief Diagnostic-only counters for tracing this entry's MTF
+     * restore-to-changed-entry lifecycle. MtfRestoreCompletedCount includes
+     * normal MTF vm-exit restores and downstream overwrite-flush restores.
+     * MtfStarvedByOtherHitCount counts attempted overwrite windows ("would
+     * starve without the flush"), not necessarily a permanently lost restore.
+     * Non-evicting, monotonically increasing; read-only from companion-driver
+     * via EptHookQueryState.
      */
     UINT64 MtfArmedCount;
     UINT64 MtfRestoreCompletedCount;

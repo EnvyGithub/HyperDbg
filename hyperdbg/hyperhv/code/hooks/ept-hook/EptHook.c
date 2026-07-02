@@ -3493,15 +3493,76 @@ EptHookUnHookSingleAddressDetoursAndMonitor(PEPT_HOOKED_PAGE_DETAIL             
 }
 
 /**
- * @brief Handle vm-exits for Monitor Trap Flag to restore previous state
+ * @brief Restore a hooked entry to its changed EPT entry on the current VCPU
  *
  * @param VCpu The virtual processor's state
+ * @param HookedEntry The pending MTF restore point
+ * @return BOOLEAN TRUE when the per-VCPU EPT entry was restored
+ */
+static BOOLEAN
+EptHookRestoreMtfRestorePointToChangedEntry(VIRTUAL_MACHINE_STATE *       VCpu,
+                                            EPT_HOOKED_PAGE_DETAIL *      HookedEntry)
+{
+    PEPT_PML1_ENTRY TargetPage;
+
+    if (VCpu == NULL || HookedEntry == NULL)
+    {
+        return FALSE;
+    }
+
+    //
+    // Pointer to the page entry in the page table
+    //
+    TargetPage = EptGetPml1Entry(VCpu->EptPageTable, HookedEntry->PhysicalBaseAddress);
+    if (TargetPage == NULL)
+    {
+        return FALSE;
+    }
+
+    //
+    // restore the hooked state
+    //
+    EptSetPML1AndInvalidateTLB(VCpu,
+                               TargetPage,
+                               HookedEntry->ChangedEntry,
+                               InveptSingleContext);
+
+    //
+    // This entry's restore-to-fake-page cycle completed.
+    //
+    InterlockedIncrement64((volatile LONG64 *)&HookedEntry->MtfRestoreCompletedCount);
+    return TRUE;
+}
+
+/**
+ * @brief Flush a pending MTF restore before another hooked entry overwrites it
+ *
+ * @details [DOWNSTREAM] MtfEptHookRestorePoint is per-VCPU and single-slot. When
+ * another hooked entry arms MTF before the previous slot reaches its own MTF
+ * vm-exit, the previous entry would otherwise stay mapped to OriginalEntry on
+ * this VCPU. Flush only the EPT restore side effect. It deliberately does not
+ * synthesize the overwritten entry's monitor post-event; today that post-event
+ * is already lost in this overwrite path, and preserving one post-event per
+ * real MTF vm-exit is safer than dispatching extra events from this rescue path.
+ *
+ * @param VCpu The virtual processor's state
+ * @param NextHookedEntry The entry that is about to own the MTF restore point
  * @return VOID
  */
 VOID
-EptHookHandleMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu)
+EptHookFlushPendingMtfRestoreOnOverwrite(VIRTUAL_MACHINE_STATE * VCpu,
+                                         EPT_HOOKED_PAGE_DETAIL * NextHookedEntry)
 {
-    PVOID TargetPage;
+    if (VCpu == NULL || NextHookedEntry == NULL)
+    {
+        return;
+    }
+
+    if (VCpu->MtfEptHookRestorePoint == NULL ||
+        VCpu->MtfEptHookRestorePoint == NextHookedEntry)
+    {
+        return;
+    }
 
     if (VCpu->MtfEptHookRestorePoint->LastViolation == EPT_HOOKED_LAST_VIOLATION_WRITE)
     {
@@ -3521,24 +3582,37 @@ EptHookHandleMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu)
         VCpu->DegradedBreakpointMtfReplayAddress = NULL64_ZERO;
     }
 
-    //
-    // Pointer to the page entry in the page table
-    //
-    TargetPage = EptGetPml1Entry(VCpu->EptPageTable, VCpu->MtfEptHookRestorePoint->PhysicalBaseAddress);
+    (VOID)EptHookRestoreMtfRestorePointToChangedEntry(VCpu, VCpu->MtfEptHookRestorePoint);
+}
 
-    //
-    // restore the hooked state
-    //
-    EptSetPML1AndInvalidateTLB(VCpu,
-                               TargetPage,
-                               VCpu->MtfEptHookRestorePoint->ChangedEntry,
-                               InveptSingleContext);
+/**
+ * @brief Handle vm-exits for Monitor Trap Flag to restore previous state
+ *
+ * @param VCpu The virtual processor's state
+ * @return VOID
+ */
+VOID
+EptHookHandleMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu)
+{
+    if (VCpu->MtfEptHookRestorePoint->LastViolation == EPT_HOOKED_LAST_VIOLATION_WRITE)
+    {
+        EptHookRefreshHiddenBreakpointFakePage(VCpu->MtfEptHookRestorePoint);
+    }
 
-    //
-    // Diagnostic-only: this entry's restore-to-fake-page cycle completed.
-    // No effect on control flow.
-    //
-    InterlockedIncrement64((volatile LONG64 *)&VCpu->MtfEptHookRestorePoint->MtfRestoreCompletedCount);
+    if (VCpu->DegradedBreakpointMtfReplayPending)
+    {
+        if (VCpu->MtfEptHookRestorePoint->LastViolation == EPT_HOOKED_LAST_VIOLATION_EXEC &&
+            VCpu->DegradedBreakpointMtfReplayAddress ==
+                VCpu->MtfEptHookRestorePoint->LastContextState.VirtualAddress)
+        {
+            InterlockedIncrement64((volatile LONG64 *)&VCpu->MtfEptHookRestorePoint->DegradedBreakpointMtfReplayCount);
+        }
+
+        VCpu->DegradedBreakpointMtfReplayPending = FALSE;
+        VCpu->DegradedBreakpointMtfReplayAddress = NULL64_ZERO;
+    }
+
+    (VOID)EptHookRestoreMtfRestorePointToChangedEntry(VCpu, VCpu->MtfEptHookRestorePoint);
 
     //
     // Check to trigger the post event (for events relating the !monitor command

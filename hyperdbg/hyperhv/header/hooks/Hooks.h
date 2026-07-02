@@ -424,6 +424,17 @@ EptHookModifyPageWriteState(VIRTUAL_MACHINE_STATE * VCpu,
                             BOOLEAN                 IsUnset);
 
 /**
+ * @brief Restore a pending MTF EPT hook restore before arming another entry
+ *
+ * @param VCpu The virtual processor's state
+ * @param NextHookedEntry The entry that is about to own the MTF restore point
+ * @return VOID
+ */
+VOID
+EptHookFlushPendingMtfRestoreOnOverwrite(VIRTUAL_MACHINE_STATE * VCpu,
+                                         EPT_HOOKED_PAGE_DETAIL * NextHookedEntry);
+
+/**
  * @brief Handle vm-exits for Monitor Trap Flag to restore previous state
  *
  * @param VCpu The virtual processor's state

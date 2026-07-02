@@ -977,6 +977,8 @@ EptAllowHookedPageOneInstructionWithMtf(_Inout_ VIRTUAL_MACHINE_STATE *  VCpu,
         return FALSE;
     }
 
+    EptHookFlushPendingMtfRestoreOnOverwrite(VCpu, HookedEntry);
+
     EptSetPML1AndInvalidateTLB(VCpu,
                                TargetPage,
                                HookedEntry->OriginalEntry,
@@ -1182,6 +1184,8 @@ EptHandlePageHookExit(VIRTUAL_MACHINE_STATE *              VCpu,
                     //
                     // Restore to its original entry for one instruction
                     //
+                    EptHookFlushPendingMtfRestoreOnOverwrite(VCpu, HookedEntry);
+
                     EptSetPML1AndInvalidateTLB(VCpu,
                                                TargetPage,
                                                HookedEntry->OriginalEntry,
@@ -1440,6 +1444,8 @@ EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
                     //
                     // Restore to its original entry for one instruction
                     //
+                    EptHookFlushPendingMtfRestoreOnOverwrite(VCpu, HookedEntry);
+
                     EptSetPML1AndInvalidateTLB(VCpu,
                                                TargetPage,
                                                HookedEntry->OriginalEntry,
