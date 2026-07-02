@@ -3420,6 +3420,9 @@ EptHookQueryState(PVOID TargetAddress,
         Query->MtfArmedByBpCount         = CurrEntity->MtfArmedByBpCount;
         Query->MtfArmedByRwCount         = CurrEntity->MtfArmedByRwCount;
         Query->MtfArmedByThresholdCount  = CurrEntity->MtfArmedByThresholdCount;
+        Query->MtfLastExitRip            = CurrEntity->MtfLastExitRip;
+        Query->MtfLastContextVirtualAddress =
+            CurrEntity->MtfLastContextVirtualAddress;
         break;
     }
 
@@ -3594,6 +3597,10 @@ EptHookFlushPendingMtfRestoreOnOverwrite(VIRTUAL_MACHINE_STATE * VCpu,
 VOID
 EptHookHandleMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu)
 {
+    VCpu->MtfEptHookRestorePoint->MtfLastExitRip = VCpu->LastVmexitRip;
+    VCpu->MtfEptHookRestorePoint->MtfLastContextVirtualAddress =
+        VCpu->MtfEptHookRestorePoint->LastContextState.VirtualAddress;
+
     if (VCpu->MtfEptHookRestorePoint->LastViolation == EPT_HOOKED_LAST_VIOLATION_WRITE)
     {
         EptHookRefreshHiddenBreakpointFakePage(VCpu->MtfEptHookRestorePoint);

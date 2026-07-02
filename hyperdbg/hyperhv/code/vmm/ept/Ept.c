@@ -1435,6 +1435,9 @@ EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
                     // As the context to event trigger, we send the rip
                     // of where triggered this event
                     //
+                    RtlZeroMemory(&HookedEntry->LastContextState, sizeof(HookedEntry->LastContextState));
+                    HookedEntry->LastContextState.HookingTag     = HookedEntry->HookingTag;
+                    HookedEntry->LastContextState.VirtualAddress = GuestRip;
                     HiddenExecStatus = DispatchEventHiddenHookExecCc(VCpu, (PVOID)GuestRip);
                     HookedEntry->LastViolation = EPT_HOOKED_LAST_VIOLATION_EXEC;
 

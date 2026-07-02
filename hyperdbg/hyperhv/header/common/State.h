@@ -374,6 +374,13 @@ typedef struct _EPT_HOOKED_PAGE_DETAIL
     UINT64 MtfArmedByRwCount;
     UINT64 MtfArmedByThresholdCount;
 
+    /**
+     * @brief Last MTF restore vm-exit RIP and replay context VA. Diagnostic-only
+     * latch used to distinguish same-RIP replay stalls from later pipeline bugs.
+     */
+    UINT64 MtfLastExitRip;
+    UINT64 MtfLastContextVirtualAddress;
+
 } EPT_HOOKED_PAGE_DETAIL, *PEPT_HOOKED_PAGE_DETAIL;
 
 /**
