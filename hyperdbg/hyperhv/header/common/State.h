@@ -38,6 +38,7 @@ typedef EPT_PTE       EPT_PML1_ENTRY, *PEPT_PML1_ENTRY;
  */
 #define MaximumHiddenBreakpointsOnPage 40
 #define MaximumDegradedReplaySlots 64
+#define MaximumMtfPendingRestoreSlots 16
 
 typedef enum _EPT_HOOK_DEGRADED_REPLAY_STATE
 {
@@ -386,6 +387,19 @@ typedef struct _EPT_HOOKED_PAGE_DETAIL
 } EPT_HOOKED_PAGE_DETAIL, *PEPT_HOOKED_PAGE_DETAIL;
 
 /**
+ * @brief Per-vCPU EPT restore points that were displaced by another hook before
+ * their original instruction reached the matching same-page MTF exit.
+ */
+typedef struct _EPT_HOOK_PENDING_MTF_RESTORE
+{
+    PEPT_HOOKED_PAGE_DETAIL HookedEntry;
+    UINT64                  ContextVirtualAddress;
+    UINT64                  GuestCr3;
+    UINT32                  DeferredCount;
+    UINT32                  Reserved;
+} EPT_HOOK_PENDING_MTF_RESTORE, *PEPT_HOOK_PENDING_MTF_RESTORE;
+
+/**
  * @brief The status of NMI broadcasting in VMX
  *
  */
@@ -443,7 +457,10 @@ typedef struct _VIRTUAL_MACHINE_STATE
     NMI_BROADCASTING_STATE  NmiBroadcastingState;                                   // Shows the state of NMI broadcasting
     VM_EXIT_TRANSPARENCY    TransparencyState;                                      // The state of the debugger in transparent-mode
     PEPT_HOOKED_PAGE_DETAIL MtfEptHookRestorePoint;                                 // It shows the detail of the hooked paged that should be restore in MTF vm-exit
+    UINT64                  MtfEptHookRestoreCr3;                                   // Guest CR3 captured when the current EPT MTF restore point was armed
     UINT32                  MtfEptHookRestoreDeferredCount;                         // Count of consecutive off-page MTF deferrals for the current restore point
+    EPT_HOOK_PENDING_MTF_RESTORE MtfEptHookPendingRestoreSlots[MaximumMtfPendingRestoreSlots]; // Displaced restore points waiting for their owning instruction to retire
+    UINT64                  MtfEptHookPendingRestoreOverflowCount;                   // Count of pending restore slot exhaustion events
     BOOLEAN                 DegradedHiddenBreakpointInjectionActive;                 // TRUE while degraded replay asks the adapter to inject a current-RIP #BP
     UINT64                  DegradedBreakpointMtfReplayAddress;                      // Address whose degraded original instruction is being restored by this core's MTF
     BOOLEAN                 DegradedBreakpointMtfReplayPending;                      // TRUE while this core owns a degraded original-instruction MTF replay

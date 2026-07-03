@@ -16,11 +16,19 @@
 #define HDBGWB_COMPANION_MONITOR_TAG_PREFIX 0x4A31000000000000ui64
 #define HDBGWB_COMPANION_MONITOR_TAG_PREFIX_MASK 0xFFFF000000000000ui64
 #define HDBGWB_MTF_RESTORE_MAX_DEFER_COUNT 16u
+#define HDBGWB_MTF_PENDING_RESTORE_MAX_DEFER_COUNT 16u
+#define HDBGWB_CANONICAL_USER_TOP 0x0000800000000000ui64
 
 static BOOLEAN
 EptHookIsCompanionRefreshableMonitorTag(_In_ UINT64 Tag)
 {
     return (Tag & HDBGWB_COMPANION_MONITOR_TAG_PREFIX_MASK) == HDBGWB_COMPANION_MONITOR_TAG_PREFIX;
+}
+
+static BOOLEAN
+EptHookIsUserCanonicalAddress(_In_ UINT64 Address)
+{
+    return Address != NULL64_ZERO && Address < HDBGWB_CANONICAL_USER_TOP;
 }
 
 /**
@@ -3545,16 +3553,87 @@ EptHookRestoreMtfRestorePointToChangedEntry(VIRTUAL_MACHINE_STATE *       VCpu,
  *
  * @details [DOWNSTREAM] MtfEptHookRestorePoint is per-VCPU and single-slot. When
  * another hooked entry arms MTF before the previous slot reaches its own MTF
- * vm-exit, the previous entry would otherwise stay mapped to OriginalEntry on
- * this VCPU. Flush only the EPT restore side effect. It deliberately does not
- * synthesize the overwritten entry's monitor post-event; today that post-event
- * is already lost in this overwrite path, and preserving one post-event per
- * real MTF vm-exit is safer than dispatching extra events from this rescue path.
+ * vm-exit, the previous entry would otherwise lose its restore owner. Hidden
+ * breakpoint user-mode replay windows cannot be flushed immediately: the guest
+ * may still be in kernel/debugger code before the faulting user instruction has
+ * retired. Queue those displaced restores and keep MTF armed until the matching
+ * user page is observed; keep the old immediate flush for other restore kinds.
+ *
+ * It deliberately does not synthesize the overwritten entry's monitor
+ * post-event; today that post-event is already lost in this overwrite path, and
+ * preserving one post-event per real MTF vm-exit is safer than dispatching extra
+ * events from this rescue path.
  *
  * @param VCpu The virtual processor's state
  * @param NextHookedEntry The entry that is about to own the MTF restore point
  * @return VOID
  */
+static BOOLEAN
+EptHookCanQueuePendingMtfRestoreOnOverwrite(_In_ VIRTUAL_MACHINE_STATE const *       VCpu,
+                                            _In_ EPT_HOOKED_PAGE_DETAIL const * HookedEntry)
+{
+    if (VCpu == NULL || HookedEntry == NULL)
+    {
+        return FALSE;
+    }
+
+    if (!HookedEntry->IsHiddenBreakpoint ||
+        HookedEntry->IsHiddenBreakpointDegraded ||
+        HookedEntry->LastViolation != EPT_HOOKED_LAST_VIOLATION_EXEC)
+    {
+        return FALSE;
+    }
+
+    if (VCpu->DegradedBreakpointMtfReplayPending)
+    {
+        return FALSE;
+    }
+
+    return EptHookIsUserCanonicalAddress(HookedEntry->LastContextState.VirtualAddress);
+}
+
+static BOOLEAN
+EptHookQueuePendingMtfRestoreOnOverwrite(_Inout_ VIRTUAL_MACHINE_STATE *  VCpu,
+                                         _In_ EPT_HOOKED_PAGE_DETAIL *     HookedEntry)
+{
+    PEPT_HOOK_PENDING_MTF_RESTORE EmptySlot = NULL;
+
+    if (!EptHookCanQueuePendingMtfRestoreOnOverwrite(VCpu, HookedEntry))
+    {
+        return FALSE;
+    }
+
+    for (size_t i = 0; i < MaximumMtfPendingRestoreSlots; i++)
+    {
+        PEPT_HOOK_PENDING_MTF_RESTORE Slot = &VCpu->MtfEptHookPendingRestoreSlots[i];
+        if (Slot->HookedEntry == HookedEntry)
+        {
+            Slot->ContextVirtualAddress = HookedEntry->LastContextState.VirtualAddress;
+            Slot->GuestCr3              = VCpu->MtfEptHookRestoreCr3;
+            Slot->DeferredCount         = 0;
+            return TRUE;
+        }
+
+        if (EmptySlot == NULL && Slot->HookedEntry == NULL)
+        {
+            EmptySlot = Slot;
+        }
+    }
+
+    if (EmptySlot == NULL)
+    {
+        InterlockedIncrement64((volatile LONG64 *)&VCpu->MtfEptHookPendingRestoreOverflowCount);
+        return FALSE;
+    }
+
+    EmptySlot->ContextVirtualAddress = HookedEntry->LastContextState.VirtualAddress;
+    EmptySlot->GuestCr3              = VCpu->MtfEptHookRestoreCr3;
+    EmptySlot->DeferredCount         = 0;
+    EmptySlot->Reserved              = 0;
+    EmptySlot->HookedEntry           = HookedEntry;
+    return TRUE;
+}
+
 VOID
 EptHookFlushPendingMtfRestoreOnOverwrite(VIRTUAL_MACHINE_STATE * VCpu,
                                          EPT_HOOKED_PAGE_DETAIL * NextHookedEntry)
@@ -3566,6 +3645,11 @@ EptHookFlushPendingMtfRestoreOnOverwrite(VIRTUAL_MACHINE_STATE * VCpu,
 
     if (VCpu->MtfEptHookRestorePoint == NULL ||
         VCpu->MtfEptHookRestorePoint == NextHookedEntry)
+    {
+        return;
+    }
+
+    if (EptHookQueuePendingMtfRestoreOnOverwrite(VCpu, VCpu->MtfEptHookRestorePoint))
     {
         return;
     }
@@ -3592,12 +3676,40 @@ EptHookFlushPendingMtfRestoreOnOverwrite(VIRTUAL_MACHINE_STATE * VCpu,
 }
 
 static BOOLEAN
+EptHookShouldDeferMtfRestoreForContext(_In_ VIRTUAL_MACHINE_STATE * VCpu,
+                                       _In_ UINT64                  ContextVa,
+                                       _In_ UINT64                  ContextCr3,
+                                       _In_ UINT32                  DeferredCount,
+                                       _In_ UINT32                  MaxDeferredCount)
+{
+    UINT64 ExitRip;
+    UINT64 CurrentCr3;
+
+    if (VCpu == NULL)
+    {
+        return FALSE;
+    }
+
+    ExitRip = VCpu->LastVmexitRip;
+    if (ExitRip == NULL64_ZERO || ContextVa == NULL64_ZERO)
+    {
+        return FALSE;
+    }
+
+    CurrentCr3 = GetGuestCr3();
+    if ((UINT64)PAGE_ALIGN(ExitRip) == (UINT64)PAGE_ALIGN(ContextVa) &&
+        (ContextCr3 == NULL64_ZERO || CurrentCr3 == ContextCr3))
+    {
+        return FALSE;
+    }
+
+    return DeferredCount < MaxDeferredCount;
+}
+
+static BOOLEAN
 EptHookShouldDeferHiddenBreakpointMtfRestore(_In_ VIRTUAL_MACHINE_STATE *       VCpu,
                                              _In_ EPT_HOOKED_PAGE_DETAIL const * HookedEntry)
 {
-    UINT64 ExitRip;
-    UINT64 ContextVa;
-
     if (VCpu == NULL || HookedEntry == NULL)
     {
         return FALSE;
@@ -3609,19 +3721,11 @@ EptHookShouldDeferHiddenBreakpointMtfRestore(_In_ VIRTUAL_MACHINE_STATE *       
         return FALSE;
     }
 
-    if (VCpu->MtfEptHookRestoreDeferredCount >= HDBGWB_MTF_RESTORE_MAX_DEFER_COUNT)
-    {
-        return FALSE;
-    }
-
-    ExitRip   = VCpu->LastVmexitRip;
-    ContextVa = HookedEntry->LastContextState.VirtualAddress;
-    if (ExitRip == NULL64_ZERO || ContextVa == NULL64_ZERO)
-    {
-        return FALSE;
-    }
-
-    return (UINT64)PAGE_ALIGN(ExitRip) != (UINT64)PAGE_ALIGN(ContextVa);
+    return EptHookShouldDeferMtfRestoreForContext(VCpu,
+                                                  HookedEntry->LastContextState.VirtualAddress,
+                                                  VCpu->MtfEptHookRestoreCr3,
+                                                  VCpu->MtfEptHookRestoreDeferredCount,
+                                                  HDBGWB_MTF_RESTORE_MAX_DEFER_COUNT);
 }
 
 /**
@@ -3705,6 +3809,104 @@ EptHookHandleMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu)
     VmmCallbackRestoreEptState(VCpu->CoreId);
 
     return TRUE;
+}
+
+BOOLEAN
+EptHookHandlePendingMtfRestores(VIRTUAL_MACHINE_STATE * VCpu)
+{
+    BOOLEAN AnyHandled = FALSE;
+    BOOLEAN AnyStillPending = FALSE;
+
+    if (VCpu == NULL)
+    {
+        return FALSE;
+    }
+
+    for (size_t i = 0; i < MaximumMtfPendingRestoreSlots; i++)
+    {
+        PEPT_HOOK_PENDING_MTF_RESTORE Slot = &VCpu->MtfEptHookPendingRestoreSlots[i];
+        EPT_HOOKED_PAGE_DETAIL * HookedEntry = Slot->HookedEntry;
+
+        if (HookedEntry == NULL)
+        {
+            continue;
+        }
+
+        HookedEntry->MtfLastExitRip = VCpu->LastVmexitRip;
+        HookedEntry->MtfLastContextVirtualAddress = Slot->ContextVirtualAddress;
+
+        if (EptHookShouldDeferMtfRestoreForContext(VCpu,
+                                                  Slot->ContextVirtualAddress,
+                                                  Slot->GuestCr3,
+                                                  Slot->DeferredCount,
+                                                  HDBGWB_MTF_PENDING_RESTORE_MAX_DEFER_COUNT))
+        {
+            HookedEntry->MtfLastDeferredExitRip = VCpu->LastVmexitRip;
+            InterlockedIncrement64((volatile LONG64 *)&HookedEntry->MtfRestoreDeferredCount);
+            Slot->DeferredCount++;
+            AnyHandled = TRUE;
+            AnyStillPending = TRUE;
+            continue;
+        }
+
+        if (HookedEntry->LastViolation == EPT_HOOKED_LAST_VIOLATION_WRITE)
+        {
+            EptHookRefreshHiddenBreakpointFakePage(HookedEntry);
+        }
+
+        (VOID)EptHookRestoreMtfRestorePointToChangedEntry(VCpu, HookedEntry);
+        Slot->HookedEntry = NULL;
+        Slot->ContextVirtualAddress = NULL64_ZERO;
+        Slot->GuestCr3 = NULL64_ZERO;
+        Slot->DeferredCount = 0;
+        Slot->Reserved = 0;
+        AnyHandled = TRUE;
+    }
+
+    if (AnyStillPending)
+    {
+        VCpu->IgnoreMtfUnset = TRUE;
+    }
+
+    return AnyHandled;
+}
+
+static VOID
+EptHookClearPendingMtfRestoresForEntry(_In_ EPT_HOOKED_PAGE_DETAIL * HookedEntry)
+{
+    ULONG ProcessorsCount;
+
+    if (HookedEntry == NULL)
+    {
+        return;
+    }
+
+    ProcessorsCount = KeQueryActiveProcessorCount(0);
+    for (ULONG CoreIndex = 0; CoreIndex < ProcessorsCount; CoreIndex++)
+    {
+        VIRTUAL_MACHINE_STATE * VCpu = &g_GuestState[CoreIndex];
+        if (VCpu->MtfEptHookRestorePoint == HookedEntry)
+        {
+            VCpu->MtfEptHookRestorePoint = NULL;
+            VCpu->MtfEptHookRestoreCr3 = NULL64_ZERO;
+            VCpu->MtfEptHookRestoreDeferredCount = 0;
+        }
+
+        for (size_t SlotIndex = 0; SlotIndex < MaximumMtfPendingRestoreSlots; SlotIndex++)
+        {
+            PEPT_HOOK_PENDING_MTF_RESTORE Slot = &VCpu->MtfEptHookPendingRestoreSlots[SlotIndex];
+            if (Slot->HookedEntry != HookedEntry)
+            {
+                continue;
+            }
+
+            Slot->HookedEntry = NULL;
+            Slot->ContextVirtualAddress = NULL64_ZERO;
+            Slot->GuestCr3 = NULL64_ZERO;
+            Slot->DeferredCount = 0;
+            Slot->Reserved = 0;
+        }
+    }
 }
 
 /**
@@ -3807,6 +4009,7 @@ EptHookUnHookSingleAddressHiddenBreakpoint(PEPT_HOOKED_PAGE_DETAIL             H
                 // remove the entry from the list
                 //
                 RemoveEntryList(&HookedEntry->PageHookList);
+                EptHookClearPendingMtfRestoresForEntry(HookedEntry);
 
                 //
                 // we add the hooked entry to the list
@@ -4181,6 +4384,8 @@ EptHookUnHookAll()
 
     LIST_FOR_EACH_LINK(g_EptState->HookedPagesList, EPT_HOOKED_PAGE_DETAIL, PageHookList, CurrEntity)
     {
+        EptHookClearPendingMtfRestoresForEntry(CurrEntity);
+
         //
         // Now that we removed this hidden detours hook, it is
         // time to remove it from g_EptHook2sDetourListHead

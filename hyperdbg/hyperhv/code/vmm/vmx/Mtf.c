@@ -21,6 +21,7 @@ VOID
 MtfHandleVmexit(VIRTUAL_MACHINE_STATE * VCpu)
 {
     BOOLEAN IsMtfHandled = FALSE;
+    BOOLEAN CurrentEptHookRestoreCompleted = FALSE;
 
     //
     // Redo the instruction
@@ -85,10 +86,28 @@ MtfHandleVmexit(VIRTUAL_MACHINE_STATE * VCpu)
             // Set it to NULL
             //
             VCpu->MtfEptHookRestorePoint = NULL;
+            VCpu->MtfEptHookRestoreCr3 = NULL64_ZERO;
             VCpu->MtfEptHookRestoreDeferredCount = 0;
             VCpu->LastEptViolationRip      = NULL64_ZERO;
             VCpu->SameRipEptViolationCount = 0;
+            CurrentEptHookRestoreCompleted = TRUE;
 
+            //
+            // Check for re-enabling external interrupts
+            //
+            HvEnableAndCheckForPreviousExternalInterrupts(VCpu);
+        }
+    }
+
+    if (EptHookHandlePendingMtfRestores(VCpu))
+    {
+        //
+        // MTF is handled
+        //
+        IsMtfHandled = TRUE;
+
+        if (!VCpu->IgnoreMtfUnset && !CurrentEptHookRestoreCompleted)
+        {
             //
             // Check for re-enabling external interrupts
             //

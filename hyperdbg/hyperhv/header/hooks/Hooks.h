@@ -442,3 +442,12 @@ EptHookFlushPendingMtfRestoreOnOverwrite(VIRTUAL_MACHINE_STATE * VCpu,
  */
 BOOLEAN
 EptHookHandleMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu);
+
+/**
+ * @brief Handle displaced EPT MTF restores that were queued on overwrite
+ *
+ * @param VCpu The virtual processor's state
+ * @return TRUE if a queued restore was handled or remains pending
+ */
+BOOLEAN
+EptHookHandlePendingMtfRestores(VIRTUAL_MACHINE_STATE * VCpu);

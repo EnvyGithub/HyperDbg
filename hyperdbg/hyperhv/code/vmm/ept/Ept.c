@@ -996,6 +996,7 @@ EptAllowHookedPageOneInstructionWithMtf(_Inout_ VIRTUAL_MACHINE_STATE *  VCpu,
     InterlockedIncrement64((volatile LONG64 *)&HookedEntry->MtfArmedByThresholdCount);
 
     VCpu->MtfEptHookRestorePoint = HookedEntry;
+    VCpu->MtfEptHookRestoreCr3 = GetGuestCr3();
     VCpu->MtfEptHookRestoreDeferredCount = 0;
     EptResetSameRipViolationGuard(VCpu);
     HvEnableMtfAndChangeExternalInterruptState(VCpu);
@@ -1208,6 +1209,7 @@ EptHandlePageHookExit(VIRTUAL_MACHINE_STATE *              VCpu,
                     // Next we have to save the current hooked entry to restore on the next instruction's vm-exit
                     //
                     VCpu->MtfEptHookRestorePoint = HookedEntry;
+                    VCpu->MtfEptHookRestoreCr3 = GetGuestCr3();
                     VCpu->MtfEptHookRestoreDeferredCount = 0;
 
                     //
@@ -1477,6 +1479,7 @@ EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
                         // Next we have to save the current hooked entry to restore on the next instruction's vm-exit
                         //
                         VCpu->MtfEptHookRestorePoint = HookedEntry;
+                        VCpu->MtfEptHookRestoreCr3 = GetGuestCr3();
                         VCpu->MtfEptHookRestoreDeferredCount = 0;
 
                         //
