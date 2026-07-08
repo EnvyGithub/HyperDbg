@@ -34,9 +34,9 @@ DrvDispatchIoControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
     //
     // DO NOT CHANGE CALLING OF THE FOLLOWING FUNCTION
     //
-    PoolManagerCheckAndPerformAllocationAndDeallocation();
+    // PoolManagerCheckAndPerformAllocationAndDeallocation();
 
-    if (g_AllowIOCTLFromUsermode)
+    if (g_VmmInitialized)
     {
         IrpStack = IoGetCurrentIrpStackLocation(Irp);
 

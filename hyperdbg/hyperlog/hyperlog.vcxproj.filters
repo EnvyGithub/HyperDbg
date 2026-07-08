@@ -21,11 +21,6 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <Inf Include="hyperlog.inf">
-      <Filter>Driver Files</Filter>
-    </Inf>
-  </ItemGroup>
-  <ItemGroup>
     <ClCompile Include="code\Logging.c">
       <Filter>code</Filter>
     </ClCompile>
@@ -36,6 +31,30 @@
       <Filter>code</Filter>
     </ClCompile>
     <ClCompile Include="..\include\platform\kernel\code\PlatformMem.c">
+      <Filter>code\platform</Filter>
+    </ClCompile>
+    <ClCompile Include="..\include\platform\kernel\code\PlatformDbg.c">
+      <Filter>code\platform</Filter>
+    </ClCompile>
+    <ClCompile Include="..\include\platform\kernel\code\PlatformIrql.c">
+      <Filter>code\platform</Filter>
+    </ClCompile>
+    <ClCompile Include="..\include\platform\kernel\code\PlatformEvent.c">
+      <Filter>code\platform</Filter>
+    </ClCompile>
+    <ClCompile Include="..\include\platform\kernel\code\PlatformIo.c">
+      <Filter>code\platform</Filter>
+    </ClCompile>
+    <ClCompile Include="..\include\platform\kernel\code\PlatformCpu.c">
+      <Filter>code\platform</Filter>
+    </ClCompile>
+    <ClCompile Include="..\include\platform\kernel\code\PlatformSpinlock.c">
+      <Filter>code\platform</Filter>
+    </ClCompile>
+    <ClCompile Include="..\include\platform\kernel\code\PlatformTime.c">
+      <Filter>code\platform</Filter>
+    </ClCompile>
+    <ClCompile Include="..\include\platform\kernel\code\PlatformDpc.c">
       <Filter>code\platform</Filter>
     </ClCompile>
   </ItemGroup>
@@ -52,11 +71,32 @@
     <ClInclude Include="header\UnloadDll.h">
       <Filter>header</Filter>
     </ClInclude>
-    <ClInclude Include="..\include\platform\kernel\header\Environment.h">
-      <Filter>header\platform</Filter>
-    </ClInclude>
     <ClInclude Include="..\include\platform\kernel\header\PlatformMem.h">
       <Filter>header\platform</Filter>
     </ClInclude>
+    <ClInclude Include="..\include\platform\kernel\header\PlatformDpc.h">
+      <Filter>header\platform</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\platform\kernel\header\PlatformIrql.h">
+      <Filter>header\platform</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\platform\kernel\header\PlatformEvent.h">
+      <Filter>header\platform</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\platform\kernel\header\PlatformIo.h">
+      <Filter>header\platform</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\platform\kernel\header\PlatformCpu.h">
+      <Filter>header\platform</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\platform\kernel\header\PlatformSpinlock.h">
+      <Filter>header\platform</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\platform\kernel\header\PlatformTime.h">
+      <Filter>header\platform</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
   </ItemGroup>
 </Project>

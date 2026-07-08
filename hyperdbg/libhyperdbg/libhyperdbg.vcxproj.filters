@@ -84,97 +84,199 @@
     <Filter Include="code\export">
       <UniqueIdentifier>{cfacdcfe-8503-4a00-b7e2-75b0e906f75e}</UniqueIdentifier>
     </Filter>
+    <Filter Include="code\platform\windows-only">
+      <UniqueIdentifier>{223523be-9b81-41cc-b708-872e292fd1f5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\platform\windows-only">
+      <UniqueIdentifier>{8e3c36aa-4263-4c94-9910-884ad9652921}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="code\components">
+      <UniqueIdentifier>{5b7dcc48-4010-40db-973f-bf46eb1e810b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="code\components\pe">
+      <UniqueIdentifier>{b6d17c7a-e6e7-490b-b581-c6a06d0d61a9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\components">
+      <UniqueIdentifier>{a5552ded-23bb-45ad-85c2-d8d85a5b4e49}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\components\pe">
+      <UniqueIdentifier>{da7e68cc-540c-4efc-b4de-c23b4b13e2ec}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\app">
+      <UniqueIdentifier>{d6010267-4888-46f5-9bdb-2339565710d2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\common">
+      <UniqueIdentifier>{e81c07d3-5e98-4bdb-a00b-2b99e023553c}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\debugger">
+      <UniqueIdentifier>{477d3059-08d7-433b-83c3-bbf57658deaf}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\export">
+      <UniqueIdentifier>{559b68f3-8bf0-447a-a714-0e355c22516f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\globals">
+      <UniqueIdentifier>{88de3dbf-90ab-47ef-94fe-8c21ce73c9f1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\hwdbg">
+      <UniqueIdentifier>{c1f438ff-fd3b-4fb4-989b-f145290e3837}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\objects">
+      <UniqueIdentifier>{c5b26259-abcc-459f-9b7e-fd90c34ad646}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\rev">
+      <UniqueIdentifier>{99425a01-168c-4b6b-a53f-d62fbb7c8cab}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\debugger\commands">
+      <UniqueIdentifier>{c7f85132-1802-4462-990f-3fffb0365dbc}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\debugger\communication">
+      <UniqueIdentifier>{4f4eca9f-c1f6-4342-91ef-2b533292e238}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\debugger\core">
+      <UniqueIdentifier>{bde7408e-fad9-4329-98ac-e604674f7bbf}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\debugger\driver-loader">
+      <UniqueIdentifier>{06e9888f-57f0-4d59-8f7e-1fdd336be9cc}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\debugger\misc">
+      <UniqueIdentifier>{0d88d581-8ff4-40f2-8585-3fdb97d4d211}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\debugger\script-engine">
+      <UniqueIdentifier>{439dcb49-1825-4076-affe-17b505e4033a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\debugger\tests">
+      <UniqueIdentifier>{16331b3c-c8fd-4b12-abb4-7617d21db9d0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\debugger\transparency">
+      <UniqueIdentifier>{2d2c16a6-3fdc-4b63-a282-f2762a1f340d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\debugger\user-level">
+      <UniqueIdentifier>{9dcff6b3-9ebd-46f3-a0c5-c69d06357949}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="header\debugger\kernel-level">
+      <UniqueIdentifier>{3e4dda9f-6050-409f-85e2-4cf7c8a95743}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h">
       <Filter>header</Filter>
     </ClInclude>
-    <ClInclude Include="header\commands.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="header\common.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="header\communication.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="header\debugger.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="header\forwarding.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="header\globals.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="header\help.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="header\inipp.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="header\install.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="header\kd.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="header\list.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="header\namedpipe.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="header\script-engine.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="header\symbol.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="header\tests.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="header\transparency.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="header\pe-parser.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="header\ud.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="header\objects.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="header\rev-ctrl.h">
-      <Filter>header</Filter>
-    </ClInclude>
-    <ClInclude Include="..\include\platform\user\header\Environment.h">
-      <Filter>header\platform</Filter>
-    </ClInclude>
-    <ClInclude Include="header\hwdbg-interpreter.h">
-      <Filter>header</Filter>
-    </ClInclude>
     <ClInclude Include="..\include\platform\user\header\Windows.h">
       <Filter>header\platform</Filter>
     </ClInclude>
-    <ClInclude Include="header\export.h">
-      <Filter>header</Filter>
+    <ClInclude Include="..\include\platform\user\header\platform-intrinsics.h">
+      <Filter>header\platform</Filter>
     </ClInclude>
-    <ClInclude Include="header\libhyperdbg.h">
-      <Filter>header</Filter>
+    <ClInclude Include="..\include\platform\user\header\platform-lib-calls.h">
+      <Filter>header\platform</Filter>
     </ClInclude>
-    <ClInclude Include="header\assembler.h">
-      <Filter>header</Filter>
+    <ClInclude Include="..\include\platform\user\header\platform-serial.h">
+      <Filter>header\platform</Filter>
     </ClInclude>
-    <ClInclude Include="header\steppings.h">
-      <Filter>header</Filter>
+    <ClInclude Include="..\include\platform\user\header\platform-ioctl.h">
+      <Filter>header\platform</Filter>
     </ClInclude>
-    <ClInclude Include="header\hwdbg-scripts.h">
-      <Filter>header</Filter>
+    <ClInclude Include="..\include\platform\user\header\platform-signal.h">
+      <Filter>header\platform</Filter>
     </ClInclude>
-    <ClInclude Include="header\pci-id.h">
-      <Filter>header</Filter>
+    <ClInclude Include="..\include\platform\general\header\nt-list.h">
+      <Filter>header\platform</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\platform\user\header\windows-only\windows-privilege.h">
+      <Filter>header\platform\windows-only</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\components\pe\header\pe-image-reader.h">
+      <Filter>header\components\pe</Filter>
+    </ClInclude>
+    <ClInclude Include="header\app\libhyperdbg.h">
+      <Filter>header\app</Filter>
+    </ClInclude>
+    <ClInclude Include="header\app\messaging.h">
+      <Filter>header\app</Filter>
+    </ClInclude>
+    <ClInclude Include="header\app\packets.h">
+      <Filter>header\app</Filter>
+    </ClInclude>
+    <ClInclude Include="header\common\common.h">
+      <Filter>header\common</Filter>
+    </ClInclude>
+    <ClInclude Include="header\common\list.h">
+      <Filter>header\common</Filter>
+    </ClInclude>
+    <ClInclude Include="header\export\export.h">
+      <Filter>header\export</Filter>
+    </ClInclude>
+    <ClInclude Include="header\globals\globals.h">
+      <Filter>header\globals</Filter>
+    </ClInclude>
+    <ClInclude Include="header\hwdbg\hwdbg-interpreter.h">
+      <Filter>header\hwdbg</Filter>
+    </ClInclude>
+    <ClInclude Include="header\hwdbg\hwdbg-scripts.h">
+      <Filter>header\hwdbg</Filter>
+    </ClInclude>
+    <ClInclude Include="header\rev\rev-ctrl.h">
+      <Filter>header\rev</Filter>
+    </ClInclude>
+    <ClInclude Include="header\objects\objects.h">
+      <Filter>header\objects</Filter>
+    </ClInclude>
+    <ClInclude Include="header\debugger\commands\commands.h">
+      <Filter>header\debugger\commands</Filter>
+    </ClInclude>
+    <ClInclude Include="header\debugger\commands\help.h">
+      <Filter>header\debugger\commands</Filter>
+    </ClInclude>
+    <ClInclude Include="header\debugger\communication\communication.h">
+      <Filter>header\debugger\communication</Filter>
+    </ClInclude>
+    <ClInclude Include="header\debugger\communication\forwarding.h">
+      <Filter>header\debugger\communication</Filter>
+    </ClInclude>
+    <ClInclude Include="header\debugger\communication\namedpipe.h">
+      <Filter>header\debugger\communication</Filter>
+    </ClInclude>
+    <ClInclude Include="header\debugger\core\debugger.h">
+      <Filter>header\debugger\core</Filter>
+    </ClInclude>
+    <ClInclude Include="header\debugger\core\steppings.h">
+      <Filter>header\debugger\core</Filter>
+    </ClInclude>
+    <ClInclude Include="header\debugger\driver-loader\install.h">
+      <Filter>header\debugger\driver-loader</Filter>
+    </ClInclude>
+    <ClInclude Include="header\debugger\kernel-level\kd.h">
+      <Filter>header\debugger\kernel-level</Filter>
+    </ClInclude>
+    <ClInclude Include="header\debugger\misc\assembler.h">
+      <Filter>header\debugger\misc</Filter>
+    </ClInclude>
+    <ClInclude Include="header\debugger\misc\inipp.h">
+      <Filter>header\debugger\misc</Filter>
+    </ClInclude>
+    <ClInclude Include="header\debugger\misc\pci-id.h">
+      <Filter>header\debugger\misc</Filter>
+    </ClInclude>
+    <ClInclude Include="header\debugger\user-level\pe-parser.h">
+      <Filter>header\debugger\user-level</Filter>
+    </ClInclude>
+    <ClInclude Include="header\debugger\user-level\ud.h">
+      <Filter>header\debugger\user-level</Filter>
+    </ClInclude>
+    <ClInclude Include="header\debugger\transparency\transparency.h">
+      <Filter>header\debugger\transparency</Filter>
+    </ClInclude>
+    <ClInclude Include="header\debugger\tests\tests.h">
+      <Filter>header\debugger\tests</Filter>
+    </ClInclude>
+    <ClInclude Include="header\debugger\script-engine\script-engine.h">
+      <Filter>header\debugger\script-engine</Filter>
+    </ClInclude>
+    <ClInclude Include="header\debugger\script-engine\symbol.h">
+      <Filter>header\debugger\script-engine</Filter>
+    </ClInclude>
+    <ClInclude Include="header\debugger\misc\pt-helper.h">
+      <Filter>header\debugger\misc</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -188,9 +290,6 @@
       <Filter>code\app</Filter>
     </ClCompile>
     <ClCompile Include="code\common\common.cpp">
-      <Filter>code\common</Filter>
-    </ClCompile>
-    <ClCompile Include="code\common\list.cpp">
       <Filter>code\common</Filter>
     </ClCompile>
     <ClCompile Include="code\debugger\commands\debugging-commands\bc.cpp">
@@ -600,6 +699,42 @@
     </ClCompile>
     <ClCompile Include="code\debugger\commands\extension-commands\lbr.cpp">
       <Filter>code\debugger\commands\extension-commands</Filter>
+    </ClCompile>
+    <ClCompile Include="code\debugger\commands\extension-commands\pt.cpp">
+      <Filter>code\debugger\commands\extension-commands</Filter>
+    </ClCompile>
+    <ClCompile Include="code\debugger\commands\extension-commands\lbrdump.cpp">
+      <Filter>code\debugger\commands\extension-commands</Filter>
+    </ClCompile>
+    <ClCompile Include="..\include\platform\user\code\platform-intrinsics.c">
+      <Filter>code\platform</Filter>
+    </ClCompile>
+    <ClCompile Include="..\include\platform\user\code\platform-lib-calls.c">
+      <Filter>code\platform</Filter>
+    </ClCompile>
+    <ClCompile Include="..\include\platform\user\code\platform-serial.c">
+      <Filter>code\platform</Filter>
+    </ClCompile>
+    <ClCompile Include="..\include\platform\user\code\platform-ioctl.c">
+      <Filter>code\platform</Filter>
+    </ClCompile>
+    <ClCompile Include="..\include\platform\user\code\platform-signal.c">
+      <Filter>code\platform</Filter>
+    </ClCompile>
+    <ClCompile Include="code\app\messaging.cpp">
+      <Filter>code\app</Filter>
+    </ClCompile>
+    <ClCompile Include="code\app\packets.cpp">
+      <Filter>code\app</Filter>
+    </ClCompile>
+    <ClCompile Include="..\include\platform\user\code\windows-only\windows-privilege.c">
+      <Filter>code\platform\windows-only</Filter>
+    </ClCompile>
+    <ClCompile Include="..\include\components\pe\code\pe-image-reader.cpp">
+      <Filter>code\components\pe</Filter>
+    </ClCompile>
+    <ClCompile Include="code\debugger\misc\pt-helper.cpp">
+      <Filter>code\debugger\misc</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

@@ -11,6 +11,12 @@
  */
 #include "pch.h"
 
+//
+// Global Variables
+//
+extern HANDLE  g_DeviceHandle;
+extern BOOLEAN g_IsVmmModuleLoaded;
+
 /**
  * @brief help of the preactivate command
  *
@@ -44,7 +50,7 @@ CommandPreactivate(vector<CommandToken> CommandTokens, string Command)
 {
     BOOL                         Status;
     ULONG                        ReturnedLength;
-    DEBUGGER_PREACTIVATE_COMMAND PreactivateRequest = {0};
+    DEBUGGER_PREACTIVATE_COMMAND PreactivateRequest = {};
 
     if (CommandTokens.size() != 2)
     {
@@ -71,12 +77,12 @@ CommandPreactivate(vector<CommandToken> CommandTokens, string Command)
         return;
     }
 
-    AssertShowMessageReturnStmt(g_DeviceHandle, ASSERT_MESSAGE_DRIVER_NOT_LOADED, AssertReturn);
+    AssertShowMessageReturnStmt(g_IsVmmModuleLoaded, g_DeviceHandle, ASSERT_MESSAGE_VMM_NOT_LOADED, ASSERT_MESSAGE_DRIVER_NOT_LOADED, AssertReturn);
 
     //
     // Send IOCTL
     //
-    Status = DeviceIoControl(
+    Status = PlatformDeviceIoControl(
         g_DeviceHandle,                      // Handle to device
         IOCTL_PREACTIVATE_FUNCTIONALITY,     // IO Control Code (IOCTL)
         &PreactivateRequest,                 // Input Buffer to driver.
@@ -90,7 +96,7 @@ CommandPreactivate(vector<CommandToken> CommandTokens, string Command)
 
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         return;
     }
 

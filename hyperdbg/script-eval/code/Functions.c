@@ -325,6 +325,17 @@ ScriptEngineFunctionMemcpy(UINT64 Destination, UINT64 Source, UINT32 Num, BOOL *
     UINT64 PrevReadLen                                              = 0;
     BYTE   MovingBuffer[DebuggerScriptEngineMemcpyMovingBufferSize] = {0};
 
+    //
+    // Reject zero-length copies: a Num of 0 would pass address-range
+    // validation vacuously (checking 0 bytes at any mapped page succeeds),
+    // which could be abused as a kernel address-mapping oracle.
+    //
+    if (Num == 0)
+    {
+        *HasError = TRUE;
+        return;
+    }
+
 #ifdef SCRIPT_ENGINE_USER_MODE
 
     //
@@ -786,16 +797,16 @@ VOID
 UserModeMicroSleep(UINT64 Us)
 {
     LARGE_INTEGER Start, End, Frequency;
-    QueryPerformanceFrequency(&Frequency);
+    PlatformQueryPerformanceFrequency(&Frequency);
 
     LONGLONG TickPerUs = Frequency.QuadPart / 1000000;
     LONGLONG Ticks     = TickPerUs * Us;
 
-    QueryPerformanceCounter(&Start);
+    PlatformQueryPerformanceCounter(&Start);
 
     while (TRUE)
     {
-        QueryPerformanceCounter(&End);
+        PlatformQueryPerformanceCounter(&End);
 
         if (End.QuadPart - Start.QuadPart > Ticks)
         {
@@ -829,7 +840,7 @@ ScriptEngineFunctionMicroSleep(UINT64 Us)
 UINT64
 ScriptEngineFunctionRdtsc()
 {
-    return __rdtsc();
+    return CpuReadTsc();
 }
 
 /**
@@ -839,8 +850,8 @@ ScriptEngineFunctionRdtsc()
 UINT64
 ScriptEngineFunctionRdtscp()
 {
-    unsigned int Aux;
-    return __rdtscp(&Aux);
+    UINT32 Aux;
+    return CpuReadTscp(&Aux);
 }
 
 /**
@@ -868,7 +879,7 @@ ScriptEngineFunctionInterlockedExchange(long long volatile * Target,
 
 #endif // SCRIPT_ENGINE_KERNEL_MODE
 
-    Result = InterlockedExchange64(Target, Value);
+    Result = CpuInterlockedExchange64(Target, Value);
 
     return Result;
 }
@@ -898,7 +909,7 @@ ScriptEngineFunctionInterlockedExchangeAdd(long long volatile * Addend,
 
 #endif // SCRIPT_ENGINE_KERNEL_MODE
 
-    Result = InterlockedExchangeAdd64(Addend, Value);
+    Result = CpuInterlockedExchangeAdd64(Addend, Value);
 
     return Result;
 }
@@ -926,7 +937,7 @@ ScriptEngineFunctionInterlockedIncrement(long long volatile * Addend,
 
 #endif // SCRIPT_ENGINE_KERNEL_MODE
 
-    Result = InterlockedIncrement64(Addend);
+    Result = CpuInterlockedIncrement64(Addend);
 
     return Result;
 }
@@ -954,7 +965,7 @@ ScriptEngineFunctionInterlockedDecrement(long long volatile * Addend,
 
 #endif // SCRIPT_ENGINE_KERNEL_MODE
 
-    Result = InterlockedDecrement64(Addend);
+    Result = CpuInterlockedDecrement64(Addend);
 
     return Result;
 }
@@ -987,7 +998,7 @@ ScriptEngineFunctionInterlockedCompareExchange(
 
 #endif // SCRIPT_ENGINE_KERNEL_MODE
 
-    Result = InterlockedCompareExchange64(Destination, ExChange, Comperand);
+    Result = CpuInterlockedCompareExchange64(Destination, ExChange, Comperand);
 
     return Result;
 }
@@ -1327,7 +1338,7 @@ ApplyFormatSpecifier(const CHAR * CurrentSpecifier, CHAR * FinalBuffer, PUINT32 
 
     *CurrentProcessedPositionFromStartOfFormat =
         *CurrentProcessedPositionFromStartOfFormat + (UINT32)strlen(CurrentSpecifier);
-    sprintf_s(TempBuffer, sizeof(TempBuffer), CurrentSpecifier, Val);
+    PlatformSprintf(TempBuffer, sizeof(TempBuffer), CurrentSpecifier, Val);
     TempBufferLen = (UINT32)strlen(TempBuffer);
 
     //
@@ -1462,8 +1473,8 @@ ApplyStringFormatSpecifier(const CHAR * CurrentSpecifier, CHAR * FinalBuffer, PU
             //
             // Zero the buffers
             //
-            RtlZeroMemory(WstrBuffer, sizeof(WstrBuffer));
-            RtlZeroMemory(AsciiBuffer, sizeof(AsciiBuffer));
+            PlatformZeroMemory(WstrBuffer, sizeof(WstrBuffer));
+            PlatformZeroMemory(AsciiBuffer, sizeof(AsciiBuffer));
 
             //
             // Check for the last block
@@ -2014,37 +2025,107 @@ ScriptEngineFunctionEventTraceStepIn()
 }
 
 /**
- * @brief Implementation of lbr_start function
+ * @brief Implementation of lbr_save function
  *
- * @return VOID
+ * @return BOOLEAN
  */
-VOID
-ScriptEngineFunctionLbrStart()
+BOOLEAN
+ScriptEngineFunctionLbrSave()
 {
 #ifdef SCRIPT_ENGINE_USER_MODE
-    ShowMessages("err, it's not possible to call lbr_start function in the user-mode\n");
+    ShowMessages("err, it's not possible to call lbr_save function in the user-mode\n");
+    return FALSE;
 #endif // SCRIPT_ENGINE_USER_MODE
 
 #ifdef SCRIPT_ENGINE_KERNEL_MODE
 
-    HyperTraceStartLbr(VmFuncVmxGetCurrentExecutionMode());
+    //
+    // Depending if we are in VMX-root then a VMCALL is issued by default instead, otherwise the VMCALL is ignored
+    //
+    return HyperTraceLbrSave(NULL);
 
 #endif // SCRIPT_ENGINE_KERNEL_MODE
 }
 
 /**
- * @brief Implementation of lbr_stop function
+ * @brief Implementation of lbr_print function
  *
- * @return VOID
+ * @return BOOLEAN
  */
-VOID
-ScriptEngineFunctionLbrStop()
+BOOLEAN
+ScriptEngineFunctionLbrPrint()
 {
 #ifdef SCRIPT_ENGINE_USER_MODE
-    ShowMessages("err, it's not possible to call lbr_stop function in the user-mode\n");
+    ShowMessages("err, it's not possible to call lbr_print function in the user-mode\n");
+    return FALSE;
 #endif // SCRIPT_ENGINE_USER_MODE
 
 #ifdef SCRIPT_ENGINE_KERNEL_MODE
-    HyperTraceStopLbr(VmFuncVmxGetCurrentExecutionMode());
+
+    //
+    // Depending if we are in VMX-root then a VMCALL is issued by default instead, otherwise the VMCALL is ignored
+    //
+    return HyperTraceLbrPrint(NULL);
+
+#endif // SCRIPT_ENGINE_KERNEL_MODE
+}
+
+/**
+ * @brief Implementation of lbr_check function
+ *
+ * @return BOOLEAN
+ */
+BOOLEAN
+ScriptEngineFunctionLbrCheck()
+{
+#ifdef SCRIPT_ENGINE_USER_MODE
+    ShowMessages("err, it's not possible to call lbr_check function in the user-mode\n");
+    return FALSE;
+#endif // SCRIPT_ENGINE_USER_MODE
+
+#ifdef SCRIPT_ENGINE_KERNEL_MODE
+
+    return HyperTraceLbrCheck();
+
+#endif // SCRIPT_ENGINE_KERNEL_MODE
+}
+
+/**
+ * @brief Implementation of lbr_restore function
+ *
+ * @return BOOLEAN
+ */
+BOOLEAN
+ScriptEngineFunctionLbrRestore()
+{
+#ifdef SCRIPT_ENGINE_USER_MODE
+    ShowMessages("err, it's not possible to call lbr_restore function in the user-mode\n");
+    return FALSE;
+#endif // SCRIPT_ENGINE_USER_MODE
+
+#ifdef SCRIPT_ENGINE_KERNEL_MODE
+
+    return HyperTraceLbrRestore();
+
+#endif // SCRIPT_ENGINE_KERNEL_MODE
+}
+
+/**
+ * @brief Implementation of lbr_restore_by_filter function
+ *
+ * @return BOOLEAN
+ */
+BOOLEAN
+ScriptEngineFunctionLbrRestoreByFilter(UINT64 FilterOptions)
+{
+#ifdef SCRIPT_ENGINE_USER_MODE
+    ShowMessages("err, it's not possible to call lbr_restore_by_filter function in the user-mode\n");
+    return FALSE;
+#endif // SCRIPT_ENGINE_USER_MODE
+
+#ifdef SCRIPT_ENGINE_KERNEL_MODE
+
+    return HyperTraceLbrRestoreByFilter(FilterOptions);
+
 #endif // SCRIPT_ENGINE_KERNEL_MODE
 }

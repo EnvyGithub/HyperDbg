@@ -14,7 +14,7 @@
 //
 // Global variables
 //
-#include "header/globals.h"
+#include "header/globals/globals.h"
 
 //
 // When you are using pre-compiled headers, this source file is necessary for

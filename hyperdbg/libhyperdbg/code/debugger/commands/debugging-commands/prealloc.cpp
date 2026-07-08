@@ -11,6 +11,11 @@
  */
 #include "pch.h"
 
+//
+// Global Variables
+//
+extern BOOLEAN g_IsKdModuleLoaded;
+
 /**
  * @brief help of the prealloc command
  *
@@ -57,7 +62,7 @@ CommandPrealloc(vector<CommandToken> CommandTokens, string Command)
     BOOL                      Status;
     ULONG                     ReturnedLength;
     UINT64                    Count;
-    DEBUGGER_PREALLOC_COMMAND PreallocRequest = {0};
+    DEBUGGER_PREALLOC_COMMAND PreallocRequest = {};
     string                    SecondParam;
 
     if (CommandTokens.size() != 3)
@@ -133,12 +138,12 @@ CommandPrealloc(vector<CommandToken> CommandTokens, string Command)
     //
     PreallocRequest.Count = (UINT32)Count;
 
-    AssertShowMessageReturnStmt(g_DeviceHandle, ASSERT_MESSAGE_DRIVER_NOT_LOADED, AssertReturn);
+    AssertShowMessageReturnStmt(g_IsKdModuleLoaded, g_DeviceHandle, ASSERT_MESSAGE_KD_NOT_LOADED, ASSERT_MESSAGE_DRIVER_NOT_LOADED, AssertReturn);
 
     //
     // Send IOCTL
     //
-    Status = DeviceIoControl(
+    Status = PlatformDeviceIoControl(
         g_DeviceHandle,                    // Handle to device
         IOCTL_RESERVE_PRE_ALLOCATED_POOLS, // IO Control Code (IOCTL)
         &PreallocRequest,                  // Input Buffer to driver.
@@ -152,7 +157,7 @@ CommandPrealloc(vector<CommandToken> CommandTokens, string Command)
 
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         return;
     }
 

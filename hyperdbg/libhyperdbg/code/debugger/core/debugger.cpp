@@ -26,6 +26,8 @@ extern BOOLEAN                  g_IsConnectedToRemoteDebuggee;
 extern BOOLEAN                  g_IsConnectedToRemoteDebugger;
 extern BOOLEAN                  g_IsSerialConnectedToRemoteDebuggee;
 extern BOOLEAN                  g_IsSerialConnectedToRemoteDebugger;
+extern BOOLEAN                  g_IsKdModuleLoaded;
+extern BOOLEAN                  g_IsVmmModuleLoaded;
 extern ACTIVE_DEBUGGING_PROCESS g_ActiveProcessDebuggingState;
 
 /**
@@ -570,27 +572,69 @@ ShowErrorMessage(UINT32 Error)
         break;
 
     case DEBUGGER_ERROR_HYPERTRACE_NOT_INITIALIZED:
-        ShowMessages("err, the HyperTrace module is not initialized (%x)\n",
+        ShowMessages("err, the hypertrace module is not loaded and initialized, "
+                     "use the 'load trace' command to load the hypertrace module  (%x)\n",
                      Error);
         break;
 
     case DEBUGGER_ERROR_INVALID_HYPERTRACE_OPERATION_TYPE:
-        ShowMessages("err, invalid HyperTrace operation type is specified (%x)\n",
+        ShowMessages("err, invalid hypertrace operation type is specified (%x)\n",
                      Error);
         break;
 
     case DEBUGGER_ERROR_LBR_ALREADY_ENABLED:
-        ShowMessages("err, LBR is already enabled (%x)\n",
+        ShowMessages("err, LBR is already enabled, you can disable it using the '!lbr' command (%x)\n",
                      Error);
         break;
 
     case DEBUGGER_ERROR_LBR_ALREADY_DISABLED:
-        ShowMessages("err, LBR is already disabled (%x)\n",
+        ShowMessages("err, LBR is already disabled, you can enable it using the '!lbr' command (%x)\n",
                      Error);
         break;
 
     case DEBUGGER_ERROR_LBR_NOT_SUPPORTED:
-        ShowMessages("err, LBR is not supported on this processor (%x)\n",
+        ShowMessages("err, LBR is not supported on this processor, this is likely caused by running inside "
+                     "a nested virtualization (VM) environment that masks and removes LBR CPU flags (%x)\n",
+                     Error);
+        break;
+
+    case DEBUGGER_ERROR_LBR_NOT_SUPPORTED_ON_VMCS:
+        ShowMessages("err, LBR is not supported on VMCS (%x)\n",
+                     Error);
+        break;
+
+    case DEBUGGER_ERROR_PT_ALREADY_ENABLED:
+        ShowMessages("err, PT is already enabled (%x)\n",
+                     Error);
+        break;
+
+    case DEBUGGER_ERROR_PT_ALREADY_DISABLED:
+        ShowMessages("err, PT is already disabled (%x)\n",
+                     Error);
+        break;
+
+    case DEBUGGER_ERROR_PT_NOT_SUPPORTED:
+        ShowMessages("err, PT is not supported on this processor (%x)\n",
+                     Error);
+        break;
+
+    case DEBUGGER_ERROR_VMM_CANNOT_BE_INITIALIZED_IF_HYPERTRACE_IS_LOADED:
+        ShowMessages("err, hypertrace is already loaded, please unload hypertrace module using the "
+                     "'unload' command and then load the 'VMM' module. Then you can load hypertrace "
+                     "after loading the VMM as it is because hypertrace behaves differently to sync "
+                     "with VMM modules; it needs to have this notion that it is running within the "
+                     "hypervisor, so that is why it needs to be initialized again if the VMM module "
+                     "is loaded (%x)\n",
+                     Error);
+        break;
+
+    case DEBUGGER_ERROR_VMM_CANNOT_BE_INITIALIZED_IF_DEBUGGER_IS_NOT_LOADED:
+        ShowMessages("err, the VMM module cannot be initialized because the debugger is not loaded (%x)\n",
+                     Error);
+        break;
+
+    case DEBUGGER_ERROR_CANNOT_INITIALIZE_DEBUGGER:
+        ShowMessages("err, cannot initialize the debugger (%x)\n",
                      Error);
         break;
 
@@ -612,6 +656,7 @@ ShowErrorMessage(UINT32 Error)
 UINT64
 DebuggerGetNtoskrnlBase()
 {
+#ifdef _WIN32
     UINT64               NtoskrnlBase = NULL;
     PRTL_PROCESS_MODULES Modules      = NULL;
 
@@ -623,7 +668,7 @@ DebuggerGetNtoskrnlBase()
 
     for (UINT32 i = 0; i < Modules->NumberOfModules; i++)
     {
-        if (!strcmp((const char *)Modules->Modules[i].FullPathName + Modules->Modules[i].OffsetToFileName,
+        if (!strcmp((const CHAR *)Modules->Modules[i].FullPathName + Modules->Modules[i].OffsetToFileName,
                     "ntoskrnl.exe"))
         {
             NtoskrnlBase = (UINT64)Modules->Modules[i].ImageBase;
@@ -634,6 +679,14 @@ DebuggerGetNtoskrnlBase()
     free(Modules);
 
     return NtoskrnlBase;
+#else
+    //
+    // TODO(Linux): NT-style system module enumeration (PRTL_PROCESS_MODULES via
+    // NtQuerySystemInformation) has no Linux analog. The kernel-module base lookup
+    // will need a Linux-specific mechanism once the kernel side exists.
+    //
+    return NULL64_ZERO;
+#endif
 }
 
 /**
@@ -675,7 +728,7 @@ DebuggerPauseDebuggee()
     //
     // Send a pause IOCTL
     //
-    StatusIoctl = DeviceIoControl(g_DeviceHandle,                        // Handle to device
+    StatusIoctl = PlatformDeviceIoControl(g_DeviceHandle,                        // Handle to device
                                   IOCTL_PAUSE_PACKET_RECEIVED,           // IO Control Code (IOCTL)
                                   &PauseRequest,                         // Input Buffer to driver.
                                   SIZEOF_DEBUGGER_PAUSE_PACKET_RECEIVED, // Input buffer
@@ -689,7 +742,7 @@ DebuggerPauseDebuggee()
 
     if (!StatusIoctl)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         return FALSE;
     }
 
@@ -904,7 +957,7 @@ InterpretScript(vector<CommandToken> * CommandTokens,
     //
     // Run script engine handler
     //
-    PVOID CodeBuffer = ScriptEngineParseWrapper((char *)TargetBracketString.c_str(), TRUE);
+    PVOID CodeBuffer = ScriptEngineParseWrapper((CHAR *)TargetBracketString.c_str(), TRUE);
 
     if (CodeBuffer == NULL)
     {
@@ -980,11 +1033,11 @@ InterpretConditionsAndCodes(vector<CommandToken> * CommandTokens,
 
     string       Temp;
     vector<CHAR> ParsedBytes;
-    vector<int>  IndexesToRemove;
+    vector<INT>  IndexesToRemove;
     UCHAR *      FinalBuffer;
     UINT32       AssembledByteCount;
-    int          NewIndexToRemove = 0;
-    int          Index            = 0;
+    INT          NewIndexToRemove = 0;
+    INT          Index            = 0;
 
     for (auto Section : *CommandTokens)
     {
@@ -1081,7 +1134,7 @@ InterpretConditionsAndCodes(vector<CommandToken> * CommandTokens,
             //
             // * FinalBuffer *
             //
-            FinalBuffer = (unsigned char *)malloc(AssembledByteCount);
+            FinalBuffer = (UCHAR *)malloc(AssembledByteCount);
 
             if (FinalBuffer == NULL)
             {
@@ -1204,12 +1257,12 @@ InterpretOutput(vector<CommandToken> * CommandTokens,
     BOOLEAN IsTextVisited       = FALSE;
     string  TargetBracketString = "";
 
-    vector<int> IndexesToRemove;
+    vector<INT> IndexesToRemove;
     string      Token;
-    int         NewIndexToRemove = 0;
-    int         Index            = 0;
-    char        Delimiter        = ',';
-    size_t      Pos              = 0;
+    INT         NewIndexToRemove = 0;
+    INT         Index            = 0;
+    CHAR        Delimiter        = ',';
+    SIZE_T      Pos              = 0;
 
     for (auto Section : *CommandTokens)
     {
@@ -1341,14 +1394,13 @@ SendEventToKernel(PDEBUGGER_GENERAL_EVENT_DETAIL Event,
         //
         // It's either a debuggee or a local debugging instance
         //
-
-        AssertShowMessageReturnStmt(g_DeviceHandle, ASSERT_MESSAGE_DRIVER_NOT_LOADED, AssertReturnFalse);
+        AssertShowMessageReturnStmt(g_IsVmmModuleLoaded, g_DeviceHandle, ASSERT_MESSAGE_VMM_NOT_LOADED, ASSERT_MESSAGE_DRIVER_NOT_LOADED, AssertReturnFalse);
 
         //
         // Send IOCTL
         //
 
-        Status = DeviceIoControl(g_DeviceHandle,                           // Handle to device
+        Status = PlatformDeviceIoControl(g_DeviceHandle,                           // Handle to device
                                  IOCTL_DEBUGGER_REGISTER_EVENT,            // IO Control Code (IOCTL)
                                  Event,                                    // Input Buffer to driver.
                                  EventBufferLength,                        // Input buffer length
@@ -1365,7 +1417,7 @@ SendEventToKernel(PDEBUGGER_GENERAL_EVENT_DETAIL Event,
 
         if (!Status)
         {
-            ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+            ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
             return FALSE;
         }
     }
@@ -1504,10 +1556,9 @@ RegisterActionToEvent(PDEBUGGER_GENERAL_EVENT_DETAIL Event,
     else
     {
         //
-        // It's either a local debugger to in vmi-mode remote conntection
+        // It's either a local debugger to in vmi-mode remote connection
         //
-
-        AssertShowMessageReturnStmt(g_DeviceHandle, ASSERT_MESSAGE_DRIVER_NOT_LOADED, AssertReturnFalse);
+        AssertShowMessageReturnStmt(g_IsVmmModuleLoaded, g_DeviceHandle, ASSERT_MESSAGE_VMM_NOT_LOADED, ASSERT_MESSAGE_DRIVER_NOT_LOADED, AssertReturnFalse);
 
         //
         // Send IOCTLs
@@ -1518,7 +1569,7 @@ RegisterActionToEvent(PDEBUGGER_GENERAL_EVENT_DETAIL Event,
         //
         if (ActionBreakToDebugger != NULL)
         {
-            Status = DeviceIoControl(
+            Status = PlatformDeviceIoControl(
                 g_DeviceHandle,                           // Handle to device
                 IOCTL_DEBUGGER_ADD_ACTION_TO_EVENT,       // IO Control Code (IOCTL)
                 ActionBreakToDebugger,                    // Input Buffer to driver.
@@ -1536,7 +1587,7 @@ RegisterActionToEvent(PDEBUGGER_GENERAL_EVENT_DETAIL Event,
 
             if (!Status)
             {
-                ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+                ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
                 return FALSE;
             }
         }
@@ -1546,7 +1597,7 @@ RegisterActionToEvent(PDEBUGGER_GENERAL_EVENT_DETAIL Event,
         //
         if (ActionCustomCode != NULL)
         {
-            Status = DeviceIoControl(
+            Status = PlatformDeviceIoControl(
                 g_DeviceHandle,                           // Handle to device
                 IOCTL_DEBUGGER_ADD_ACTION_TO_EVENT,       // IO Control Code (IOCTL)
                 ActionCustomCode,                         // Input Buffer to driver.
@@ -1564,7 +1615,7 @@ RegisterActionToEvent(PDEBUGGER_GENERAL_EVENT_DETAIL Event,
 
             if (!Status)
             {
-                ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+                ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
                 return FALSE;
             }
         }
@@ -1574,7 +1625,7 @@ RegisterActionToEvent(PDEBUGGER_GENERAL_EVENT_DETAIL Event,
         //
         if (ActionScript != NULL)
         {
-            Status = DeviceIoControl(
+            Status = PlatformDeviceIoControl(
                 g_DeviceHandle,                           // Handle to device
                 IOCTL_DEBUGGER_ADD_ACTION_TO_EVENT,       // IO Control Code (IOCTL)
                 ActionScript,                             // Input Buffer to driver.
@@ -1592,7 +1643,7 @@ RegisterActionToEvent(PDEBUGGER_GENERAL_EVENT_DETAIL Event,
 
             if (!Status)
             {
-                ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+                ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
                 return FALSE;
             }
         }
@@ -1734,10 +1785,10 @@ InterpretGeneralEventAndActionsFields(
     UINT32                                RequestBuffer = 0;
     PLIST_ENTRY                           TempList;
     BOOLEAN                               OutputSourceFound;
-    vector<int>                           IndexesToRemove;
+    vector<INT>                           IndexesToRemove;
     vector<UINT64>                        ListOfValidSourceTags;
-    int                                   NewIndexToRemove = 0;
-    int                                   Index            = 0;
+    INT                                   NewIndexToRemove = 0;
+    INT                                   Index            = 0;
 
     //
     // Create a command string to show in the history
@@ -1758,7 +1809,7 @@ InterpretGeneralEventAndActionsFields(
     //
     PVOID BufferOfCommandString = malloc(BufferOfCommandStringLength);
 
-    RtlZeroMemory(BufferOfCommandString, BufferOfCommandStringLength);
+    PlatformZeroMemory(BufferOfCommandString, BufferOfCommandStringLength);
 
     //
     // Copy the string to the buffer
@@ -1795,7 +1846,7 @@ InterpretGeneralEventAndActionsFields(
     //
     // Disassemble the buffer
     //
-    HyperDbgDisassembler64((unsigned char *)ConditionBufferAddress, 0x0,
+    HyperDbgDisassembler64((UCHAR *)ConditionBufferAddress, 0x0,
                            ConditionBufferLength);
 
     ShowMessages("}\n\n");
@@ -1835,7 +1886,7 @@ InterpretGeneralEventAndActionsFields(
     //
     // Disassemble the buffer
     //
-    HyperDbgDisassembler64((unsigned char *)CodeBufferAddress, 0x0,
+    HyperDbgDisassembler64((UCHAR *)CodeBufferAddress, 0x0,
                            CodeBufferLength);
 
     ShowMessages("}\n\n");
@@ -2063,7 +2114,7 @@ InterpretGeneralEventAndActionsFields(
     LengthOfEventBuffer = sizeof(DEBUGGER_GENERAL_EVENT_DETAIL) + ConditionBufferLength;
 
     TempEvent = (PDEBUGGER_GENERAL_EVENT_DETAIL)malloc(LengthOfEventBuffer);
-    RtlZeroMemory(TempEvent, LengthOfEventBuffer);
+    PlatformZeroMemory(TempEvent, LengthOfEventBuffer);
 
     //
     // Check if buffer is available
@@ -2113,11 +2164,6 @@ InterpretGeneralEventAndActionsFields(
     TempEvent->EventType = EventType;
 
     //
-    // Get the current time
-    //
-    TempEvent->CreationTime = time(0);
-
-    //
     // Set buffer string command
     //
     TempEvent->CommandStringBuffer = BufferOfCommandString;
@@ -2150,7 +2196,7 @@ InterpretGeneralEventAndActionsFields(
 
         TempActionCustomCode = (PDEBUGGER_GENERAL_ACTION)malloc(LengthOfCustomCodeActionBuffer);
 
-        RtlZeroMemory(TempActionCustomCode, LengthOfCustomCodeActionBuffer);
+        PlatformZeroMemory(TempActionCustomCode, LengthOfCustomCodeActionBuffer);
 
         memcpy(
             (PVOID)((UINT64)TempActionCustomCode + sizeof(DEBUGGER_GENERAL_ACTION)),
@@ -2189,7 +2235,7 @@ InterpretGeneralEventAndActionsFields(
         LengthOfScriptActionBuffer = sizeof(DEBUGGER_GENERAL_ACTION) + ScriptBufferLength;
         TempActionScript           = (PDEBUGGER_GENERAL_ACTION)malloc(LengthOfScriptActionBuffer);
 
-        RtlZeroMemory(TempActionScript, LengthOfScriptActionBuffer);
+        PlatformZeroMemory(TempActionScript, LengthOfScriptActionBuffer);
 
         memcpy((PVOID)((UINT64)TempActionScript + sizeof(DEBUGGER_GENERAL_ACTION)),
                (PVOID)ScriptBufferAddress,
@@ -2235,7 +2281,7 @@ InterpretGeneralEventAndActionsFields(
 
         TempActionBreak = (PDEBUGGER_GENERAL_ACTION)malloc(LengthOfBreakActionBuffer);
 
-        RtlZeroMemory(TempActionBreak, LengthOfBreakActionBuffer);
+        PlatformZeroMemory(TempActionBreak, LengthOfBreakActionBuffer);
 
         //
         // Set the action Tag

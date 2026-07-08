@@ -15,7 +15,7 @@
  //
  // Environment headers
  //
-#include "platform/user/header/Environment.h"
+#include "platform/general/header/Environment.h"
 
 //
 // Windows SDK headers
@@ -38,3 +38,8 @@
 //
 #include "SDK/HyperDbgSdk.h"
 #include "SDK/imports/user/HyperDbgLibImports.h"
+
+//
+// Other internal headers
+//
+#include "example-ipt.h"

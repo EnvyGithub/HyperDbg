@@ -21,14 +21,14 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='debug|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>NotSet</CharacterSet>
     <SpectreMitigation>false</SpectreMitigation>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='release|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>NotSet</CharacterSet>
     <SpectreMitigation>false</SpectreMitigation>
@@ -78,7 +78,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
-      <AdditionalDependencies>$(SolutionDir)libraries\zydis\user\Zycore.lib;$(SolutionDir)libraries\zydis\user\Zydis.lib;$(SolutionDir)build\bin\$(Configuration)\script-engine.lib;$(SolutionDir)libraries\keystone\$(Configuration)-lib\keystone.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)libraries\zydis\user\Zycore.lib;$(SolutionDir)libraries\zydis\user\Zydis.lib;$(SolutionDir)build\bin\$(Configuration)\script-engine.lib;$(SolutionDir)libraries\keystone\$(Configuration)-lib\keystone.lib;$(SolutionDir)libraries\libipt\libipt.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <TreatLinkerWarningAsErrors>false</TreatLinkerWarningAsErrors>
     </Link>
@@ -87,7 +87,9 @@
       </Command>
     </PostBuildEvent>
     <PreBuildEvent>
-      <Command>msbuild "$(SolutionDir)dependencies\zydis\msvc\Zydis.sln" /m /p:Configuration="Release MT" /p:Platform=$(Platform) /target:zydis /target:zycore /p:OutDir="$(SolutionDir)libraries\zydis\user"</Command>
+      <Command>copy "$(SolutionDir)libraries\libipt\libipt.lib" "$(OutDir)"
+copy "$(SolutionDir)libraries\libipt\libipt.dll" "$(OutDir)"
+msbuild "$(SolutionDir)dependencies\zydis\msvc\Zydis.sln" /m /p:Configuration="Release MT" /p:Platform=$(Platform) /target:zydis /target:zycore /p:OutDir="$(SolutionDir)libraries\zydis\user"</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='release|x64'">
@@ -114,7 +116,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
-      <AdditionalDependencies>$(SolutionDir)libraries\zydis\user\Zycore.lib;$(SolutionDir)libraries\zydis\user\Zydis.lib;$(SolutionDir)build\bin\$(Configuration)\script-engine.lib;$(SolutionDir)libraries\keystone\$(Configuration)-lib\keystone.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)libraries\zydis\user\Zycore.lib;$(SolutionDir)libraries\zydis\user\Zydis.lib;$(SolutionDir)build\bin\$(Configuration)\script-engine.lib;$(SolutionDir)libraries\keystone\$(Configuration)-lib\keystone.lib;$(SolutionDir)libraries\libipt\libipt.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <TreatLinkerWarningAsErrors>true</TreatLinkerWarningAsErrors>
     </Link>
@@ -123,47 +125,68 @@
       </Command>
     </PostBuildEvent>
     <PreBuildEvent>
-      <Command>msbuild "$(SolutionDir)dependencies\zydis\msvc\Zydis.sln" /m /p:Configuration="Release MT" /p:Platform=$(Platform) /target:zydis /target:zycore /p:OutDir="$(SolutionDir)libraries\zydis\user"</Command>
+      <Command>copy "$(SolutionDir)libraries\libipt\libipt.lib" "$(OutDir)"
+copy "$(SolutionDir)libraries\libipt\libipt.dll" "$(OutDir)"
+msbuild "$(SolutionDir)dependencies\zydis\msvc\Zydis.sln" /m /p:Configuration="Release MT" /p:Platform=$(Platform) /target:zydis /target:zycore /p:OutDir="$(SolutionDir)libraries\zydis\user"</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="..\include\platform\user\header\Environment.h" />
+    <ClInclude Include="..\include\components\pe\header\pe-image-reader.h" />
+    <ClInclude Include="..\include\platform\user\header\platform-intrinsics.h" />
+    <ClInclude Include="..\include\platform\user\header\platform-lib-calls.h" />
+    <ClInclude Include="..\include\platform\user\header\platform-serial.h" />
+    <ClInclude Include="..\include\platform\user\header\platform-ioctl.h" />
+    <ClInclude Include="..\include\platform\user\header\platform-signal.h" />
+    <ClInclude Include="..\include\platform\general\header\nt-list.h" />
+    <ClInclude Include="..\include\platform\user\header\windows-only\windows-privilege.h" />
     <ClInclude Include="..\include\platform\user\header\Windows.h" />
-    <ClInclude Include="header\assembler.h" />
-    <ClInclude Include="header\commands.h" />
-    <ClInclude Include="header\common.h" />
-    <ClInclude Include="header\communication.h" />
-    <ClInclude Include="header\debugger.h" />
-    <ClInclude Include="header\export.h" />
-    <ClInclude Include="header\forwarding.h" />
-    <ClInclude Include="header\globals.h" />
-    <ClInclude Include="header\help.h" />
-    <ClInclude Include="header\hwdbg-interpreter.h" />
-    <ClInclude Include="header\hwdbg-scripts.h" />
-    <ClInclude Include="header\inipp.h" />
-    <ClInclude Include="header\install.h" />
-    <ClInclude Include="header\kd.h" />
-    <ClInclude Include="header\libhyperdbg.h" />
-    <ClInclude Include="header\list.h" />
-    <ClInclude Include="header\namedpipe.h" />
-    <ClInclude Include="header\objects.h" />
-    <ClInclude Include="header\pci-id.h" />
-    <ClInclude Include="header\pe-parser.h" />
-    <ClInclude Include="header\rev-ctrl.h" />
-    <ClInclude Include="header\script-engine.h" />
-    <ClInclude Include="header\steppings.h" />
-    <ClInclude Include="header\symbol.h" />
-    <ClInclude Include="header\tests.h" />
-    <ClInclude Include="header\transparency.h" />
-    <ClInclude Include="header\ud.h" />
+    <ClInclude Include="header\app\libhyperdbg.h" />
+    <ClInclude Include="header\app\messaging.h" />
+    <ClInclude Include="header\app\packets.h" />
+    <ClInclude Include="header\common\common.h" />
+    <ClInclude Include="header\common\list.h" />
+    <ClInclude Include="header\debugger\commands\commands.h" />
+    <ClInclude Include="header\debugger\commands\help.h" />
+    <ClInclude Include="header\debugger\communication\communication.h" />
+    <ClInclude Include="header\debugger\communication\forwarding.h" />
+    <ClInclude Include="header\debugger\communication\namedpipe.h" />
+    <ClInclude Include="header\debugger\core\debugger.h" />
+    <ClInclude Include="header\debugger\core\steppings.h" />
+    <ClInclude Include="header\debugger\driver-loader\install.h" />
+    <ClInclude Include="header\debugger\kernel-level\kd.h" />
+    <ClInclude Include="header\debugger\misc\assembler.h" />
+    <ClInclude Include="header\debugger\misc\inipp.h" />
+    <ClInclude Include="header\debugger\misc\pci-id.h" />
+    <ClInclude Include="header\debugger\misc\pt-helper.h" />
+    <ClInclude Include="header\debugger\script-engine\script-engine.h" />
+    <ClInclude Include="header\debugger\script-engine\symbol.h" />
+    <ClInclude Include="header\debugger\tests\tests.h" />
+    <ClInclude Include="header\debugger\transparency\transparency.h" />
+    <ClInclude Include="header\debugger\user-level\pe-parser.h" />
+    <ClInclude Include="header\debugger\user-level\ud.h" />
+    <ClInclude Include="header\export\export.h" />
+    <ClInclude Include="header\globals\globals.h" />
+    <ClInclude Include="header\hwdbg\hwdbg-interpreter.h" />
+    <ClInclude Include="header\hwdbg\hwdbg-scripts.h" />
+    <ClInclude Include="header\objects\objects.h" />
+    <ClInclude Include="header\rev\rev-ctrl.h" />
     <ClInclude Include="pch.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\include\components\pe\code\pe-image-reader.cpp" />
+    <ClCompile Include="..\include\platform\user\code\platform-intrinsics.c" />
+    <ClCompile Include="..\include\platform\user\code\platform-lib-calls.c" />
+    <ClCompile Include="..\include\platform\user\code\platform-serial.c" />
+    <ClCompile Include="..\include\platform\user\code\platform-ioctl.c" />
+    <ClCompile Include="..\include\platform\user\code\platform-signal.c" />
+    <ClCompile Include="..\include\platform\user\code\windows-only\windows-privilege.c" />
     <ClCompile Include="..\script-eval\code\Functions.c" />
     <ClCompile Include="..\script-eval\code\Keywords.c" />
     <ClCompile Include="..\script-eval\code\PseudoRegisters.c" />
     <ClCompile Include="..\script-eval\code\Regs.c" />
     <ClCompile Include="..\script-eval\code\ScriptEngineEval.c" />
+    <ClCompile Include="code\app\messaging.cpp" />
+    <ClCompile Include="code\app\packets.cpp" />
     <ClCompile Include="code\common\spinlock.cpp" />
     <ClCompile Include="code\debugger\commands\debugging-commands\a.cpp" />
     <ClCompile Include="code\debugger\commands\debugging-commands\continue.cpp" />
@@ -179,8 +202,10 @@
     <ClCompile Include="code\debugger\commands\extension-commands\idt.cpp" />
     <ClCompile Include="code\debugger\commands\extension-commands\ioapic.cpp" />
     <ClCompile Include="code\debugger\commands\extension-commands\lbr.cpp" />
+    <ClCompile Include="code\debugger\commands\extension-commands\lbrdump.cpp" />
     <ClCompile Include="code\debugger\commands\extension-commands\pcicam.cpp" />
     <ClCompile Include="code\debugger\commands\extension-commands\pcitree.cpp" />
+    <ClCompile Include="code\debugger\commands\extension-commands\pt.cpp" />
     <ClCompile Include="code\debugger\commands\extension-commands\rev.cpp" />
     <ClCompile Include="code\debugger\commands\extension-commands\smi.cpp" />
     <ClCompile Include="code\debugger\commands\extension-commands\trace.cpp" />
@@ -207,6 +232,7 @@
     <ClCompile Include="code\debugger\misc\callstack.cpp" />
     <ClCompile Include="code\debugger\misc\disassembler.cpp" />
     <ClCompile Include="code\debugger\misc\pci-id.cpp" />
+    <ClCompile Include="code\debugger\misc\pt-helper.cpp" />
     <ClCompile Include="code\debugger\misc\readmem.cpp" />
     <ClCompile Include="code\debugger\script-engine\script-engine-wrapper.cpp" />
     <ClCompile Include="code\debugger\script-engine\script-engine.cpp" />
@@ -226,7 +252,6 @@
     <ClCompile Include="code\app\dllmain.cpp" />
     <ClCompile Include="code\app\libhyperdbg.cpp" />
     <ClCompile Include="code\common\common.cpp" />
-    <ClCompile Include="code\common\list.cpp" />
     <ClCompile Include="code\debugger\commands\debugging-commands\bc.cpp" />
     <ClCompile Include="code\debugger\commands\debugging-commands\bd.cpp" />
     <ClCompile Include="code\debugger\commands\debugging-commands\be.cpp" />
