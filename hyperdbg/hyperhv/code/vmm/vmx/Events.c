@@ -45,22 +45,12 @@ EventInjectInterruption(INTERRUPT_TYPE InterruptionType, EXCEPTION_VECTORS Vecto
 VOID
 EventInjectBreakpoint()
 {
-    const UINT32 BreakpointInstructionLength = sizeof(BYTE);
+    UINT32 ExitInstrLength;
 
     EventInjectInterruption(INTERRUPT_TYPE_SOFTWARE_EXCEPTION, EXCEPTION_VECTOR_BREAKPOINT, FALSE, 0);
 
-    VmxVmwrite64(VMCS_CTRL_VMENTRY_INSTRUCTION_LENGTH, BreakpointInstructionLength);
-}
-
-/**
- * @brief Inject #BP for an INT3 located at the current guest RIP.
- *
- * @return VOID
- */
-VOID
-EventInjectBreakpointCurrentRip()
-{
-    EventInjectBreakpoint();
+    VmxVmread32P(VMCS_VMEXIT_INSTRUCTION_LENGTH, &ExitInstrLength);
+    VmxVmwrite64(VMCS_CTRL_VMENTRY_INSTRUCTION_LENGTH, ExitInstrLength);
 }
 
 /**

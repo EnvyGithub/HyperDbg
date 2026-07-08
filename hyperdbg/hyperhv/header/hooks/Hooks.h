@@ -333,11 +333,6 @@ EptHookUnHookSingleAddressFromVmxRoot(UINT64                              Virtua
 UINT32
 EptHookGetCountOfEpthooks(BOOLEAN IsEptHook2);
 
-BOOLEAN
-EptHookQueryState(PVOID TargetAddress,
-                  UINT32 ProcessId,
-                  PEPT_HOOK_STATE_QUERY Query);
-
 /**
  * @brief Remove an entry from g_EptHook2sDetourListHead
  *
@@ -424,30 +419,10 @@ EptHookModifyPageWriteState(VIRTUAL_MACHINE_STATE * VCpu,
                             BOOLEAN                 IsUnset);
 
 /**
- * @brief Restore a pending MTF EPT hook restore before arming another entry
- *
- * @param VCpu The virtual processor's state
- * @param NextHookedEntry The entry that is about to own the MTF restore point
- * @return VOID
- */
-VOID
-EptHookFlushPendingMtfRestoreOnOverwrite(VIRTUAL_MACHINE_STATE * VCpu,
-                                         EPT_HOOKED_PAGE_DETAIL * NextHookedEntry);
-
-/**
  * @brief Handle vm-exits for Monitor Trap Flag to restore previous state
  *
  * @param VCpu The virtual processor's state
- * @return TRUE if the hooked page was restored, FALSE if restore remains pending
+ * @return VOID
  */
-BOOLEAN
+VOID
 EptHookHandleMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu);
-
-/**
- * @brief Handle displaced EPT MTF restores that were queued on overwrite
- *
- * @param VCpu The virtual processor's state
- * @return TRUE if a queued restore was handled or remains pending
- */
-BOOLEAN
-EptHookHandlePendingMtfRestores(VIRTUAL_MACHINE_STATE * VCpu);

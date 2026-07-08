@@ -836,6 +836,131 @@ EptHookWriteAbsoluteJump2(PCHAR TargetBuffer, SIZE_T TargetAddress)
 }
 
 /**
+ * @brief [DOWNSTREAM] Copy stolen instructions into an executable trampoline
+ *        and relocate common RIP-relative forms used by ntoskrnl/win32k wrappers.
+ *
+ * @param TrampolineBuffer Destination executable trampoline.
+ * @param HookedInstructions Raw bytes read from the original target.
+ * @param TargetAddress Original target virtual address.
+ * @param SizeOfHookedInstructions Number of original bytes that are overwritten.
+ * @param TrampolineSize Receives the number of bytes written to the trampoline.
+ * @return BOOLEAN Returns true if relocation succeeded.
+ */
+BOOLEAN
+EptHookCopyInstructionsToTrampoline(PCHAR    TrampolineBuffer,
+                                    PCHAR    HookedInstructions,
+                                    SIZE_T   TargetAddress,
+                                    SIZE_T   SizeOfHookedInstructions,
+                                    SIZE_T * TrampolineSize)
+{
+    SIZE_T ReadOffset;
+    SIZE_T WriteOffset;
+
+    ReadOffset  = 0;
+    WriteOffset = 0;
+
+    while (ReadOffset < SizeOfHookedInstructions)
+    {
+        UINT32 InstructionLength;
+        PCHAR  Instruction;
+
+        Instruction       = HookedInstructions + ReadOffset;
+        InstructionLength = DisassemblerLengthDisassembleEngineInVmxRootOnTargetProcess(Instruction, FALSE);
+
+        if (InstructionLength == 0 || ReadOffset + InstructionLength > SizeOfHookedInstructions)
+        {
+            return FALSE;
+        }
+
+        //
+        // mov rax, qword ptr [rip + disp32]
+        //
+        // HyperDbg's trampoline pool is not guaranteed to be within +/-2GB of
+        // ntoskrnl, so preserving the original disp32 can point at unmapped pool
+        // memory. Expand this common 7-byte form to:
+        //
+        //   mov rax, absolute_address
+        //   mov rax, qword ptr [rax]
+        //
+        if (InstructionLength == 7 &&
+            (UCHAR)Instruction[0] == 0x48 &&
+            (UCHAR)Instruction[1] == 0x8B &&
+            (UCHAR)Instruction[2] == 0x05)
+        {
+            INT32  RipDisplacement;
+            UINT64 AbsoluteAddress;
+
+            if (WriteOffset + 13 + 14 > MAX_EXEC_TRAMPOLINE_SIZE)
+            {
+                return FALSE;
+            }
+
+            RipDisplacement = *((PINT32)&Instruction[3]);
+            AbsoluteAddress = (UINT64)TargetAddress + ReadOffset + InstructionLength + RipDisplacement;
+
+            TrampolineBuffer[WriteOffset + 0] = 0x48;
+            TrampolineBuffer[WriteOffset + 1] = 0xB8;
+            *((PUINT64)&TrampolineBuffer[WriteOffset + 2]) = AbsoluteAddress;
+            TrampolineBuffer[WriteOffset + 10]             = 0x48;
+            TrampolineBuffer[WriteOffset + 11]             = 0x8B;
+            TrampolineBuffer[WriteOffset + 12]             = 0x00;
+            WriteOffset += 13;
+        }
+        //
+        // call qword ptr [rip + disp32]
+        //
+        // Some win32k syscall wrappers call a session-global guard through a
+        // RIP-relative indirect call in the first bytes. Relocate it through
+        // R11 so the trampoline can live outside +/-2GB of win32k.
+        //
+        else if (((InstructionLength == 7 &&
+                   (UCHAR)Instruction[0] == 0x48 &&
+                   (UCHAR)Instruction[1] == 0xFF &&
+                   (UCHAR)Instruction[2] == 0x15) ||
+                  (InstructionLength == 6 &&
+                   (UCHAR)Instruction[0] == 0xFF &&
+                   (UCHAR)Instruction[1] == 0x15)))
+        {
+            INT32  RipDisplacement;
+            UINT64 AbsoluteAddress;
+            UINT32 DisplacementOffset;
+
+            if (WriteOffset + 13 + 14 > MAX_EXEC_TRAMPOLINE_SIZE)
+            {
+                return FALSE;
+            }
+
+            DisplacementOffset = InstructionLength == 7 ? 3 : 2;
+            RipDisplacement    = *((PINT32)&Instruction[DisplacementOffset]);
+            AbsoluteAddress    = (UINT64)TargetAddress + ReadOffset + InstructionLength + RipDisplacement;
+
+            TrampolineBuffer[WriteOffset + 0] = 0x49;
+            TrampolineBuffer[WriteOffset + 1] = 0xBB;
+            *((PUINT64)&TrampolineBuffer[WriteOffset + 2]) = AbsoluteAddress;
+            TrampolineBuffer[WriteOffset + 10]             = 0x41;
+            TrampolineBuffer[WriteOffset + 11]             = 0xFF;
+            TrampolineBuffer[WriteOffset + 12]             = 0x13;
+            WriteOffset += 13;
+        }
+        else
+        {
+            if (WriteOffset + InstructionLength + 14 > MAX_EXEC_TRAMPOLINE_SIZE)
+            {
+                return FALSE;
+            }
+
+            RtlCopyMemory(TrampolineBuffer + WriteOffset, Instruction, InstructionLength);
+            WriteOffset += InstructionLength;
+        }
+
+        ReadOffset += InstructionLength;
+    }
+
+    *TrampolineSize = WriteOffset;
+    return TRUE;
+}
+
+/**
  * @brief Hook instructions
  *
  * @param Hook The details of hooked pages
@@ -850,12 +975,15 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
                          CR3_TYPE                ProcessCr3,
                          PVOID                   TargetFunction,
                          PVOID                   TargetFunctionInSafeMemory,
-                         PVOID                   HookFunction)
+                         PVOID                   HookFunction,
+                         PVOID *                 OriginalFunction)
 {
     PHIDDEN_HOOKS_DETOUR_DETAILS DetourHookDetails;
     SIZE_T                       SizeOfHookedInstructions;
+    SIZE_T                       SizeOfTrampolineInstructions;
     SIZE_T                       OffsetIntoPage;
     CR3_TYPE                     Cr3OfCurrentProcess;
+    CHAR                         HookedInstructions[MAX_EXEC_TRAMPOLINE_SIZE] = {0};
 
     OffsetIntoPage = ADDRMASK_EPT_PML1_OFFSET((SIZE_T)TargetFunction);
 
@@ -886,20 +1014,6 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
         //
     }
 
-    // for (SizeOfHookedInstructions = 0;
-    //      SizeOfHookedInstructions < 19;
-    //      SizeOfHookedInstructions += ZydisLde(((UINT64)TargetFunctionInSafeMemory + SizeOfHookedInstructions), TRUE))
-    //{
-    //     //
-    //     // Get the full size of instructions necessary to copy
-    //     //
-    // }
-
-    //
-    // For logging purpose
-    //
-    // LogInfo("Number of bytes of instruction mem: %x", SizeOfHookedInstructions);
-
     //
     // Build a trampoline
     //
@@ -916,40 +1030,50 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
     }
 
     //
-    // Copy the trampoline instructions in
-    //
-
     // Switch to target process
     //
     Cr3OfCurrentProcess = SwitchToProcessMemoryLayoutByCr3(ProcessCr3);
 
     //
     // The following line can't be used in user mode addresses
-    // RtlCopyMemory(Hook->Trampoline, TargetFunction, SizeOfHookedInstructions);
+    // RtlCopyMemory(HookedInstructions, TargetFunction, SizeOfHookedInstructions);
     //
-    MemoryMapperReadMemorySafe((UINT64)TargetFunction, Hook->Trampoline, SizeOfHookedInstructions);
+    MemoryMapperReadMemorySafe((UINT64)TargetFunction, HookedInstructions, SizeOfHookedInstructions);
 
     //
     // Restore to original process
     //
     SwitchToPreviousProcess(Cr3OfCurrentProcess);
 
+    if (!EptHookCopyInstructionsToTrampoline(Hook->Trampoline,
+                                             HookedInstructions,
+                                             (SIZE_T)TargetFunction,
+                                             SizeOfHookedInstructions,
+                                             &SizeOfTrampolineInstructions))
+    {
+        PoolManagerCallbackFreePool((UINT64)Hook->Trampoline);
+        Hook->Trampoline = NULL;
+        LogError("Err, could not relocate trampoline instructions");
+        return FALSE;
+    }
+
     //
     // Add the absolute jump back to the original function
     //
-    EptHookWriteAbsoluteJump2(&Hook->Trampoline[SizeOfHookedInstructions], (SIZE_T)TargetFunction + SizeOfHookedInstructions);
+    EptHookWriteAbsoluteJump2(&Hook->Trampoline[SizeOfTrampolineInstructions], (SIZE_T)TargetFunction + SizeOfHookedInstructions);
 
-    //
-    //
     //
     // LogInfo("Trampoline: 0x%llx", Hook->Trampoline);
     // LogInfo("HookFunction: 0x%llx", HookFunction);
+    //
 
     //
-    // Let the hook function call the original function
+    // [DOWNSTREAM] Let the hook function call the original function.
     //
-    // *OrigFunction = Hook->Trampoline;
-    //
+    if (OriginalFunction != NULL)
+    {
+        *OriginalFunction = Hook->Trampoline;
+    }
 
     //
     // Create the structure to return for the debugger, we do it here because it's the first
@@ -1092,9 +1216,38 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
 
         if (HookedEntry->PhysicalBaseAddress == PhysicalBaseAddress)
         {
+            if (EptHiddenHook &&
+                !HookedEntry->IsHiddenBreakpoint &&
+                HookedEntry->IsExecutionHook)
+            {
+                TargetAddressInSafeMemory = EptHookCalcBreakpointOffset(TargetAddress, HookedEntry);
+
+                if (((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)->HookFunction == NULL)
+                {
+                    HookFunction = (PVOID)AsmGeneralDetourHook;
+                }
+                else
+                {
+                    HookFunction = ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)->HookFunction;
+                }
+
+                if (!EptHookInstructionMemory(HookedEntry,
+                                              ProcessCr3,
+                                              TargetAddress,
+                                              (PVOID)TargetAddressInSafeMemory,
+                                              HookFunction,
+                                              ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)->OriginalFunction))
+                {
+                    VmmCallbackSetLastError(DEBUGGER_ERROR_COULD_NOT_BUILD_THE_EPT_HOOK);
+                    return FALSE;
+                }
+
+                return TRUE;
+            }
+
             //
-            // Means that we find the address and !epthook2 doesn't support
-            // multiple breakpoints in on page
+            // Means that we find the address and this hook type doesn't support
+            // multiple hooks in one page
             //
             VmmCallbackSetLastError(DEBUGGER_ERROR_EPT_MULTIPLE_HOOKS_IN_A_SINGLE_PAGE);
             return FALSE;
@@ -1242,7 +1395,12 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
         //
         // Create Hook
         //
-        if (!EptHookInstructionMemory(HookedPage, ProcessCr3, TargetAddress, (PVOID)TargetAddressInSafeMemory, HookFunction))
+        if (!EptHookInstructionMemory(HookedPage,
+                                      ProcessCr3,
+                                      TargetAddress,
+                                      (PVOID)TargetAddressInSafeMemory,
+                                      HookFunction,
+                                      ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)->OriginalFunction))
         {
             PoolManagerCallbackFreePool((UINT64)HookedPage);
 
@@ -1564,6 +1722,32 @@ EptHookInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
                   PVOID                   HookFunction,
                   UINT32                  ProcessId)
 {
+    return EptHookInlineHookWithTrampoline(VCpu,
+                                           TargetAddress,
+                                           HookFunction,
+                                           ProcessId,
+                                           NULL);
+}
+
+/**
+ * @brief [DOWNSTREAM] This function applies EPT hook 2 (inline) to the target EPT table and exposes its trampoline
+ * @details this function should be called from VMX non-root mode
+ *
+ * @param VCpu The virtual processor's state
+ * @param TargetAddress The address of function or memory address to be hooked
+ * @param HookFunction The function that will be called when hook triggered
+ * @param ProcessId The process id to translate based on that process's cr3
+ * @param OriginalFunction Receives the trampoline address when the hook is built
+ *
+ * @return BOOLEAN Returns true if the hook was successful or false if there was an error
+ */
+BOOLEAN
+EptHookInlineHookWithTrampoline(VIRTUAL_MACHINE_STATE * VCpu,
+                                PVOID                   TargetAddress,
+                                PVOID                   HookFunction,
+                                UINT32                  ProcessId,
+                                PVOID *                 OriginalFunction)
+{
     EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 HookingDetail = {0};
 
     //
@@ -1577,8 +1761,9 @@ EptHookInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
     //
     // Set the hooking details
     //
-    HookingDetail.TargetAddress = TargetAddress;
-    HookingDetail.HookFunction  = HookFunction;
+    HookingDetail.TargetAddress    = TargetAddress;
+    HookingDetail.HookFunction     = HookFunction;
+    HookingDetail.OriginalFunction = OriginalFunction;
 
     return EptHookPerformMemoryOrInlineHook(VCpu,
                                             &HookingDetail,
@@ -1876,6 +2061,41 @@ EptHookRemoveEntryAndFreePoolFromEptHook2sDetourList(UINT64 Address)
 }
 
 /**
+ * @brief Remove all !epthook2 detour entries on the same page
+ * @param Address Address inside the page to remove
+ * @return BOOLEAN TRUE if at least one entry was removed
+ */
+BOOLEAN
+EptHookRemoveEntriesAndFreePoolFromEptHook2sDetourListByPage(UINT64 Address)
+{
+    BOOLEAN     RemovedAny = FALSE;
+    PLIST_ENTRY CurrentLink;
+    PVOID       PageAddress = PAGE_ALIGN(Address);
+
+    CurrentLink = g_EptHook2sDetourListHead.Flink;
+    while (CurrentLink != &g_EptHook2sDetourListHead)
+    {
+        PLIST_ENTRY NextLink = CurrentLink->Flink;
+        PHIDDEN_HOOKS_DETOUR_DETAILS CurrentHookedDetails =
+            CONTAINING_RECORD(CurrentLink, HIDDEN_HOOKS_DETOUR_DETAILS, OtherHooksList);
+
+        if (PAGE_ALIGN(CurrentHookedDetails->HookedFunctionAddress) == PageAddress)
+        {
+            RemoveEntryList(&CurrentHookedDetails->OtherHooksList);
+            if (!PoolManagerCallbackFreePool((UINT64)CurrentHookedDetails))
+            {
+                LogError("Err, something goes wrong, the pool not found in the list of previously allocated pools by pool manager");
+            }
+            RemovedAny = TRUE;
+        }
+
+        CurrentLink = NextLink;
+    }
+
+    return RemovedAny;
+}
+
+/**
  * @brief get the length of active EPT hooks (!epthook and !epthook2)
  * @param IsEptHook2 Whether the length should be for !epthook or !epthook2
  *
@@ -1952,7 +2172,7 @@ EptHookUnHookSingleAddressDetoursAndMonitor(PEPT_HOOKED_PAGE_DETAIL             
     //
     if (HookedEntry->IsExecutionHook)
     {
-        EptHookRemoveEntryAndFreePoolFromEptHook2sDetourList(HookedEntry->VirtualAddress);
+        EptHookRemoveEntriesAndFreePoolFromEptHook2sDetourListByPage(HookedEntry->VirtualAddress);
     }
 
     //
@@ -2478,7 +2698,7 @@ EptHookUnHookAll()
         //
         if (!CurrEntity->IsHiddenBreakpoint)
         {
-            EptHookRemoveEntryAndFreePoolFromEptHook2sDetourList(CurrEntity->VirtualAddress);
+            EptHookRemoveEntriesAndFreePoolFromEptHook2sDetourListByPage(CurrEntity->VirtualAddress);
         }
 
         //

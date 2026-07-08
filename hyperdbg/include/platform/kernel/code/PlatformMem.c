@@ -261,6 +261,27 @@ PlatformMemAllocateZeroedNonPagedPool(SIZE_T NumberOfBytes)
 }
 
 /**
+ * @brief Allocates zeroed executable non-paged pool memory.
+ * @param NumberOfBytes Size in bytes.
+ * @return PVOID Pointer to memory.
+ */
+PVOID
+PlatformMemAllocateZeroedNonPagedExecutablePool(SIZE_T NumberOfBytes)
+{
+#ifdef _WIN32
+    PVOID Result = ExAllocatePool2(
+        POOL_FLAG_NON_PAGED_EXECUTE,
+        NumberOfBytes,
+        POOLTAG);
+    if (Result != NULL)
+        RtlSecureZeroMemory(Result, NumberOfBytes);
+    return Result;
+#else
+    return kzalloc(NumberOfBytes, GFP_KERNEL);
+#endif
+}
+
+/**
  * @brief Frees a memory pool.
  * @param BufferAddress Pointer to the memory to free.
  * @return PVOID (Void pointer in original API, usually ignored).

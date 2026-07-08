@@ -37,16 +37,6 @@ typedef EPT_PTE       EPT_PML1_ENTRY, *PEPT_PML1_ENTRY;
  *
  */
 #define MaximumHiddenBreakpointsOnPage 40
-#define MaximumDegradedReplaySlots 64
-#define MaximumMtfPendingRestoreSlots 16
-
-typedef enum _EPT_HOOK_DEGRADED_REPLAY_STATE
-{
-    EptHookDegradedReplayNone       = 0,
-    EptHookDegradedReplayExecutePre = 1,
-    EptHookDegradedReplayAllowOriginal = 2,
-    EptHookDegradedReplayClaimed    = 3,
-} EptHookDegradedReplayState;
 
 //////////////////////////////////////////////////
 //					  Enums		    			//
@@ -228,16 +218,6 @@ typedef struct _EPT_HOOKED_PAGE_DETAIL
     UINT64 HookingTag;
 
     /**
-     * @brief Optional memory monitor metadata that can coexist with a hidden breakpoint page.
-     */
-    SIZE_T MonitorStartOfTargetPhysicalAddress;
-    SIZE_T MonitorEndOfTargetPhysicalAddress;
-    BOOLEAN HasMemoryMonitor;
-    BOOLEAN MonitorReadAccess;
-    BOOLEAN MonitorWriteAccess;
-    BOOLEAN MonitorExecuteAccess;
-
-    /**
      * @brief The base address of the page with fake contents. Used to swap page with fake contents
      * when a hook is hit.
      */
@@ -269,12 +249,6 @@ typedef struct _EPT_HOOKED_PAGE_DETAIL
      * a hidden breakpoint command (not a monitor or hidden detours)
      */
     BOOLEAN IsHiddenBreakpoint;
-
-    /**
-     * @brief TRUE when a hidden breakpoint page is degraded to X=0 emulated INT3
-     * because an execute monitor exists on the same physical page.
-     */
-    BOOLEAN IsHiddenBreakpointDegraded;
 
     /**
      * @brief This field shows whether the hook is for MMIO shadowing or not
@@ -312,92 +286,12 @@ typedef struct _EPT_HOOKED_PAGE_DETAIL
     CHAR PreviousBytesOnBreakpointAddresses[MaximumHiddenBreakpointsOnPage];
 
     /**
-     * @brief Per-breakpoint replay stage for degraded hidden breakpoints.
-     */
-    LONG DegradedBreakpointReplayStage[MaximumDegradedReplaySlots];
-
-    /**
-     * @brief Addresses that still need degraded replay even if the debugger
-     * removes the software breakpoint while stopped on the injected #BP.
-     */
-    UINT64 DegradedBreakpointReplayAddress[MaximumDegradedReplaySlots];
-
-    /**
-     * @brief Owner process for each degraded replay slot.
-     */
-    UINT32 DegradedBreakpointReplayOwnerProcessId[MaximumDegradedReplaySlots];
-
-    /**
-     * @brief Owner thread for each degraded replay slot.
-     */
-    UINT32 DegradedBreakpointReplayOwnerThreadId[MaximumDegradedReplaySlots];
-
-    /**
-     * @brief Count of MTF restores that completed the final original-instruction
-     * replay for degraded hidden breakpoints.
-     */
-    UINT64 DegradedBreakpointMtfReplayCount;
-
-    /**
-     * @brief Count of degraded replay slots exhaustion events.
-     */
-    UINT64 DegradedBreakpointReplayOverflowCount;
-
-    /**
      * @brief Count of breakpoints (multiple breakpoints on a single page)
      * this is only used in hidden breakpoints (not hidden detours)
      */
     UINT64 CountOfBreakpoints;
 
-    /**
-     * @brief Diagnostic-only counters for tracing this entry's MTF
-     * restore-to-changed-entry lifecycle. MtfRestoreCompletedCount includes
-     * normal MTF vm-exit restores and downstream overwrite-flush restores.
-     * MtfStarvedByOtherHitCount counts attempted overwrite windows ("would
-     * starve without the flush"), not necessarily a permanently lost restore.
-     * Non-evicting, monotonically increasing; read-only from companion-driver
-     * via EptHookQueryState.
-     */
-    UINT64 MtfArmedCount;
-    UINT64 MtfRestoreCompletedCount;
-    UINT64 MtfStarvedByOtherHitCount;
-
-    /**
-     * @brief Diagnostic-only per-site breakdown of MtfArmedCount. The three
-     * arm sites (BP-driven exact-address hit, general R/W/X EPT-violation
-     * handling, same-RIP violation-threshold pass-through) share one
-     * MtfArmedCount; these disambiguate which site produced each increment.
-     * MtfArmedByBpCount + MtfArmedByRwCount + MtfArmedByThresholdCount ==
-     * MtfArmedCount. Non-evicting, monotonically increasing; read-only from
-     * companion-driver via EptHookQueryState. No effect on hook behavior.
-     */
-    UINT64 MtfArmedByBpCount;
-    UINT64 MtfArmedByRwCount;
-    UINT64 MtfArmedByThresholdCount;
-
-    /**
-     * @brief Last MTF restore vm-exit RIP and replay context VA. Diagnostic-only
-     * latch used to distinguish same-RIP replay stalls from later pipeline bugs.
-     */
-    UINT64 MtfLastExitRip;
-    UINT64 MtfLastContextVirtualAddress;
-    UINT64 MtfRestoreDeferredCount;
-    UINT64 MtfLastDeferredExitRip;
-
 } EPT_HOOKED_PAGE_DETAIL, *PEPT_HOOKED_PAGE_DETAIL;
-
-/**
- * @brief Per-vCPU EPT restore points that were displaced by another hook before
- * their original instruction reached the matching same-page MTF exit.
- */
-typedef struct _EPT_HOOK_PENDING_MTF_RESTORE
-{
-    PEPT_HOOKED_PAGE_DETAIL HookedEntry;
-    UINT64                  ContextVirtualAddress;
-    UINT64                  GuestCr3;
-    UINT32                  DeferredCount;
-    UINT32                  Reserved;
-} EPT_HOOK_PENDING_MTF_RESTORE, *PEPT_HOOK_PENDING_MTF_RESTORE;
 
 /**
  * @brief The status of NMI broadcasting in VMX
@@ -457,20 +351,6 @@ typedef struct _VIRTUAL_MACHINE_STATE
     NMI_BROADCASTING_STATE  NmiBroadcastingState;                                   // Shows the state of NMI broadcasting
     VM_EXIT_TRANSPARENCY    TransparencyState;                                      // The state of the debugger in transparent-mode
     PEPT_HOOKED_PAGE_DETAIL MtfEptHookRestorePoint;                                 // It shows the detail of the hooked paged that should be restore in MTF vm-exit
-    UINT64                  MtfEptHookRestoreCr3;                                   // Guest CR3 captured when the current EPT MTF restore point was armed
-    UINT32                  MtfEptHookRestoreDeferredCount;                         // Count of consecutive off-page MTF deferrals for the current restore point
-    EPT_HOOK_PENDING_MTF_RESTORE MtfEptHookPendingRestoreSlots[MaximumMtfPendingRestoreSlots]; // Displaced restore points waiting for their owning instruction to retire
-    UINT64                  MtfEptHookPendingRestoreOverflowCount;                   // Count of pending restore slot exhaustion events
-    BOOLEAN                 DegradedHiddenBreakpointInjectionActive;                 // TRUE while degraded replay asks the adapter to inject a current-RIP #BP
-    UINT64                  DegradedBreakpointMtfReplayAddress;                      // Address whose degraded original instruction is being restored by this core's MTF
-    BOOLEAN                 DegradedBreakpointMtfReplayPending;                      // TRUE while this core owns a degraded original-instruction MTF replay
-    BOOLEAN                 MtfEptFallbackRestorePending;                           // TRUE when an unknown EPT violation is temporarily allowed for one instruction
-    BOOLEAN                 MtfEptFallbackRestoreLargePage;                         // TRUE when the fallback restore target is a PML2 large page
-    UINT64                  MtfEptFallbackPhysicalBaseAddress;                      // Physical base address for the fallback MTF restore
-    EPT_PML1_ENTRY          MtfEptFallbackOriginalPml1Entry;                        // Saved PML1 entry for fallback MTF restore
-    EPT_PML2_ENTRY          MtfEptFallbackOriginalPml2Entry;                        // Saved PML2 entry for fallback MTF restore
-    UINT64                  LastEptViolationRip;                                    // Last RIP that caused an EPT violation on this core
-    UINT32                  SameRipEptViolationCount;                               // Consecutive EPT violations at LastEptViolationRip
     UINT8                   LastExceptionOccurredInHost;                            // The vector of last exception occurred in host
     UINT64                  HostIdt;                                                // host Interrupt Descriptor Table (actual type is SEGMENT_DESCRIPTOR_INTERRUPT_GATE_64*)
     UINT64                  HostGdt;                                                // host Global Descriptor Table (actual type is SEGMENT_DESCRIPTOR_32* or SEGMENT_DESCRIPTOR_64*)

@@ -56,6 +56,9 @@ PVOID
 PlatformMemAllocateZeroedNonPagedPool(SIZE_T NumberOfBytes);
 
 PVOID
+PlatformMemAllocateZeroedNonPagedExecutablePool(SIZE_T NumberOfBytes);
+
+PVOID
 PlatformMemFreePool(PVOID BufferAddress);
 
 PVOID
@@ -69,6 +72,9 @@ PlatformMemAllocateNonPagedPoolWithQuota(SIZE_T NumberOfBytes);
 
 PVOID
 PlatformMemAllocateZeroedNonPagedPool(SIZE_T NumberOfBytes);
+
+PVOID
+PlatformMemAllocateZeroedNonPagedExecutablePool(SIZE_T NumberOfBytes);
 
 PVOID
 PlatformMemFreePool(PVOID BufferAddress);

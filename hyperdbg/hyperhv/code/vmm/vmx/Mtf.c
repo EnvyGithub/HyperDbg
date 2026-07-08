@@ -21,7 +21,6 @@ VOID
 MtfHandleVmexit(VIRTUAL_MACHINE_STATE * VCpu)
 {
     BOOLEAN IsMtfHandled = FALSE;
-    BOOLEAN CurrentEptHookRestoreCompleted = FALSE;
 
     //
     // Redo the instruction
@@ -47,21 +46,6 @@ MtfHandleVmexit(VIRTUAL_MACHINE_STATE * VCpu)
     //
     // *** Regular Monitor Trap Flag functionalities ***
     //
-    if (VCpu->MtfEptFallbackRestorePending)
-    {
-        //
-        // MTF is handled
-        //
-        IsMtfHandled = TRUE;
-
-        EptHandleUnknownViolationMonitorTrapFlag(VCpu);
-
-        //
-        // Check for re-enabling external interrupts
-        //
-        HvEnableAndCheckForPreviousExternalInterrupts(VCpu);
-    }
-
     if (VCpu->MtfEptHookRestorePoint)
     {
         //
@@ -72,39 +56,17 @@ MtfHandleVmexit(VIRTUAL_MACHINE_STATE * VCpu)
         //
         // Restore the previous state
         //
-        if (EptHookHandleMonitorTrapFlag(VCpu))
-        {
-            //
-            // Set it to NULL
-            //
-            VCpu->MtfEptHookRestorePoint = NULL;
-            VCpu->MtfEptHookRestoreCr3 = NULL64_ZERO;
-            VCpu->MtfEptHookRestoreDeferredCount = 0;
-            VCpu->LastEptViolationRip      = NULL64_ZERO;
-            VCpu->SameRipEptViolationCount = 0;
-            CurrentEptHookRestoreCompleted = TRUE;
+        EptHookHandleMonitorTrapFlag(VCpu);
 
-            //
-            // Check for re-enabling external interrupts
-            //
-            HvEnableAndCheckForPreviousExternalInterrupts(VCpu);
-        }
-    }
-
-    if (EptHookHandlePendingMtfRestores(VCpu))
-    {
         //
-        // MTF is handled
+        // Set it to NULL
         //
-        IsMtfHandled = TRUE;
+        VCpu->MtfEptHookRestorePoint = NULL;
 
-        if (!VCpu->IgnoreMtfUnset && !CurrentEptHookRestoreCompleted)
-        {
-            //
-            // Check for re-enabling external interrupts
-            //
-            HvEnableAndCheckForPreviousExternalInterrupts(VCpu);
-        }
+        //
+        // Check for re-enabling external interrupts
+        //
+        HvEnableAndCheckForPreviousExternalInterrupts(VCpu);
     }
 
     //

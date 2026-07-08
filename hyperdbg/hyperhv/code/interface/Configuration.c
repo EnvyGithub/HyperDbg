@@ -389,14 +389,6 @@ ConfigureEptHookMonitorFromVmxRoot(UINT32                                       
     return EptHookMonitorFromVmxRoot(&g_GuestState[CoreId], MemoryAddressDetails);
 }
 
-BOOLEAN
-ConfigureEptHookQueryState(PVOID TargetAddress,
-                           UINT32 ProcessId,
-                           PEPT_HOOK_STATE_QUERY Query)
-{
-    return EptHookQueryState(TargetAddress, ProcessId, Query);
-}
-
 /**
  * @brief Change PML EPT state for execution (execute)
  * @detail should be called from VMX-root
