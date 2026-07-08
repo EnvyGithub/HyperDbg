@@ -953,7 +953,12 @@ HvHandleMovDebugRegister(VIRTUAL_MACHINE_STATE * VCpu)
             CpuWriteDr(VMX_EXIT_QUALIFICATION_REGISTER_DR6, GpRegister);
             break;
         case VMX_EXIT_QUALIFICATION_REGISTER_DR7:
-            CpuWriteDr(VMX_EXIT_QUALIFICATION_REGISTER_DR7, GpRegister);
+            //
+            // DR7 is VMCS guest state.  Writing the physical DR7 while running
+            // in VMX root would be overwritten on the next VM-entry and native
+            // guest debug-register breakpoints would remain disabled.
+            //
+            VmxVmwrite64(VMCS_GUEST_DR7, GpRegister);
             break;
         default:
             break;
@@ -979,11 +984,13 @@ HvHandleMovDebugRegister(VIRTUAL_MACHINE_STATE * VCpu)
             GpRegister = CpuReadDr(VMX_EXIT_QUALIFICATION_REGISTER_DR6);
             break;
         case VMX_EXIT_QUALIFICATION_REGISTER_DR7:
-            GpRegister = CpuReadDr(VMX_EXIT_QUALIFICATION_REGISTER_DR7);
+            VmxVmread64P(VMCS_GUEST_DR7, &GpRegister);
             break;
         default:
             break;
         }
+        GpRegs[ExitQualification.GeneralPurposeRegister] = GpRegister;
+        break;
 
     default:
         break;
