@@ -954,12 +954,10 @@ HvHandleMovDebugRegister(VIRTUAL_MACHINE_STATE * VCpu)
             break;
         case VMX_EXIT_QUALIFICATION_REGISTER_DR7:
             //
-            // DR7 may be loaded from VMCS only when VM-entry load-debug-controls
-            // is enabled.  Keep both views synchronized so guest MOV DR7 works
-            // under the default controls as well as under HyperDbg debug-control
-            // virtualization.
+            // DR7 is VMCS guest state.  Writing the physical DR7 while running
+            // in VMX root would be overwritten on the next VM-entry and native
+            // guest debug-register breakpoints would remain disabled.
             //
-            CpuWriteDr(VMX_EXIT_QUALIFICATION_REGISTER_DR7, GpRegister);
             VmxVmwrite64(VMCS_GUEST_DR7, GpRegister);
             break;
         default:
