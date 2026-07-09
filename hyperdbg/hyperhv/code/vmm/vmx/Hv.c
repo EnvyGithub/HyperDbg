@@ -953,14 +953,7 @@ HvHandleMovDebugRegister(VIRTUAL_MACHINE_STATE * VCpu)
             CpuWriteDr(VMX_EXIT_QUALIFICATION_REGISTER_DR6, GpRegister);
             break;
         case VMX_EXIT_QUALIFICATION_REGISTER_DR7:
-            //
-            // DR7 may be loaded from VMCS only when VM-entry load-debug-controls
-            // is enabled.  Keep both views synchronized so guest MOV DR7 works
-            // under the default controls as well as under HyperDbg debug-control
-            // virtualization.
-            //
             CpuWriteDr(VMX_EXIT_QUALIFICATION_REGISTER_DR7, GpRegister);
-            VmxVmwrite64(VMCS_GUEST_DR7, GpRegister);
             break;
         default:
             break;
@@ -986,13 +979,11 @@ HvHandleMovDebugRegister(VIRTUAL_MACHINE_STATE * VCpu)
             GpRegister = CpuReadDr(VMX_EXIT_QUALIFICATION_REGISTER_DR6);
             break;
         case VMX_EXIT_QUALIFICATION_REGISTER_DR7:
-            VmxVmread64P(VMCS_GUEST_DR7, &GpRegister);
+            GpRegister = CpuReadDr(VMX_EXIT_QUALIFICATION_REGISTER_DR7);
             break;
         default:
             break;
         }
-        GpRegs[ExitQualification.GeneralPurposeRegister] = GpRegister;
-        break;
 
     default:
         break;
