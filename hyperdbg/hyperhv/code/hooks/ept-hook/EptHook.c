@@ -261,6 +261,11 @@ EptHookCreateHookPage(_Inout_ VIRTUAL_MACHINE_STATE * VCpu,
     //
     MemoryMapperReadMemorySafe((UINT64)VirtualTarget, &HookedPage->FakePageContents, PAGE_SIZE);
 
+    // Preserve the first breakpoint's real byte. Removing it while another
+    // breakpoint remains on this page restores from this slot instead of
+    // removing the whole EPT hook.
+    HookedPage->PreviousBytesOnBreakpointAddresses[0] = *(BYTE *)TargetAddressInFakePageContent;
+
     //
     // we set the breakpoint on the fake page
     //
