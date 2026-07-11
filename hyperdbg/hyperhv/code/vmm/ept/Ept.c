@@ -1240,6 +1240,8 @@ EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
             {
                 if (HookedEntry->BreakpointAddresses[i] == GuestRip)
                 {
+                    HookedEntry->LastViolation = EPT_HOOKED_LAST_VIOLATION_EXEC;
+
                     //
                     // We found an address that matches the details, let's trigger the event
                     //
