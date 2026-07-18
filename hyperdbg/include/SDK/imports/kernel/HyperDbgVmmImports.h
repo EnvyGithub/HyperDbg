@@ -191,6 +191,15 @@ VmFuncInvalidateEptAllContexts();
 IMPORT_EXPORT_VMM VOID
 VmFuncUninitVmm();
 
+/**
+ * @brief Uninitializes the VMM and reports whether every logical core left
+ * VMX operation before shared resources were released.
+ *
+ * @return BOOLEAN TRUE when teardown completed or the VMM was already absent.
+ */
+IMPORT_EXPORT_VMM BOOLEAN
+VmFuncUninitVmmChecked();
+
 IMPORT_EXPORT_VMM VOID
 VmFuncEnableMtfAndChangeExternalInterruptState(UINT32 CoreId);
 

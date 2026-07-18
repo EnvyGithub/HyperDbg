@@ -38,6 +38,13 @@ VMM_CALLBACKS g_Callbacks;
 VIRTUAL_MACHINE_STATE * g_GuestState;
 
 /**
+ * @brief Indicates that all logical cores completed VMLAUNCH and the VMM is
+ * available for normal runtime operations.
+ *
+ */
+BOOLEAN g_VmxInitialized;
+
+/**
  * @brief Save the state of memory mapper
  *
  */

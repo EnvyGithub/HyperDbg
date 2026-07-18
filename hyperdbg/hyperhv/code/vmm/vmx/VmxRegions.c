@@ -79,6 +79,8 @@ VmxAllocateVmxonRegion(VIRTUAL_MACHINE_STATE * VCpu)
     if (VmxonStatus)
     {
         LogError("Err, executing vmxon instruction failed with status : %d", VmxonStatus);
+        MmFreeContiguousMemory(VmxonRegion);
+        CpuWriteCr4(CpuReadCr4() & (~REG_CR4_VMXE));
         return FALSE;
     }
 
@@ -88,6 +90,7 @@ VmxAllocateVmxonRegion(VIRTUAL_MACHINE_STATE * VCpu)
     // We save the allocated buffer (not the aligned buffer) because we want to free it in vmx termination
     //
     VCpu->VmxonRegionVirtualAddress = (UINT64)VmxonRegion;
+    VCpu->VmxonActive               = TRUE;
 
     return TRUE;
 }
@@ -156,6 +159,89 @@ VmxAllocateVmcsRegion(VIRTUAL_MACHINE_STATE * VCpu)
     VCpu->VmcsRegionVirtualAddress = (UINT64)VmcsRegion;
 
     return TRUE;
+}
+
+/**
+ * @brief Release all VMX-region allocations owned by one logical core
+ *
+ * @param VCpu The core that has already left VMX operation
+ */
+VOID
+VmxFreeVcpuResources(_Inout_ VIRTUAL_MACHINE_STATE * VCpu)
+{
+    if (VCpu->VmxonRegionVirtualAddress != NULL64_ZERO)
+    {
+        MmFreeContiguousMemory((PVOID)VCpu->VmxonRegionVirtualAddress);
+        VCpu->VmxonRegionVirtualAddress  = NULL64_ZERO;
+        VCpu->VmxonRegionPhysicalAddress = NULL64_ZERO;
+    }
+
+    if (VCpu->VmcsRegionVirtualAddress != NULL64_ZERO)
+    {
+        MmFreeContiguousMemory((PVOID)VCpu->VmcsRegionVirtualAddress);
+        VCpu->VmcsRegionVirtualAddress  = NULL64_ZERO;
+        VCpu->VmcsRegionPhysicalAddress = NULL64_ZERO;
+    }
+
+    if (VCpu->VmmStack != NULL64_ZERO)
+    {
+        PlatformMemFreePool((PVOID)VCpu->VmmStack);
+        VCpu->VmmStack = NULL64_ZERO;
+    }
+
+    if (VCpu->MsrBitmapVirtualAddress != NULL64_ZERO)
+    {
+        PlatformMemFreePool((PVOID)VCpu->MsrBitmapVirtualAddress);
+        VCpu->MsrBitmapVirtualAddress  = NULL64_ZERO;
+        VCpu->MsrBitmapPhysicalAddress = NULL64_ZERO;
+    }
+
+    if (VCpu->IoBitmapVirtualAddressA != NULL64_ZERO)
+    {
+        PlatformMemFreePool((PVOID)VCpu->IoBitmapVirtualAddressA);
+        VCpu->IoBitmapVirtualAddressA  = NULL64_ZERO;
+        VCpu->IoBitmapPhysicalAddressA = NULL64_ZERO;
+    }
+
+    if (VCpu->IoBitmapVirtualAddressB != NULL64_ZERO)
+    {
+        PlatformMemFreePool((PVOID)VCpu->IoBitmapVirtualAddressB);
+        VCpu->IoBitmapVirtualAddressB  = NULL64_ZERO;
+        VCpu->IoBitmapPhysicalAddressB = NULL64_ZERO;
+    }
+
+#if USE_DEFAULT_OS_IDT_AS_HOST_IDT == FALSE
+    if (VCpu->HostIdt != NULL64_ZERO)
+    {
+        PlatformMemFreePool((PVOID)VCpu->HostIdt);
+        VCpu->HostIdt = NULL64_ZERO;
+    }
+#endif // USE_DEFAULT_OS_IDT_AS_HOST_IDT == FALSE
+
+#if USE_DEFAULT_OS_GDT_AS_HOST_GDT == FALSE
+    if (VCpu->HostGdt != NULL64_ZERO)
+    {
+        PlatformMemFreePool((PVOID)VCpu->HostGdt);
+        VCpu->HostGdt = NULL64_ZERO;
+    }
+
+    if (VCpu->HostTss != NULL64_ZERO)
+    {
+        PlatformMemFreePool((PVOID)VCpu->HostTss);
+        VCpu->HostTss = NULL64_ZERO;
+    }
+#endif // USE_DEFAULT_OS_GDT_AS_HOST_GDT == FALSE
+
+#if USE_INTERRUPT_STACK_TABLE == TRUE
+    if (VCpu->HostInterruptStack != NULL64_ZERO)
+    {
+        PlatformMemFreePool((PVOID)VCpu->HostInterruptStack);
+        VCpu->HostInterruptStack = NULL64_ZERO;
+    }
+#endif // USE_INTERRUPT_STACK_TABLE == TRUE
+
+    VCpu->Regs    = NULL;
+    VCpu->XmmRegs = NULL;
 }
 
 /**

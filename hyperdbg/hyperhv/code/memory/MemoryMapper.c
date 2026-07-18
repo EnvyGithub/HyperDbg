@@ -635,15 +635,31 @@ MemoryMapperMapPageAndGetPte(PUINT64 PteAddress)
     PVOID  Va;
     UINT64 Pte;
 
+    if (PteAddress == NULL)
+    {
+        return NULL;
+    }
+
+    *PteAddress = NULL64_ZERO;
+
     //
     // Reserve the page from system va space
     //
     Va = MemoryMapperMapReservedPageRange(PAGE_SIZE);
+    if (Va == NULL)
+    {
+        return NULL;
+    }
 
     //
     // Get the page's Page Table Entry
     //
     Pte = (UINT64)MemoryMapperGetPte(Va);
+    if (Pte == NULL64_ZERO)
+    {
+        MemoryMapperUnmapReservedPageRange(Va);
+        return NULL;
+    }
 
     *PteAddress = Pte;
 
@@ -655,9 +671,9 @@ MemoryMapperMapPageAndGetPte(PUINT64 PteAddress)
  * @details This function should be called in vmx non-root
  * in a IRQL <= APC_LEVEL
  *
- * @return VOID
+ * @return BOOLEAN TRUE when every per-core mapping was reserved
  */
-VOID
+BOOLEAN
 MemoryMapperInitialize()
 {
     UINT64 TempPte;
@@ -674,13 +690,18 @@ MemoryMapperInitialize()
         //
         // It's already initialized
         //
-        return;
+        return TRUE;
     }
 
     //
     // Allocate the memory buffer structure
     //
     g_MemoryMapper = PlatformMemAllocateZeroedNonPagedPool(sizeof(MEMORY_MAPPER_ADDRESSES) * ProcessorsCount);
+    if (g_MemoryMapper == NULL)
+    {
+        LogError("Err, insufficient memory for memory mapper state");
+        return FALSE;
+    }
 
     //
     // Set the core's id and initialize memory mapper
@@ -695,14 +716,30 @@ MemoryMapperInitialize()
         // Initial and reserve for read operations
         //
         g_MemoryMapper[i].VirualAddressForRead     = (UINT64)MemoryMapperMapPageAndGetPte(&TempPte);
+        if (g_MemoryMapper[i].VirualAddressForRead == NULL64_ZERO)
+        {
+            LogError("Err, unable to reserve memory mapper read page on logical core %llu", i);
+            goto Error;
+        }
         g_MemoryMapper[i].PteVirtualAddressForRead = TempPte;
 
         //
         // Initial and reserve for write operations
         //
         g_MemoryMapper[i].VirualAddressForWrite     = (UINT64)MemoryMapperMapPageAndGetPte(&TempPte);
+        if (g_MemoryMapper[i].VirualAddressForWrite == NULL64_ZERO)
+        {
+            LogError("Err, unable to reserve memory mapper write page on logical core %llu", i);
+            goto Error;
+        }
         g_MemoryMapper[i].PteVirtualAddressForWrite = TempPte;
     }
+
+    return TRUE;
+
+Error:
+    MemoryMapperUninitialize();
+    return FALSE;
 }
 
 /**

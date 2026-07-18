@@ -127,13 +127,16 @@ DpcRoutineRunTaskOnSingleCore(UINT32 CoreNumber, PVOID Routine, PVOID DeferredCo
 BOOLEAN
 DpcRoutinePerformVirtualization(KDPC * Dpc, PVOID DeferredContext, PVOID SystemArgument1, PVOID SystemArgument2)
 {
+    ULONG CurrentCore;
+
     UNREFERENCED_PARAMETER(Dpc);
     UNREFERENCED_PARAMETER(DeferredContext);
 
     //
     // Allocates Vmx regions for all logical cores (Vmxon region and Vmcs region)
     //
-    VmxPerformVirtualizationOnSpecificCore();
+    CurrentCore = KeGetCurrentProcessorNumberEx(NULL);
+    g_GuestState[CurrentCore].LastVmxOperationSucceeded = VmxPerformVirtualizationOnSpecificCore();
 
     // ------------------------------------------------------------------------------
     // Synchronize the end of this routine with the caller
@@ -1508,6 +1511,8 @@ DpcRoutineInvalidateEptOnAllCores(KDPC * Dpc, PVOID DeferredContext, PVOID Syste
 VOID
 DpcRoutineInitializeGuest(KDPC * Dpc, PVOID DeferredContext, PVOID SystemArgument1, PVOID SystemArgument2)
 {
+    ULONG CurrentCore;
+
     UNREFERENCED_PARAMETER(Dpc);
     UNREFERENCED_PARAMETER(DeferredContext);
 
@@ -1515,6 +1520,9 @@ DpcRoutineInitializeGuest(KDPC * Dpc, PVOID DeferredContext, PVOID SystemArgumen
     // Save the vmx state and prepare vmcs setup and finally execute vmlaunch instruction
     //
     AsmVmxSaveState();
+
+    CurrentCore = KeGetCurrentProcessorNumberEx(NULL);
+    g_GuestState[CurrentCore].LastVmxOperationSucceeded = g_GuestState[CurrentCore].HasLaunched;
 
     // ------------------------------------------------------------------------------
     // Synchronize the end of this routine with the caller
@@ -1534,13 +1542,20 @@ DpcRoutineInitializeGuest(KDPC * Dpc, PVOID DeferredContext, PVOID SystemArgumen
 VOID
 DpcRoutineTerminateGuest(KDPC * Dpc, PVOID DeferredContext, PVOID SystemArgument1, PVOID SystemArgument2)
 {
+    ULONG   CurrentCore;
+    BOOLEAN Result;
+
     UNREFERENCED_PARAMETER(Dpc);
     UNREFERENCED_PARAMETER(DeferredContext);
 
     //
     // Terminate Vmx using vmcall
     //
-    if (!VmxTerminate())
+    CurrentCore = KeGetCurrentProcessorNumberEx(NULL);
+    Result      = VmxTerminate();
+    g_GuestState[CurrentCore].LastVmxOperationSucceeded = Result;
+
+    if (!Result)
     {
         LogError("Err, there were an error terminating vmx");
     }

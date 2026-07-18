@@ -106,6 +106,114 @@ VmxGetCurrentLaunchState()
 }
 
 /**
+ * @brief Reset the result slots written by synchronous lifecycle DPCs
+ */
+static VOID
+VmxResetLastOperationResults()
+{
+    ULONG ProcessorsCount;
+
+    if (g_GuestState == NULL)
+    {
+        return;
+    }
+
+    ProcessorsCount = KeQueryActiveProcessorCount(0);
+    for (ULONG ProcessorId = 0; ProcessorId < ProcessorsCount; ProcessorId++)
+    {
+        g_GuestState[ProcessorId].LastVmxOperationSucceeded = FALSE;
+    }
+}
+
+/**
+ * @brief Check the results published by all lifecycle DPCs
+ *
+ * @param OperationName Name included in a fail-visible per-core diagnostic
+ * @return BOOLEAN TRUE only if every active logical core reported success
+ */
+static BOOLEAN
+VmxAllLastOperationResultsSucceeded(_In_z_ const CHAR * OperationName)
+{
+    BOOLEAN Result = TRUE;
+    ULONG   ProcessorsCount;
+
+    if (g_GuestState == NULL)
+    {
+        return FALSE;
+    }
+
+    ProcessorsCount = KeQueryActiveProcessorCount(0);
+    for (ULONG ProcessorId = 0; ProcessorId < ProcessorsCount; ProcessorId++)
+    {
+        if (!g_GuestState[ProcessorId].LastVmxOperationSucceeded)
+        {
+            LogError("Err, %s failed on logical core %lu", OperationName, ProcessorId);
+            Result = FALSE;
+        }
+    }
+
+    return Result;
+}
+
+/**
+ * @brief Leave VMX operation after a per-core initialization failure
+ */
+static VOID
+VmxRollbackCurrentCoreInitialization(_Inout_ VIRTUAL_MACHINE_STATE * VCpu)
+{
+    if (VCpu->VmxonActive)
+    {
+        VmxVmxoff();
+        VCpu->VmxonActive = FALSE;
+        CpuWriteCr4(CpuReadCr4() & (~REG_CR4_VMXE));
+    }
+
+    VCpu->HasLaunched = FALSE;
+}
+
+/**
+ * @brief Release shared lifecycle resources after every core is out of VMX
+ */
+static VOID
+VmxFreeSharedLifecycleResources()
+{
+    ULONG ProcessorsCount = KeQueryActiveProcessorCount(0);
+
+    if (g_MsrBitmapInvalidMsrs != NULL)
+    {
+        PlatformMemFreePool(g_MsrBitmapInvalidMsrs);
+        g_MsrBitmapInvalidMsrs = NULL;
+    }
+
+    if (g_GuestState != NULL)
+    {
+        for (ULONG ProcessorId = 0; ProcessorId < ProcessorsCount; ProcessorId++)
+        {
+            if (g_GuestState[ProcessorId].EptPageTable != NULL)
+            {
+                EptFreeIdentityPageTable(g_GuestState[ProcessorId].EptPageTable);
+                g_GuestState[ProcessorId].EptPageTable = NULL;
+            }
+        }
+    }
+
+    if (g_EptState != NULL)
+    {
+        PlatformMemFreePool(g_EptState);
+        g_EptState = NULL;
+    }
+
+    MemoryMapperUninitialize();
+
+    if (g_GuestState != NULL)
+    {
+        GlobalGuestStateFreeMemory();
+    }
+
+    g_VmxInitialized = FALSE;
+}
+
+/**
  * @brief Initialize the VMX operation
  *
  * @return BOOLEAN Returns true if vmx initialized successfully
@@ -114,6 +222,8 @@ BOOLEAN
 VmxInitialize()
 {
     ULONG ProcessorsCount;
+
+    g_VmxInitialized = FALSE;
 
     //
     // ****** Start Virtualizing Current System ******
@@ -124,10 +234,7 @@ VmxInitialize()
     //
     if (!VmxPerformVirtualizationOnAllCores())
     {
-        //
-        // there was error somewhere in initializing
-        //
-        return FALSE;
+        goto Error;
     }
 
     ProcessorsCount = KeQueryActiveProcessorCount(0);
@@ -145,10 +252,7 @@ VmxInitialize()
         //
         if (!VmxAllocateVmmStack(GuestState))
         {
-            //
-            // Some error in allocating Vmm Stack
-            //
-            return FALSE;
+            goto Error;
         }
 
         //
@@ -156,10 +260,7 @@ VmxInitialize()
         //
         if (!VmxAllocateMsrBitmap(GuestState))
         {
-            //
-            // Some error in allocating Msr Bitmaps
-            //
-            return FALSE;
+            goto Error;
         }
 
         //
@@ -167,10 +268,7 @@ VmxInitialize()
         //
         if (!VmxAllocateIoBitmaps(GuestState))
         {
-            //
-            // Some error in allocating I/O Bitmaps
-            //
-            return FALSE;
+            goto Error;
         }
 
 #if USE_DEFAULT_OS_IDT_AS_HOST_IDT == FALSE
@@ -180,10 +278,7 @@ VmxInitialize()
         //
         if (!VmxAllocateHostIdt(GuestState))
         {
-            //
-            // Some error in allocating Host IDT
-            //
-            return FALSE;
+            goto Error;
         }
 #endif // USE_DEFAULT_OS_IDT_AS_HOST_IDT == FALSE
 
@@ -194,10 +289,7 @@ VmxInitialize()
         //
         if (!VmxAllocateHostGdt(GuestState))
         {
-            //
-            // Some error in allocating Host GDT
-            //
-            return FALSE;
+            goto Error;
         }
 
         //
@@ -205,10 +297,7 @@ VmxInitialize()
         //
         if (!VmxAllocateHostTss(GuestState))
         {
-            //
-            // Some error in allocating Host TSS
-            //
-            return FALSE;
+            goto Error;
         }
 
 #endif // USE_DEFAULT_OS_GDT_AS_HOST_GDT == FALSE
@@ -220,10 +309,7 @@ VmxInitialize()
         //
         if (!VmxAllocateHostInterruptStack(GuestState))
         {
-            //
-            // Some error in allocating Interrupt Stack
-            //
-            return FALSE;
+            goto Error;
         }
 
 #endif // USE_INTERRUPT_STACK_TABLE == TRUE
@@ -236,26 +322,39 @@ VmxInitialize()
 
     if (g_MsrBitmapInvalidMsrs == NULL)
     {
-        return FALSE;
+        goto Error;
     }
 
     //
     // As we want to support more than 32 processor (64 logical-core)
     // we let windows execute our routine for us
     //
+    VmxResetLastOperationResults();
     KeGenericCallDpc(DpcRoutineInitializeGuest, 0x0);
+
+    if (!VmxAllLastOperationResultsSucceeded("VMLAUNCH"))
+    {
+        goto Error;
+    }
 
     //
     // Check if everything is ok then return true otherwise false
     //
     if (AsmVmxVmcall(VMCALL_TEST, 0x22, 0x333, 0x4444) == STATUS_SUCCESS)
     {
+        g_VmxInitialized = TRUE;
         return TRUE;
     }
-    else
+
+    LogError("Err, VMCALL self-test failed after all logical cores launched");
+
+Error:
+    if (!VmxPerformTermination())
     {
-        return FALSE;
+        LogError("Err, VMM initialization rollback did not leave every logical core in a clean state");
     }
+
+    return FALSE;
 }
 
 /**
@@ -345,12 +444,10 @@ VmxPerformVirtualizationOnAllCores()
     //
     // Broadcast to run vmx-specific task to virtualize cores
     //
+    VmxResetLastOperationResults();
     BroadcastVmxVirtualizationAllCores();
 
-    //
-    // Everything is ok, let's return true
-    //
-    return TRUE;
+    return VmxAllLastOperationResultsSucceeded("VMXON/VMCS initialization");
 }
 
 /**
@@ -386,6 +483,7 @@ VmxPerformVirtualizationOnSpecificCore()
     if (!VmxAllocateVmcsRegion(VCpu))
     {
         LogError("Err, allocating memory for vmcs region was not successful");
+        VmxRollbackCurrentCoreInitialization(VCpu);
         return FALSE;
     }
 
@@ -500,7 +598,7 @@ VmxVirtualizeCurrentSystem(PVOID GuestStack)
     if (!VmxClearVmcsState(VCpu))
     {
         LogError("Err, failed to clear vmcs");
-        return FALSE;
+        goto Error;
     }
 
     //
@@ -509,7 +607,7 @@ VmxVirtualizeCurrentSystem(PVOID GuestStack)
     if (!VmxLoadVmcs(VCpu))
     {
         LogError("Err, failed to load vmcs");
-        return FALSE;
+        goto Error;
     }
 
     LogDebugInfo("Setting up VMCS for current logical core");
@@ -542,12 +640,8 @@ VmxVirtualizeCurrentSystem(PVOID GuestStack)
 
     LogError("Err, unable to execute VMLAUNCH, status : 0x%llx", ErrorCode);
 
-    //
-    // Then Execute Vmxoff
-    //
-    VmxVmxoff();
-    LogError("Err, VMXOFF Executed Successfully but it was because of an error");
-
+Error:
+    VmxRollbackCurrentCoreInitialization(VCpu);
     return FALSE;
 }
 
@@ -564,41 +658,30 @@ VmxTerminate()
     ULONG                   CurrentCore = KeGetCurrentProcessorNumberEx(NULL);
     VIRTUAL_MACHINE_STATE * VCpu        = &g_GuestState[CurrentCore];
 
-    //
-    // Execute Vmcall to to turn off vmx from Vmx root mode
-    //
-    Status = AsmVmxVmcall(VMCALL_VMXOFF, NULL64_ZERO, NULL64_ZERO, NULL64_ZERO);
-
-    if (Status == STATUS_SUCCESS)
+    if (VCpu->HasLaunched)
     {
-        LogDebugInfo("VMX terminated on logical core %d\n", CurrentCore);
-
         //
-        // Free the destination memory
+        // Execute Vmcall to turn off VMX from VMX root mode.
         //
-        MmFreeContiguousMemory((PVOID)VCpu->VmxonRegionVirtualAddress);
-        MmFreeContiguousMemory((PVOID)VCpu->VmcsRegionVirtualAddress);
-        PlatformMemFreePool((PVOID)VCpu->VmmStack);
-        PlatformMemFreePool((PVOID)VCpu->MsrBitmapVirtualAddress);
-        PlatformMemFreePool((PVOID)VCpu->IoBitmapVirtualAddressA);
-        PlatformMemFreePool((PVOID)VCpu->IoBitmapVirtualAddressB);
-#if USE_DEFAULT_OS_IDT_AS_HOST_IDT == FALSE
-        PlatformMemFreePool((PVOID)VCpu->HostIdt);
-#endif // USE_DEFAULT_OS_IDT_AS_HOST_IDT == FALSE
-
-#if USE_DEFAULT_OS_GDT_AS_HOST_GDT == FALSE
-        PlatformMemFreePool((PVOID)VCpu->HostGdt);
-        PlatformMemFreePool((PVOID)VCpu->HostTss);
-#endif // USE_DEFAULT_OS_GDT_AS_HOST_GDT == FALSE
-
-#if USE_INTERRUPT_STACK_TABLE == TRUE
-        PlatformMemFreePool((PVOID)VCpu->HostInterruptStack);
-#endif // USE_INTERRUPT_STACK_TABLE == FALSE
-
-        return TRUE;
+        Status = AsmVmxVmcall(VMCALL_VMXOFF, NULL64_ZERO, NULL64_ZERO, NULL64_ZERO);
+        if (Status != STATUS_SUCCESS)
+        {
+            LogError("Err, VMCALL_VMXOFF failed on logical core %lu with status 0x%x", CurrentCore, Status);
+            return FALSE;
+        }
+    }
+    else if (VCpu->VmxonActive)
+    {
+        //
+        // A failed initialization never entered VMX non-root mode, so it must
+        // leave VMX operation directly rather than issuing a VMCALL.
+        //
+        VmxRollbackCurrentCoreInitialization(VCpu);
     }
 
-    return FALSE;
+    VmxFreeVcpuResources(VCpu);
+    LogDebugInfo("VMX terminated on logical core %d\n", CurrentCore);
+    return TRUE;
 }
 
 /**
@@ -638,12 +721,7 @@ VmxClearVmcsState(VIRTUAL_MACHINE_STATE * VCpu)
 
     if (VmclearStatus)
     {
-        //
-        // Otherwise terminate the VMX
-        //
         LogDebugInfo("VMCS failed to clear, status : 0x%x", VmclearStatus);
-        VmxVmxoff();
-
         return FALSE;
     }
     return TRUE;
@@ -1066,6 +1144,7 @@ VmxPerformVmxoff(VIRTUAL_MACHINE_STATE * VCpu)
     // Indicate the current core is not currently virtualized
     //
     VCpu->HasLaunched = FALSE;
+    VCpu->VmxonActive = FALSE;
 
     //
     // Now that VMX is OFF, we have to unset vmx-enable bit on cr4
@@ -1098,87 +1177,58 @@ VmxReturnInstructionPointerForVmxoff()
 /**
  * @brief Terminate Vmx on all logical cores
  *
- * @return VOID
+ * @return BOOLEAN TRUE only after all logical cores left VMX operation and
+ * shared lifecycle resources were released
  */
-VOID
+BOOLEAN
 VmxPerformTermination()
 {
-    ULONG ProcessorsCount;
-
     LogDebugInfo("Terminating VMX...\n");
 
-    //
-    // Get number of processors
-    //
-    ProcessorsCount = KeQueryActiveProcessorCount(0);
-
-    //
-    // ******* Terminating Vmx *******
-    //
-
-    //
-    // Unhide (disable and de-allocate) transparent-mode
-    //
-    if (g_CheckForFootprints)
+    if (g_GuestState == NULL)
     {
-        TransparentUnhideDebuggerWrapper(NULL);
+        VmxFreeSharedLifecycleResources();
+        return TRUE;
     }
 
     //
-    // Remove All the hooks if any
+    // Runtime cleanup broadcasts assume every core is virtualized. They are
+    // therefore valid only after initialization completed, never while rolling
+    // back a partially launched system.
     //
-    EptHookUnHookAll();
+    if (g_VmxInitialized)
+    {
+        if (g_CheckForFootprints)
+        {
+            TransparentUnhideDebuggerWrapper(NULL);
+        }
 
-    //
-    // Restore the state of execution trap hooks
-    //
-    ExecTrapUninitialize();
+        EptHookUnHookAll();
+        ExecTrapUninitialize();
+
+        //
+        // A retry after partial VMXOFF must not broadcast runtime VMCALLs to
+        // cores that have already left VMX operation.
+        //
+        g_VmxInitialized = FALSE;
+    }
 
     //
     // Broadcast to terminate Vmx
     //
+    VmxResetLastOperationResults();
     KeGenericCallDpc(DpcRoutineTerminateGuest, 0x0);
 
-    //
-    // ****** De-allocatee global variables ******
-    //
-
-    //
-    // Free the buffer related to MSRs that cause #GP
-    //
-    PlatformMemFreePool(g_MsrBitmapInvalidMsrs);
-    g_MsrBitmapInvalidMsrs = NULL;
-
-    //
-    // Free Identity Page Table
-    //
-    for (SIZE_T i = 0; i < ProcessorsCount; i++)
+    if (!VmxAllLastOperationResultsSucceeded("VMXOFF"))
     {
-        if (g_GuestState[i].EptPageTable != NULL)
-        {
-            EptFreeIdentityPageTable(g_GuestState[i].EptPageTable);
-        }
-
-        g_GuestState[i].EptPageTable = NULL;
+        LogError("Err, VMX termination is incomplete; shared resources remain owned for a checked retry");
+        return FALSE;
     }
 
-    //
-    // Free EptState
-    //
-    PlatformMemFreePool(g_EptState);
-    g_EptState = NULL;
-
-    //
-    // Uninitialize memory mapper
-    //
-    MemoryMapperUninitialize();
-
-    //
-    // Free g_GuestState
-    //
-    GlobalGuestStateFreeMemory();
+    VmxFreeSharedLifecycleResources();
 
     LogDebugInfo("VMX operation turned off successfully");
+    return TRUE;
 }
 
 /**

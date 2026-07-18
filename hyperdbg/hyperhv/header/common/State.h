@@ -312,6 +312,8 @@ typedef struct _VIRTUAL_MACHINE_STATE
     BOOLEAN          IsOnVmxRootMode;                                               // Detects whether the current logical core is on Executing on VMX Root Mode
     BOOLEAN          IncrementRip;                                                  // Checks whether it has to redo the previous instruction or not (it used mainly in Ept routines)
     BOOLEAN          HasLaunched;                                                   // Indicate whether the core is virtualized or not
+    BOOLEAN          VmxonActive;                                                   // Indicates that VMXON succeeded and VMXOFF is still required on this core
+    volatile BOOLEAN LastVmxOperationSucceeded;                                     // Result published by synchronous lifecycle DPC broadcasts
     BOOLEAN          IgnoreMtfUnset;                                                // Indicate whether the core should ignore unsetting the MTF or not
     BOOLEAN          WaitForImmediateVmexit;                                        // Whether the current core is waiting for an immediate vm-exit or not
     BOOLEAN          EnableExternalInterruptsOnContinue;                            // Whether to enable external interrupts on the continue  or not

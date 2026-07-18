@@ -790,7 +790,19 @@ VmFuncInitVmm(VMM_CALLBACKS * VmmCallbacks)
 VOID
 VmFuncUninitVmm()
 {
-    VmxPerformTermination();
+    (VOID)VmxPerformTermination();
+}
+
+/**
+ * @brief Uninitialize VMX on all logical cores and report teardown status
+ *
+ * @return BOOLEAN TRUE only after all cores left VMX operation and shared
+ * resources were released
+ */
+BOOLEAN
+VmFuncUninitVmmChecked()
+{
+    return VmxPerformTermination();
 }
 
 /**

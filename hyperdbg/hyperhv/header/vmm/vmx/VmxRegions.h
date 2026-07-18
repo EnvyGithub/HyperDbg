@@ -46,3 +46,11 @@ VmxAllocateHostTss(_Inout_ VIRTUAL_MACHINE_STATE * VCpu);
 
 BOOLEAN
 VmxAllocateHostInterruptStack(_Inout_ VIRTUAL_MACHINE_STATE * VCpu);
+
+/**
+ * @brief Release all VMX-region allocations owned by one logical core
+ *
+ * The caller must first prove that the core has left VMX operation.
+ */
+VOID
+VmxFreeVcpuResources(_Inout_ VIRTUAL_MACHINE_STATE * VCpu);

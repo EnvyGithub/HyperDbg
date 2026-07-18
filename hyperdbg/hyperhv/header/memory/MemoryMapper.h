@@ -194,7 +194,7 @@ MemoryMapperWriteMemorySafeWrapper(_In_ MEMORY_MAPPER_WRAPPER_FOR_MEMORY_WRITE T
 // Public Interfaces
 //
 
-VOID
+BOOLEAN
 MemoryMapperInitialize();
 
 VOID

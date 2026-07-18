@@ -1370,6 +1370,12 @@ HvInitVmm(VMM_CALLBACKS * VmmCallbacks)
     ULONG   ProcessorsCount;
     BOOLEAN Result = FALSE;
 
+    if (g_GuestState != NULL)
+    {
+        LogError("Err, VMM initialization requested while lifecycle resources are still owned");
+        return FALSE;
+    }
+
     //
     // Save the callbacks
     //
@@ -1407,7 +1413,11 @@ HvInitVmm(VMM_CALLBACKS * VmmCallbacks)
     //
     // Initialize memory mapper
     //
-    MemoryMapperInitialize();
+    if (!MemoryMapperInitialize())
+    {
+        GlobalGuestStateFreeMemory();
+        return FALSE;
+    }
 
     //
     // Make sure that transparent-mode is disabled

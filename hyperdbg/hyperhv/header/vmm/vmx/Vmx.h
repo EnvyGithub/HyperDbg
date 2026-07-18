@@ -277,7 +277,7 @@ VmxPerformVmresume();
 VOID
 VmxPerformVmxoff(VIRTUAL_MACHINE_STATE * VCpu);
 
-VOID
+BOOLEAN
 VmxPerformTermination();
 
 VOID

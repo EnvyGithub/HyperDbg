@@ -35,10 +35,10 @@ AsmVmxSaveState PROC
     
     mov rcx, rsp
     call VmxVirtualizeCurrentSystem
-    
-    int 3	; we should never reach here as we execute vmlaunch in the above function.
-    		; if rax is FALSE then it's an indication of error
-    
+
+    ; A failed VMLAUNCH returns here after VmxVirtualizeCurrentSystem has left
+    ; VMX operation. Restore the saved context so the broadcast caller can
+    ; aggregate the per-core failure instead of breaking into the kernel.
     jmp AsmVmxRestoreState
     	
 AsmVmxSaveState ENDP
