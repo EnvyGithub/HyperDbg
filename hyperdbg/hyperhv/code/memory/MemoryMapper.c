@@ -715,34 +715,44 @@ MemoryMapperInitialize()
 VOID
 MemoryMapperUninitialize()
 {
-    ULONG ProcessorsCount = KeQueryActiveProcessorCount(0);
+    PMEMORY_MAPPER_ADDRESSES MemoryMapper;
+    ULONG                    ProcessorsCount;
+
+    MemoryMapper = g_MemoryMapper;
+    if (MemoryMapper == NULL)
+    {
+        return;
+    }
+
+    ProcessorsCount = KeQueryActiveProcessorCount(0);
 
     for (SIZE_T i = 0; i < ProcessorsCount; i++)
     {
         //
         // Unmap and free the reserved buffer
         //
-        if (g_MemoryMapper[i].VirualAddressForRead != NULL64_ZERO)
+        if (MemoryMapper[i].VirualAddressForRead != NULL64_ZERO)
         {
-            MemoryMapperUnmapReservedPageRange((PVOID)g_MemoryMapper[i].VirualAddressForRead);
+            MemoryMapperUnmapReservedPageRange((PVOID)MemoryMapper[i].VirualAddressForRead);
         }
 
-        if (g_MemoryMapper[i].VirualAddressForWrite != NULL64_ZERO)
+        if (MemoryMapper[i].VirualAddressForWrite != NULL64_ZERO)
         {
-            MemoryMapperUnmapReservedPageRange((PVOID)g_MemoryMapper[i].VirualAddressForWrite);
+            MemoryMapperUnmapReservedPageRange((PVOID)MemoryMapper[i].VirualAddressForWrite);
         }
 
-        g_MemoryMapper[i].VirualAddressForRead     = NULL64_ZERO;
-        g_MemoryMapper[i].PteVirtualAddressForRead = NULL64_ZERO;
+        MemoryMapper[i].VirualAddressForRead     = NULL64_ZERO;
+        MemoryMapper[i].PteVirtualAddressForRead = NULL64_ZERO;
 
-        g_MemoryMapper[i].VirualAddressForWrite     = NULL64_ZERO;
-        g_MemoryMapper[i].PteVirtualAddressForWrite = NULL64_ZERO;
+        MemoryMapper[i].VirualAddressForWrite     = NULL64_ZERO;
+        MemoryMapper[i].PteVirtualAddressForWrite = NULL64_ZERO;
     }
 
     //
-    // Set the g_MemoryMapper to null
+    // Publish the uninitialized state before releasing the owner buffer.
     //
     g_MemoryMapper = NULL;
+    PlatformMemFreePool(MemoryMapper);
 }
 
 /**

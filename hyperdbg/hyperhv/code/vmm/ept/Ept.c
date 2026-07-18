@@ -856,6 +856,38 @@ EptAllocateAndCreateIdentityPageTable(VOID)
 }
 
 /**
+ * @brief Frees an identity page table and every dynamic split it owns
+ *
+ * @param EptPageTable Identity page table to free
+ */
+VOID
+EptFreeIdentityPageTable(_In_opt_ PVMM_EPT_PAGE_TABLE EptPageTable)
+{
+    if (EptPageTable == NULL)
+    {
+        return;
+    }
+
+    while (!IsListEmpty(&EptPageTable->DynamicSplitList))
+    {
+        PLIST_ENTRY             Link;
+        PVMM_EPT_DYNAMIC_SPLIT Split;
+
+        Link  = RemoveHeadList(&EptPageTable->DynamicSplitList);
+        Split = CONTAINING_RECORD(Link, VMM_EPT_DYNAMIC_SPLIT, DynamicSplitList);
+
+        // Runtime hook splits belong to the caller's pool manager. Identity-map
+        // construction splits are allocated directly by HyperHV.
+        if (!PoolManagerCallbackFreePool((UINT64)Split))
+        {
+            PlatformMemFreePool(Split);
+        }
+    }
+
+    MmFreeContiguousMemory(EptPageTable);
+}
+
+/**
  * @brief Initialize EPT for an individual logical processor
  * @details Creates an identity mapped page table and sets up an EPTP to be applied to the VMCS later
  *
@@ -889,7 +921,7 @@ EptLogicalProcessorInitialize(VOID)
             {
                 if (g_GuestState[j].EptPageTable != NULL)
                 {
-                    MmFreeContiguousMemory(g_GuestState[j].EptPageTable);
+                    EptFreeIdentityPageTable(g_GuestState[j].EptPageTable);
                     g_GuestState[j].EptPageTable = NULL;
                 }
             }

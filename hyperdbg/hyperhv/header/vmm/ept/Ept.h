@@ -209,6 +209,14 @@ PVMM_EPT_PAGE_TABLE
 EptAllocateAndCreateIdentityPageTable(VOID);
 
 /**
+ * @brief Frees an identity page table and every dynamic split it owns
+ *
+ * @param EptPageTable Identity page table to free
+ */
+VOID
+EptFreeIdentityPageTable(_In_opt_ PVMM_EPT_PAGE_TABLE EptPageTable);
+
+/**
  * @brief Convert large pages to 4KB pages
  *
  * @param EptPageTable
