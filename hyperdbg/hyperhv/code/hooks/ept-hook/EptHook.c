@@ -13,6 +13,52 @@
  */
 #include "pch.h"
 
+#define EPT_EXACT_CALL_TARGET_SIZE 5u
+#define EPT_EXACT_CALL_RELAY_SIZE  14u
+
+static BOOLEAN
+EptHookApplyExactCallPatch(_Inout_ EPT_HOOKED_PAGE_DETAIL * HookedPage);
+
+/**
+ * @brief [DOWNSTREAM] Validate the fixed-width target and relay before entering VMX root
+ */
+static BOOLEAN
+EptHookExactCallDetailsAreValid(
+    _In_ const EPT_HOOKS_ADDRESS_DETAILS_FOR_EXACT_CALL * HookingDetails)
+{
+    SIZE_T TargetOffset;
+    SIZE_T RelayOffset;
+    INT64  Displacement;
+
+    if (HookingDetails == NULL ||
+        HookingDetails->TargetAddress == NULL ||
+        HookingDetails->SamePageRelayAddress == NULL ||
+        HookingDetails->HookFunction == NULL ||
+        PAGE_ALIGN(HookingDetails->TargetAddress) !=
+            PAGE_ALIGN(HookingDetails->SamePageRelayAddress))
+    {
+        return FALSE;
+    }
+
+    TargetOffset =
+        (SIZE_T)((ULONG_PTR)HookingDetails->TargetAddress &
+                 (PAGE_SIZE - 1));
+    RelayOffset =
+        (SIZE_T)((ULONG_PTR)HookingDetails->SamePageRelayAddress &
+                 (PAGE_SIZE - 1));
+    if (TargetOffset > PAGE_SIZE - EPT_EXACT_CALL_TARGET_SIZE ||
+        RelayOffset > PAGE_SIZE - EPT_EXACT_CALL_RELAY_SIZE ||
+        (TargetOffset < RelayOffset + EPT_EXACT_CALL_RELAY_SIZE &&
+         RelayOffset < TargetOffset + EPT_EXACT_CALL_TARGET_SIZE))
+    {
+        return FALSE;
+    }
+
+    Displacement = (INT64)RelayOffset -
+                   (INT64)(TargetOffset + EPT_EXACT_CALL_TARGET_SIZE);
+    return (INT64)(INT32)Displacement == Displacement;
+}
+
 /**
  * @brief Check whether the desired PhysicalAddress is already in the g_EptState->HookedPagesList hooks or not
  *
@@ -60,40 +106,63 @@ EptHookCalcBreakpointOffset(_In_ PVOID                    TargetAddress,
 }
 
 /**
- * @brief Refresh a hidden-breakpoint fake page after a guest write reaches the real page
+ * @brief [DOWNSTREAM] Refresh an execution fake page after a guest write reaches the real page
  *
- * @param HookedEntry Target hidden-breakpoint page
+ * @param HookedEntry Target execution fake page
  */
-static VOID
-EptHookRefreshHiddenBreakpointFakePage(_Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry)
+static BOOLEAN
+EptHookRefreshExecutionFakePage(_Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry)
 {
-    if (HookedEntry == NULL || !HookedEntry->IsHiddenBreakpoint)
+    if (HookedEntry == NULL)
     {
-        return;
+        return FALSE;
+    }
+    if (!HookedEntry->IsExecutionHook)
+    {
+        return TRUE;
+    }
+    if (!HookedEntry->IsExactCallHook &&
+        !HookedEntry->IsHiddenBreakpoint)
+    {
+        //
+        // Preserve the existing detour fake page; this refresh path only owns
+        // exact-call and hidden-breakpoint patch metadata.
+        //
+        return TRUE;
     }
 
     if (!MemoryMapperReadMemorySafeByPhysicalAddress(HookedEntry->PhysicalBaseAddress,
                                                       (UINT64)&HookedEntry->FakePageContents,
                                                       PAGE_SIZE))
     {
-        LogError("Err, could not refresh the hidden-breakpoint fake page at physical address 0x%llx",
+        LogError("Err, could not refresh the execution fake page at physical address 0x%llx",
                  HookedEntry->PhysicalBaseAddress);
-        return;
+        return FALSE;
     }
 
-    for (SIZE_T i = 0; i < HookedEntry->CountOfBreakpoints; i++)
+    if (HookedEntry->IsExactCallHook)
     {
-        UINT64 TargetAddressInFakePageContent;
-
-        if (HookedEntry->BreakpointAddresses[i] == NULL64_ZERO)
-        {
-            continue;
-        }
-
-        TargetAddressInFakePageContent = EptHookCalcBreakpointOffset((PVOID)HookedEntry->BreakpointAddresses[i], HookedEntry);
-        HookedEntry->PreviousBytesOnBreakpointAddresses[i] = *(CHAR *)TargetAddressInFakePageContent;
-        *(BYTE *)TargetAddressInFakePageContent             = 0xcc;
+        return EptHookApplyExactCallPatch(HookedEntry);
     }
+
+    if (HookedEntry->IsHiddenBreakpoint)
+    {
+        for (SIZE_T i = 0; i < HookedEntry->CountOfBreakpoints; i++)
+        {
+            UINT64 TargetAddressInFakePageContent;
+
+            if (HookedEntry->BreakpointAddresses[i] == NULL64_ZERO)
+            {
+                continue;
+            }
+
+            TargetAddressInFakePageContent = EptHookCalcBreakpointOffset((PVOID)HookedEntry->BreakpointAddresses[i], HookedEntry);
+            HookedEntry->PreviousBytesOnBreakpointAddresses[i] = *(CHAR *)TargetAddressInFakePageContent;
+            *(BYTE *)TargetAddressInFakePageContent             = 0xcc;
+        }
+    }
+
+    return TRUE;
 }
 
 /**
@@ -570,6 +639,12 @@ EptHookPerformPageHook(VIRTUAL_MACHINE_STATE * VCpu,
 
     if (HookedEntry != NULL)
     {
+        if (HookedEntry->IsExactCallHook)
+        {
+            VmmCallbackSetLastError(
+                DEBUGGER_ERROR_EPT_MULTIPLE_HOOKS_IN_A_SINGLE_PAGE);
+            return FALSE;
+        }
         return EptHookUpdateHookPage(TargetAddress, HookedEntry);
     }
     else
@@ -880,6 +955,56 @@ EptHookWriteAbsoluteJump2(PCHAR TargetBuffer, SIZE_T TargetAddress)
 }
 
 /**
+ * @brief [DOWNSTREAM] Reapply a five-byte call and its register-neutral absolute relay
+ */
+static BOOLEAN
+EptHookApplyExactCallPatch(_Inout_ EPT_HOOKED_PAGE_DETAIL * HookedPage)
+{
+    PCHAR Target;
+    PCHAR Relay;
+    INT64 Displacement;
+    INT32 RelativeDisplacement;
+
+    if (HookedPage == NULL ||
+        !HookedPage->IsExactCallHook ||
+        HookedPage->ExactCallHookFunction == NULL64_ZERO ||
+        HookedPage->ExactCallTargetOffset >
+            PAGE_SIZE - EPT_EXACT_CALL_TARGET_SIZE ||
+        HookedPage->ExactCallRelayOffset >
+            PAGE_SIZE - EPT_EXACT_CALL_RELAY_SIZE ||
+        (HookedPage->ExactCallTargetOffset <
+             HookedPage->ExactCallRelayOffset + EPT_EXACT_CALL_RELAY_SIZE &&
+         HookedPage->ExactCallRelayOffset <
+             HookedPage->ExactCallTargetOffset + EPT_EXACT_CALL_TARGET_SIZE))
+    {
+        return FALSE;
+    }
+
+    Displacement =
+        (INT64)HookedPage->ExactCallRelayOffset -
+        (INT64)(HookedPage->ExactCallTargetOffset +
+                EPT_EXACT_CALL_TARGET_SIZE);
+    if ((INT64)(INT32)Displacement != Displacement)
+    {
+        return FALSE;
+    }
+    RelativeDisplacement = (INT32)Displacement;
+
+    Target    = &HookedPage->FakePageContents[
+        HookedPage->ExactCallTargetOffset];
+    Relay     = &HookedPage->FakePageContents[
+        HookedPage->ExactCallRelayOffset];
+    Target[0] = 0xe8;
+    RtlCopyMemory(&Target[1],
+                  &RelativeDisplacement,
+                  sizeof(RelativeDisplacement));
+    EptHookWriteAbsoluteJump2(
+        Relay,
+        (SIZE_T)HookedPage->ExactCallHookFunction);
+    return TRUE;
+}
+
+/**
  * @brief [DOWNSTREAM] Copy stolen instructions into an executable trampoline
  *        and relocate common RIP-relative forms used by ntoskrnl/win32k wrappers.
  *
@@ -1181,11 +1306,26 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
     BOOLEAN                 UnsetRead     = FALSE;
     BOOLEAN                 UnsetWrite    = FALSE;
     BOOLEAN                 EptHiddenHook = FALSE;
+    BOOLEAN                 EptExactCall  = FALSE;
+    BOOLEAN                 ExecutionFakePage;
+    BOOLEAN                 FakePageReadResult = TRUE;
 
     UnsetRead     = (PageHookMask & PAGE_ATTRIB_READ) ? TRUE : FALSE;
     UnsetWrite    = (PageHookMask & PAGE_ATTRIB_WRITE) ? TRUE : FALSE;
     UnsetExecute  = (PageHookMask & PAGE_ATTRIB_EXEC) ? TRUE : FALSE;
     EptHiddenHook = (PageHookMask & PAGE_ATTRIB_EXEC_HIDDEN_HOOK) ? TRUE : FALSE;
+    EptExactCall  = (PageHookMask & PAGE_ATTRIB_EXEC_EXACT_CALL) ? TRUE : FALSE;
+    ExecutionFakePage = EptHiddenHook || EptExactCall;
+
+    if ((EptExactCall &&
+         PageHookMask != PAGE_ATTRIB_EXEC_EXACT_CALL) ||
+        (EptExactCall &&
+         !EptHookExactCallDetailsAreValid(
+             (EPT_HOOKS_ADDRESS_DETAILS_FOR_EXACT_CALL *)HookingDetails)))
+    {
+        VmmCallbackSetLastError(DEBUGGER_ERROR_COULD_NOT_BUILD_THE_EPT_HOOK);
+        return FALSE;
+    }
 
     //
     // Get number of processors
@@ -1197,7 +1337,13 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
     // This function will return NULL if the physical address was not already mapped in
     // virtual memory.
     //
-    if (EptHiddenHook)
+    if (EptExactCall)
+    {
+        TargetAddress =
+            ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EXACT_CALL *)HookingDetails)
+                ->TargetAddress;
+    }
+    else if (EptHiddenHook)
     {
         TargetAddress = ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)->TargetAddress;
     }
@@ -1214,7 +1360,7 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
     // user mode address of another process) then the translation is invalid
     //
 
-    if (!EptHiddenHook &&
+    if (!ExecutionFakePage &&
         ((EPT_HOOKS_ADDRESS_DETAILS_FOR_MEMORY_MONITOR *)HookingDetails)->MemoryType == DEBUGGER_MEMORY_HOOK_PHYSICAL_ADDRESS)
     {
         //
@@ -1262,6 +1408,7 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
         {
             if (EptHiddenHook &&
                 !HookedEntry->IsHiddenBreakpoint &&
+                !HookedEntry->IsExactCallHook &&
                 HookedEntry->IsExecutionHook)
             {
                 TargetAddressInSafeMemory = EptHookCalcBreakpointOffset(TargetAddress, HookedEntry);
@@ -1323,7 +1470,7 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
     // If it's a monitor hook, then we need to hold the address of the start
     // physical address as well as the end physical address, plus tagging information
     //
-    if (!EptHiddenHook)
+    if (!ExecutionFakePage)
     {
         //
         // Save the target tag
@@ -1392,12 +1539,30 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
     //
     HookedPage->PhysicalBaseAddressOfFakePageContents = (SIZE_T)VirtualAddressToPhysicalAddress(&HookedPage->FakePageContents[0]) / PAGE_SIZE;
 
-    if (EptHiddenHook)
+    if (ExecutionFakePage)
     {
         //
         // Show that entry has hidden hooks for execution
         //
         HookedPage->IsExecutionHook = TRUE;
+
+        if (EptExactCall)
+        {
+            EPT_HOOKS_ADDRESS_DETAILS_FOR_EXACT_CALL *ExactCallDetails =
+                (EPT_HOOKS_ADDRESS_DETAILS_FOR_EXACT_CALL *)HookingDetails;
+
+            HookedPage->IsHiddenBreakpoint    = FALSE;
+            HookedPage->IsExactCallHook       = TRUE;
+            HookedPage->ExactCallTargetOffset =
+                (UINT16)((ULONG_PTR)ExactCallDetails->TargetAddress &
+                         (PAGE_SIZE - 1));
+            HookedPage->ExactCallRelayOffset =
+                (UINT16)((ULONG_PTR)
+                             ExactCallDetails->SamePageRelayAddress &
+                         (PAGE_SIZE - 1));
+            HookedPage->ExactCallHookFunction =
+                (UINT64)ExactCallDetails->HookFunction;
+        }
 
         //
         // Switch to target process
@@ -1409,47 +1574,67 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
         // The following line can't be used in user mode addresses
         // RtlCopyBytes(&HookedPage->FakePageContents, VirtualTarget, PAGE_SIZE);
         //
-        MemoryMapperReadMemorySafe((UINT64)AlignedTargetVaOrPa, &HookedPage->FakePageContents, PAGE_SIZE);
+        FakePageReadResult = MemoryMapperReadMemorySafe(
+            (UINT64)AlignedTargetVaOrPa,
+            &HookedPage->FakePageContents,
+            PAGE_SIZE);
 
         //
         // Restore to original process
         //
         SwitchToPreviousProcess(Cr3OfCurrentProcess);
 
-        //
-        // Compute new offset of target offset into a safe bufferr
-        // It will be used to compute the length of the detours
-        // address because we might have a user mode code
-        //
-        TargetAddressInSafeMemory = EptHookCalcBreakpointOffset(TargetAddress, HookedPage);
-
-        //
-        // Make sure if handler function is valid or if it's default
-        // then we set it to the default handler
-        //
-        if (((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)->HookFunction == NULL)
+        if (EptExactCall && !FakePageReadResult)
         {
-            HookFunction = (PVOID)AsmGeneralDetourHook;
+            PoolManagerCallbackFreePool((UINT64)HookedPage);
+            VmmCallbackSetLastError(DEBUGGER_ERROR_INVALID_ADDRESS);
+            return FALSE;
+        }
+
+        if (EptExactCall)
+        {
+            if (!EptHookApplyExactCallPatch(HookedPage))
+            {
+                PoolManagerCallbackFreePool((UINT64)HookedPage);
+                VmmCallbackSetLastError(
+                    DEBUGGER_ERROR_COULD_NOT_BUILD_THE_EPT_HOOK);
+                return FALSE;
+            }
         }
         else
         {
-            HookFunction = ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)->HookFunction;
-        }
+            //
+            // Compute new offset of target offset into a safe buffer
+            //
+            TargetAddressInSafeMemory =
+                EptHookCalcBreakpointOffset(TargetAddress, HookedPage);
 
-        //
-        // Create Hook
-        //
-        if (!EptHookInstructionMemory(HookedPage,
-                                      ProcessCr3,
-                                      TargetAddress,
-                                      (PVOID)TargetAddressInSafeMemory,
-                                      HookFunction,
-                                      ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)->OriginalFunction))
-        {
-            PoolManagerCallbackFreePool((UINT64)HookedPage);
+            if (((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)
+                    ->HookFunction == NULL)
+            {
+                HookFunction = (PVOID)AsmGeneralDetourHook;
+            }
+            else
+            {
+                HookFunction =
+                    ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)
+                        ->HookFunction;
+            }
 
-            VmmCallbackSetLastError(DEBUGGER_ERROR_COULD_NOT_BUILD_THE_EPT_HOOK);
-            return FALSE;
+            if (!EptHookInstructionMemory(
+                    HookedPage,
+                    ProcessCr3,
+                    TargetAddress,
+                    (PVOID)TargetAddressInSafeMemory,
+                    HookFunction,
+                    ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)
+                        ->OriginalFunction))
+            {
+                PoolManagerCallbackFreePool((UINT64)HookedPage);
+                VmmCallbackSetLastError(
+                    DEBUGGER_ERROR_COULD_NOT_BUILD_THE_EPT_HOOK);
+                return FALSE;
+            }
         }
     }
 
@@ -1522,7 +1707,7 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
         //
         // If it's Execution hook then we have to set extra fields
         //
-        if (EptHiddenHook)
+        if (ExecutionFakePage)
         {
             //
             // In execution hook, we have to make sure to unset read, write because
@@ -1815,6 +2000,63 @@ EptHookInlineHookWithTrampoline(VIRTUAL_MACHINE_STATE * VCpu,
                                             ProcessId,
                                             TRUE,
                                             FALSE);
+}
+
+/**
+ * @brief [DOWNSTREAM] Apply a five-byte call through a same-page relay
+ * @details This path owns a complete execution fake page and never builds a trampoline
+ */
+BOOLEAN
+EptHookExactCall(VIRTUAL_MACHINE_STATE * VCpu,
+                 PVOID                   TargetAddress,
+                 PVOID                   SamePageRelayAddress,
+                 PVOID                   HookFunction,
+                 UINT32                  ProcessId)
+{
+    EPT_HOOKS_ADDRESS_DETAILS_FOR_EXACT_CALL HookingDetail = {0};
+
+    if (VmxGetCurrentExecutionMode() == TRUE ||
+        !g_CompatibilityCheck.ExecuteOnlySupport)
+    {
+        return FALSE;
+    }
+
+    HookingDetail.TargetAddress         = TargetAddress;
+    HookingDetail.SamePageRelayAddress = SamePageRelayAddress;
+    HookingDetail.HookFunction          = HookFunction;
+    if (!EptHookExactCallDetailsAreValid(&HookingDetail))
+    {
+        VmmCallbackSetLastError(
+            DEBUGGER_ERROR_COULD_NOT_BUILD_THE_EPT_HOOK);
+        return FALSE;
+    }
+
+    if (VmxGetCurrentLaunchState())
+    {
+        if (AsmVmxVmcall(
+                VMCALL_CHANGE_PAGE_ATTRIB,
+                (UINT64)&HookingDetail,
+                PAGE_ATTRIB_EXEC_EXACT_CALL,
+                LayoutGetCr3ByProcessId(ProcessId).Flags) !=
+            STATUS_SUCCESS)
+        {
+            return FALSE;
+        }
+        BroadcastNotifyAllToInvalidateEptAllCores();
+        return TRUE;
+    }
+
+    if (EptHookPerformPageHookMonitorAndInlineHook(
+            VCpu,
+            &HookingDetail,
+            LayoutGetCr3ByProcessId(ProcessId),
+            PAGE_ATTRIB_EXEC_EXACT_CALL))
+    {
+        LogWarning("Exact-call hook applied (VM has not launched)");
+        return TRUE;
+    }
+
+    return FALSE;
 }
 
 /**
@@ -2214,7 +2456,8 @@ EptHookUnHookSingleAddressDetoursAndMonitor(PEPT_HOOKED_PAGE_DETAIL             
     // Now that we removed this hidden detours hook, it is
     // time to remove it from g_EptHook2sDetourListHead
     //
-    if (HookedEntry->IsExecutionHook)
+    if (HookedEntry->IsExecutionHook &&
+        !HookedEntry->IsExactCallHook)
     {
         EptHookRemoveEntriesAndFreePoolFromEptHook2sDetourListByPage(HookedEntry->VirtualAddress);
     }
@@ -2238,6 +2481,80 @@ EptHookUnHookSingleAddressDetoursAndMonitor(PEPT_HOOKED_PAGE_DETAIL             
 }
 
 /**
+ * @brief [DOWNSTREAM] Remove an exact-call hook only when all owner metadata matches
+ */
+BOOLEAN
+EptHookUnHookExactCall(PVOID  TargetAddress,
+                       PVOID  SamePageRelayAddress,
+                       PVOID  HookFunction,
+                       UINT32 ProcessId)
+{
+    EPT_HOOKS_ADDRESS_DETAILS_FOR_EXACT_CALL HookingDetails = {0};
+    EPT_SINGLE_HOOK_UNHOOKING_DETAILS        UnhookingDetails = {0};
+    SIZE_T                                   PhysicalAddress;
+
+    if (VmxGetCurrentExecutionMode() == TRUE)
+    {
+        return FALSE;
+    }
+
+    HookingDetails.TargetAddress         = TargetAddress;
+    HookingDetails.SamePageRelayAddress = SamePageRelayAddress;
+    HookingDetails.HookFunction          = HookFunction;
+    if (!EptHookExactCallDetailsAreValid(&HookingDetails))
+    {
+        return FALSE;
+    }
+
+    if (ProcessId == DEBUGGER_EVENT_APPLY_TO_ALL_PROCESSES ||
+        ProcessId == 0)
+    {
+        ProcessId = HANDLE_TO_UINT32(PsGetCurrentProcessId());
+    }
+    PhysicalAddress = (SIZE_T)PAGE_ALIGN(
+        VirtualAddressToPhysicalAddressByProcessId(
+            TargetAddress,
+            ProcessId));
+    if (PhysicalAddress == NULL64_ZERO)
+    {
+        return FALSE;
+    }
+
+    LIST_FOR_EACH_LINK(
+        g_EptState->HookedPagesList,
+        EPT_HOOKED_PAGE_DETAIL,
+        PageHookList,
+        HookedEntry)
+    {
+        if (HookedEntry->PhysicalBaseAddress != PhysicalAddress)
+        {
+            continue;
+        }
+
+        if (!HookedEntry->IsExecutionHook ||
+            !HookedEntry->IsExactCallHook ||
+            HookedEntry->VirtualAddress != (UINT64)TargetAddress ||
+            HookedEntry->ExactCallTargetOffset !=
+                (UINT16)((ULONG_PTR)TargetAddress & (PAGE_SIZE - 1)) ||
+            HookedEntry->ExactCallRelayOffset !=
+                (UINT16)((ULONG_PTR)SamePageRelayAddress &
+                         (PAGE_SIZE - 1)) ||
+            HookedEntry->ExactCallHookFunction !=
+                (UINT64)HookFunction)
+        {
+            return FALSE;
+        }
+
+        return EptHookUnHookSingleAddressDetoursAndMonitor(
+            HookedEntry,
+            FALSE,
+            &UnhookingDetails);
+    }
+
+    return FALSE;
+}
+
+/**
  * @brief Handle vm-exits for Monitor Trap Flag to restore previous state
  *
  * @param VCpu The virtual processor's state
@@ -2246,11 +2563,18 @@ EptHookUnHookSingleAddressDetoursAndMonitor(PEPT_HOOKED_PAGE_DETAIL             
 VOID
 EptHookHandleMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu)
 {
-    PVOID TargetPage;
+    PVOID   TargetPage;
+    BOOLEAN RestoreHookedEntry = TRUE;
 
     if (VCpu->MtfEptHookRestorePoint->LastViolation == EPT_HOOKED_LAST_VIOLATION_WRITE)
     {
-        EptHookRefreshHiddenBreakpointFakePage(VCpu->MtfEptHookRestorePoint);
+        RestoreHookedEntry = EptHookRefreshExecutionFakePage(
+            VCpu->MtfEptHookRestorePoint);
+        if (!RestoreHookedEntry)
+        {
+            LogError("Err, execution fake-page refresh failed; keeping the original mapping for physical address 0x%llx",
+                     VCpu->MtfEptHookRestorePoint->PhysicalBaseAddress);
+        }
     }
 
     //
@@ -2261,10 +2585,14 @@ EptHookHandleMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu)
     //
     // restore the hooked state
     //
-    EptSetPML1AndInvalidateTLB(VCpu,
-                               TargetPage,
-                               VCpu->MtfEptHookRestorePoint->ChangedEntry,
-                               InveptSingleContext);
+    if (RestoreHookedEntry)
+    {
+        EptSetPML1AndInvalidateTLB(
+            VCpu,
+            TargetPage,
+            VCpu->MtfEptHookRestorePoint->ChangedEntry,
+            InveptSingleContext);
+    }
 
     //
     // Check to trigger the post event (for events relating the !monitor command
@@ -2746,7 +3074,8 @@ EptHookUnHookAll()
         // time to remove it from g_EptHook2sDetourListHead
         // if the hook is detours
         //
-        if (!CurrEntity->IsHiddenBreakpoint)
+        if (CurrEntity->IsExecutionHook &&
+            !CurrEntity->IsExactCallHook)
         {
             EptHookRemoveEntriesAndFreePoolFromEptHook2sDetourListByPage(CurrEntity->VirtualAddress);
         }

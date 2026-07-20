@@ -23,6 +23,7 @@
 #define PAGE_ATTRIB_WRITE            0x4
 #define PAGE_ATTRIB_EXEC             0x8
 #define PAGE_ATTRIB_EXEC_HIDDEN_HOOK 0x10
+#define PAGE_ATTRIB_EXEC_EXACT_CALL  0x20
 
 /**
  * @brief Integer 2MB

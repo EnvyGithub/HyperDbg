@@ -251,6 +251,18 @@ typedef struct _EPT_HOOKED_PAGE_DETAIL
     BOOLEAN IsHiddenBreakpoint;
 
     /**
+     * @brief [DOWNSTREAM] This execution fake page contains an exact-call target and relay
+     */
+    BOOLEAN IsExactCallHook;
+
+    /**
+     * @brief [DOWNSTREAM] Exact-call offsets and destination used to rebuild the fake page
+     */
+    UINT16 ExactCallTargetOffset;
+    UINT16 ExactCallRelayOffset;
+    UINT64 ExactCallHookFunction;
+
+    /**
      * @brief This field shows whether the hook is for MMIO shadowing or not
      */
     BOOLEAN IsMmioShadowing;

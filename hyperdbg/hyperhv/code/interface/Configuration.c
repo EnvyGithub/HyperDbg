@@ -332,6 +332,38 @@ ConfigureEptHook2WithTrampoline(UINT32 CoreId,
 }
 
 /**
+ * @brief [DOWNSTREAM] Apply a five-byte call through a same-page relay
+ */
+BOOLEAN
+ConfigureEptHook2ExactCall(UINT32 CoreId,
+                           PVOID  TargetAddress,
+                           PVOID  SamePageRelayAddress,
+                           PVOID  HookFunction,
+                           UINT32 ProcessId)
+{
+    return EptHookExactCall(&g_GuestState[CoreId],
+                            TargetAddress,
+                            SamePageRelayAddress,
+                            HookFunction,
+                            ProcessId);
+}
+
+/**
+ * @brief [DOWNSTREAM] Remove an exact-call hook only when its owner metadata matches
+ */
+BOOLEAN
+ConfigureEptHookUnHookExactCall(PVOID  TargetAddress,
+                                PVOID  SamePageRelayAddress,
+                                PVOID  HookFunction,
+                                UINT32 ProcessId)
+{
+    return EptHookUnHookExactCall(TargetAddress,
+                                  SamePageRelayAddress,
+                                  HookFunction,
+                                  ProcessId);
+}
+
+/**
  * @brief This function allocates a buffer in VMX Non Root Mode and then invokes a VMCALL to set the hook
  * @details this command uses hidden detours, this NOT be called from vmx-root mode
  *

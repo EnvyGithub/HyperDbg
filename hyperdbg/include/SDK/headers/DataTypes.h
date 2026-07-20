@@ -401,6 +401,18 @@ typedef struct _EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2
 } EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2, *PEPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2;
 
 /**
+ * @brief [DOWNSTREAM] Setting details for a five-byte exact call through a same-page relay
+ *
+ */
+typedef struct _EPT_HOOKS_ADDRESS_DETAILS_FOR_EXACT_CALL
+{
+    PVOID TargetAddress;
+    PVOID SamePageRelayAddress;
+    PVOID HookFunction;
+
+} EPT_HOOKS_ADDRESS_DETAILS_FOR_EXACT_CALL, *PEPT_HOOKS_ADDRESS_DETAILS_FOR_EXACT_CALL;
+
+/**
  * @brief Details of unhooking single EPT hooks
  *
  */

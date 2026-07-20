@@ -179,6 +179,25 @@ EptHookInlineHookWithTrampoline(VIRTUAL_MACHINE_STATE * VCpu,
                                 PVOID *                 OriginalFunction);
 
 /**
+ * @brief [DOWNSTREAM] Hook one exact five-byte call through a same-page relay
+ */
+BOOLEAN
+EptHookExactCall(VIRTUAL_MACHINE_STATE * VCpu,
+                 PVOID                   TargetAddress,
+                 PVOID                   SamePageRelayAddress,
+                 PVOID                   HookFunction,
+                 UINT32                  ProcessId);
+
+/**
+ * @brief [DOWNSTREAM] Remove an exact-call hook only when all owner metadata matches
+ */
+BOOLEAN
+EptHookUnHookExactCall(PVOID  TargetAddress,
+                       PVOID  SamePageRelayAddress,
+                       PVOID  HookFunction,
+                       UINT32 ProcessId);
+
+/**
  * @brief This function applies monitor hooks to the target EPT table
  * @details this function should be called from VMX non-root mode
  *
