@@ -776,6 +776,44 @@ EptHookFromVmxRoot(PVOID TargetAddress)
 }
 
 /**
+ * @brief Retire a pending per-vCPU MTF restore before its hook entry can be freed
+ *
+ * @param VCpu The virtual processor's state
+ * @param PhysicalAddress The physical page being unhooked
+ * @param RestoreAllHooks Whether all hook entries are being removed
+ *
+ * @return VOID
+ */
+static VOID
+EptHookRetireMtfRestorePointForUnhook(VIRTUAL_MACHINE_STATE * VCpu,
+                                      SIZE_T                  PhysicalAddress,
+                                      BOOLEAN                 RestoreAllHooks)
+{
+    PEPT_HOOKED_PAGE_DETAIL RestorePoint = VCpu->MtfEptHookRestorePoint;
+
+    if (RestorePoint == NULL)
+    {
+        return;
+    }
+
+    if (!RestoreAllHooks &&
+        RestorePoint->PhysicalBaseAddress != (SIZE_T)PAGE_ALIGN(PhysicalAddress))
+    {
+        return;
+    }
+
+    //
+    // The non-root unhook path frees the hook entry after every core has
+    // restored its EPT mapping.  Do not let the next MTF consume that freed
+    // entry.  Keep the already-armed MTF for one instruction so other MTF
+    // owners retain their normal handling, but mark this owner's exit handled.
+    //
+    VCpu->MtfEptHookRestorePoint = NULL;
+    VCpu->IgnoreOneMtf           = TRUE;
+    HvEnableAndCheckForPreviousExternalInterrupts(VCpu);
+}
+
+/**
  * @brief Remove and Invalidate Hook in TLB (Hidden Detours and if counter of hidden breakpoint is zero)
  * @warning This function won't remove entries from LIST_ENTRY,
  *  just invalidate the paging, use EptHookUnHookSingleAddress instead
@@ -800,6 +838,9 @@ EptHookRestoreSingleHookToOriginalEntry(VIRTUAL_MACHINE_STATE *     VCpu,
     {
         return FALSE;
     }
+
+    EptHookRetireMtfRestorePointForUnhook(VCpu, PhysicalAddress, FALSE);
+
     //
     // Pointer to the page entry in the page table
     //
@@ -846,6 +887,8 @@ EptHookRestoreAllHooksToOriginalEntry(VIRTUAL_MACHINE_STATE * VCpu)
     {
         return;
     }
+
+    EptHookRetireMtfRestorePointForUnhook(VCpu, NULL64_ZERO, TRUE);
 
     LIST_FOR_EACH_LINK(g_EptState->HookedPagesList, EPT_HOOKED_PAGE_DETAIL, PageHookList, HookedEntry)
     {
