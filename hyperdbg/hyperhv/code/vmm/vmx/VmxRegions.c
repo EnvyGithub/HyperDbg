@@ -35,7 +35,7 @@ VmxAllocateVmxonRegion(VIRTUAL_MACHINE_STATE * VCpu)
     // at IRQL > DISPATCH_LEVEL memory allocation routines don't work
     //
     if (KeGetCurrentIrql() > DISPATCH_LEVEL)
-        KeRaiseIrqlToDpcLevel();
+        PlatformIrqlRaiseToDpcLevel();
 #endif // HYPERDBG_ENV_WINDOWS
 
     //
@@ -79,7 +79,7 @@ VmxAllocateVmxonRegion(VIRTUAL_MACHINE_STATE * VCpu)
     if (VmxonStatus)
     {
         LogError("Err, executing vmxon instruction failed with status : %d", VmxonStatus);
-        MmFreeContiguousMemory(VmxonRegion);
+        PlatformMemFreeContiguousMemory(VmxonRegion);
         CpuWriteCr4(CpuReadCr4() & (~REG_CR4_VMXE));
         return FALSE;
     }
@@ -118,7 +118,7 @@ VmxAllocateVmcsRegion(VIRTUAL_MACHINE_STATE * VCpu)
     // at IRQL > DISPATCH_LEVEL memory allocation routines don't work
     //
     if (KeGetCurrentIrql() > DISPATCH_LEVEL)
-        KeRaiseIrqlToDpcLevel();
+        PlatformIrqlRaiseToDpcLevel();
 #endif // HYPERDBG_ENV_WINDOWS
 
     //
@@ -171,14 +171,14 @@ VmxFreeVcpuResources(_Inout_ VIRTUAL_MACHINE_STATE * VCpu)
 {
     if (VCpu->VmxonRegionVirtualAddress != NULL64_ZERO)
     {
-        MmFreeContiguousMemory((PVOID)VCpu->VmxonRegionVirtualAddress);
+        PlatformMemFreeContiguousMemory((PVOID)VCpu->VmxonRegionVirtualAddress);
         VCpu->VmxonRegionVirtualAddress  = NULL64_ZERO;
         VCpu->VmxonRegionPhysicalAddress = NULL64_ZERO;
     }
 
     if (VCpu->VmcsRegionVirtualAddress != NULL64_ZERO)
     {
-        MmFreeContiguousMemory((PVOID)VCpu->VmcsRegionVirtualAddress);
+        PlatformMemFreeContiguousMemory((PVOID)VCpu->VmcsRegionVirtualAddress);
         VCpu->VmcsRegionVirtualAddress  = NULL64_ZERO;
         VCpu->VmcsRegionPhysicalAddress = NULL64_ZERO;
     }
@@ -361,6 +361,7 @@ VmxAllocateInvalidMsrBimap()
 
     for (UINT32 i = 0; i < 0x1000; ++i)
     {
+#ifdef _WIN32
         __try
         {
             CpuReadMsr(i);
@@ -369,6 +370,14 @@ VmxAllocateInvalidMsrBimap()
         {
             SetBit(i, (ULONG *)InvalidMsrBitmap);
         }
+#else
+        //
+        // TODO(Linux): probe each MSR with rdmsr_safe() — a bare RDMSR on an
+        // invalid MSR raises #GP and there is no SEH here to catch it. Skip the
+        // probe for now; the bitmap stays zeroed (every MSR treated as valid)
+        // until this is ported.
+        //
+#endif
     }
 
     return InvalidMsrBitmap;

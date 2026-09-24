@@ -1,4 +1,4 @@
-/**
+﻿/**
  * @file script-engine-wrapper.cpp
  * @author M.H. Gholamrezaei (mh@hyperdbg.org)
  * @author Sina Karvandi (sina@hyperdbg.org)
@@ -346,6 +346,7 @@ ScriptEngineEvalWrapper(PGUEST_REGS GuestRegs,
                         string      Expr)
 {
     SCRIPT_ENGINE_GENERAL_REGISTERS ScriptGeneralRegisters = {0};
+    g_CurrentExprEvalResultHasError = FALSE;
 
     //
     // Allocate global variables holder
@@ -361,7 +362,7 @@ ScriptEngineEvalWrapper(PGUEST_REGS GuestRegs,
             return;
         }
 
-        RtlZeroMemory(g_ScriptGlobalVariables, MAX_VAR_COUNT * sizeof(UINT64));
+        PlatformZeroMemory(g_ScriptGlobalVariables, MAX_VAR_COUNT * sizeof(UINT64));
     }
 
     //
@@ -402,7 +403,7 @@ ScriptEngineEvalWrapper(PGUEST_REGS GuestRegs,
 
     ScriptGeneralRegisters.StackBuffer         = g_ScriptStackBuffer;
     ScriptGeneralRegisters.GlobalVariablesList = g_ScriptGlobalVariables;
-    RtlZeroMemory(g_ScriptStackBuffer, MAX_STACK_BUFFER_COUNT * sizeof(UINT64));
+    PlatformZeroMemory(g_ScriptStackBuffer, MAX_STACK_BUFFER_COUNT * sizeof(UINT64));
 
     if (CodeBuffer->Message == NULL)
     {
@@ -477,6 +478,7 @@ ScriptEngineEvalWrapper(PGUEST_REGS GuestRegs,
     else
     {
         ShowMessages("%s\n", CodeBuffer->Message);
+        g_CurrentExprEvalResultHasError = TRUE;
     }
 
     RemoveSymbolBuffer(CodeBuffer);
@@ -530,6 +532,7 @@ ScriptAutomaticStatementsTestWrapper(const string & Expr, UINT64 ExpectationValu
 PVOID
 AllocateStructForCasting(PALLOCATED_MEMORY_FOR_SCRIPT_ENGINE_CASTING AllocationsForCastings)
 {
+#ifdef _WIN32
     typedef struct _UNICODE_STRING
     {
         UINT16 Length;        // +0x000
@@ -577,7 +580,7 @@ AllocateStructForCasting(PALLOCATED_MEMORY_FOR_SCRIPT_ENGINE_CASTING Allocations
     }
 
     AllocationsForCastings->Buff2 = (CHAR *)Buff1;
-    RtlZeroMemory(Buff1, SizeOfMyString1);
+    PlatformZeroMemory(Buff1, SizeOfMyString1);
     UnicodeStr1->Buffer = Buff1;
     UnicodeStr1->Length = UnicodeStr1->MaximumLength = SizeOfMyString1;
     memcpy(UnicodeStr1->Buffer, MyString1, SizeOfMyString1);
@@ -610,7 +613,7 @@ AllocateStructForCasting(PALLOCATED_MEMORY_FOR_SCRIPT_ENGINE_CASTING Allocations
     }
 
     AllocationsForCastings->Buff4 = (CHAR *)Buff2;
-    RtlZeroMemory(Buff2, SizeOfMyString2);
+    PlatformZeroMemory(Buff2, SizeOfMyString2);
     UnicodeStr2->Buffer = Buff2;
     UnicodeStr2->Length = UnicodeStr2->MaximumLength = SizeOfMyString2;
     memcpy(UnicodeStr2->Buffer, MyString2, SizeOfMyString2);
@@ -662,6 +665,14 @@ AllocateStructForCasting(PALLOCATED_MEMORY_FOR_SCRIPT_ENGINE_CASTING Allocations
 
     //_CrtDbgBreak();
     return StupidStruct2;
+#else
+    //
+    // TODO(Linux): wide-char (UNICODE_STRING / WCHAR) casting test harness — blocked on
+    // the wchar_t 2-vs-4-byte issue; stubbed until Linux exercises the script-engine cast tests.
+    //
+    UNREFERENCED_PARAMETER(AllocationsForCastings);
+    return NULL;
+#endif
 }
 
 /**
@@ -673,6 +684,7 @@ AllocateStructForCasting(PALLOCATED_MEMORY_FOR_SCRIPT_ENGINE_CASTING Allocations
 VOID
 ScriptEngineWrapperTestParser(const string & Expr)
 {
+#ifdef _WIN32
     ALLOCATED_MEMORY_FOR_SCRIPT_ENGINE_CASTING AllocationsForCastings = {0};
 
     typedef struct _TEST_STRUCT
@@ -690,7 +702,7 @@ ScriptEngineWrapperTestParser(const string & Expr)
         return;
     }
 
-    RtlZeroMemory(TestStruct, sizeof(TEST_STRUCT));
+    PlatformZeroMemory(TestStruct, sizeof(TEST_STRUCT));
 
     TestStruct->Var1 = 0x41414141;
     TestStruct->Var3 = 0x4242424242424242;
@@ -740,6 +752,13 @@ ScriptEngineWrapperTestParser(const string & Expr)
     free(AllocationsForCastings.Buff4);
     free(AllocationsForCastings.Buff5);
     free(AllocationsForCastings.Buff6);
+#else
+    //
+    // TODO(Linux): parser test harness relies on wide-char (WCHAR testw[]) — blocked on
+    // the wchar_t 2-vs-4-byte issue; stubbed until Linux exercises the script-engine parser tests.
+    //
+    UNREFERENCED_PARAMETER(Expr);
+#endif
 }
 
 /**
@@ -762,7 +781,7 @@ ScriptEngineWrapperTestParserForHwdbg(const string & Expr)
             return;
         }
 
-        RtlZeroMemory(g_HwdbgPinsStatus, MAX_HWDBG_TESTING_PIN_COUNT * sizeof(UINT64));
+        PlatformZeroMemory(g_HwdbgPinsStatus, MAX_HWDBG_TESTING_PIN_COUNT * sizeof(UINT64));
     }
 
     ScriptEngineEvalWrapper((PGUEST_REGS)g_HwdbgPinsStatus, Expr);

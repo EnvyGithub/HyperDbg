@@ -33,8 +33,36 @@ PlatformDbgPrint(const CHAR * Format, ...)
     va_end(ArgList);
 
 #elif defined(__linux__)
+    va_list ArgList;
+    va_start(ArgList, Format);
+    vprintk(Format, ArgList);
+    va_end(ArgList);
+#else
 
-#    error "Not yet implemented"
+#    error "Unsupported platform"
+
+#endif
+}
+
+/**
+ * @brief Break into the kernel debugger.
+ * @details Windows fires int 3 into the attached kernel debugger. On Linux no
+ *          debugger is normally attached, so a real breakpoint would panic the
+ *          machine — and this sits in the LogError() path (fires only when
+ *          DebugMode is set) — so the Linux arm is a no-op.
+ *
+ * TODO(Linux): route to a real breakpoint once a kgdb-style transport exists.
+ */
+VOID
+PlatformDbgBreakPoint(VOID)
+{
+#if defined(_WIN32) || defined(_WIN64)
+
+    DbgBreakPoint();
+
+#elif defined(__linux__)
+
+    // no-op
 
 #else
 

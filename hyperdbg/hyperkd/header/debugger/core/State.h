@@ -164,7 +164,6 @@ typedef struct _PROCESSOR_DEBUGGING_STATE
 {
     volatile LONG                              Lock;
     volatile BOOLEAN                           MainDebuggingCore;
-    GUEST_REGS *                               Regs;
     UINT32                                     CoreId;
     BOOLEAN                                    ShortCircuitingEvent;
     BOOLEAN                                    IgnoreDisasmInNextPacket;

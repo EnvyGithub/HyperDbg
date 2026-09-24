@@ -61,7 +61,8 @@ typedef enum _SCRIPT_ENGINE_TOKEN_TYPE
     FUNCTION_PARAMETER_ID,
     SCRIPT_VARIABLE_TYPE,
     DEFERENCE_TEMP,
-    UNKNOWN
+    UNKNOWN,
+    FLOAT_LITERAL
 } SCRIPT_ENGINE_TOKEN_TYPE;
 
 /**
@@ -75,6 +76,10 @@ typedef struct _SCRIPT_ENGINE_TOKEN
     unsigned int             MaxLen;
     VARIABLE_TYPE *          VariableType;
     unsigned long long       VariableMemoryIdx;
+    unsigned int             AddressSpace;
+    BOOLEAN                  IsAddress;
+    BOOLEAN                  IsImplicitType;
+    BOOLEAN                  IsSignedFunctionResult;
 } SCRIPT_ENGINE_TOKEN, *PSCRIPT_ENGINE_TOKEN;
 
 /**
@@ -106,7 +111,7 @@ VOID
 AppendByte(PSCRIPT_ENGINE_TOKEN Token, CHAR c);
 
 VOID
-AppendWchar(PSCRIPT_ENGINE_TOKEN Token, wchar_t c);
+AppendWchar(PSCRIPT_ENGINE_TOKEN Token, UINT16 c);
 
 PSCRIPT_ENGINE_TOKEN
 CopyToken(PSCRIPT_ENGINE_TOKEN Token);
@@ -279,6 +284,7 @@ typedef struct _USER_DEFINED_FUNCTION_NODE
     long long unsigned                   Address;
     long long unsigned                   VariableType;
     long long unsigned                   ParameterNumber;
+    long long unsigned                   ParameterSlotCount;
     long long unsigned                   MaxTempNumber;
     long long unsigned                   LocalVariableNumber;
     long long unsigned                   IdTable;

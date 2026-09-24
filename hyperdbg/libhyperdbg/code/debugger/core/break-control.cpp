@@ -106,7 +106,7 @@ BreakController(DWORD CtrlType)
                     RemoteConnectionSendCommand("pause", (UINT32)strlen("pause") + 1);
                 }
 
-                Sleep(300);
+                PlatformSleep(300);
 
                 //
                 // It is because we didn't query the target debuggee auto-unpause variable

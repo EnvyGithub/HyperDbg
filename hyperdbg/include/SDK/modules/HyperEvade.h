@@ -95,6 +95,12 @@ typedef BOOLEAN (*SYSCALL_CALLBACK_SET_TRAP_FLAG_AFTER_SYSCALL)(GUEST_REGS *    
 typedef VOID (*HV_HANDLE_TRAPFLAG)();
 
 /**
+ * @brief A function that handles overflown RIP when resuming to next instruction in non-long mode
+ *
+ */
+typedef VOID (*HV_HANDLE_NON_LONG_MODE_RESUMING_RIP_OVERFLOW)(UINT64 * ResumeRIP);
+
+/**
  * @brief A function that injects a general protection (#GP)
  *
  */
@@ -147,7 +153,8 @@ typedef struct _HYPEREVADE_CALLBACKS
     //
     // VMX callbacks
     //
-    HV_HANDLE_TRAPFLAG              HvHandleTrapFlag;
-    EVENT_INJECT_GENERAL_PROTECTION EventInjectGeneralProtection;
+    HV_HANDLE_TRAPFLAG                            HvHandleTrapFlag;
+    HV_HANDLE_NON_LONG_MODE_RESUMING_RIP_OVERFLOW HvHandleNonLongModeResumingRipOverflow;
+    EVENT_INJECT_GENERAL_PROTECTION               EventInjectGeneralProtection;
 
 } HYPEREVADE_CALLBACKS, *PHYPEREVADE_CALLBACKS;

@@ -18,6 +18,7 @@
 extern BYTE                             g_CurrentRunningInstruction[MAXIMUM_INSTR_SIZE];
 extern HANDLE                           g_SerialRemoteComPortHandle;
 extern BOOLEAN                          g_IsSerialConnectedToRemoteDebuggee;
+extern BOOLEAN                          g_ListeningDebuggeeDesyncReported;
 extern BOOLEAN                          g_IsDebuggeeRunning;
 extern BOOLEAN                          g_IgnoreNewLoggingMessages;
 extern BOOLEAN                          g_SharedEventStatus;
@@ -56,6 +57,9 @@ ListeningSerialPortInDebugger()
     PDEBUGGEE_RESULT_OF_SEARCH_PACKET            SearchResultsPacket;
     PDEBUGGEE_DETAILS_AND_SWITCH_THREAD_PACKET   ChangeThreadPacket;
     PDEBUGGER_FLUSH_LOGGING_BUFFERS              FlushPacket;
+    PDEBUGGER_CPUID_REQUEST_RESPONSE             CpuidPacket;
+    PDEBUGGER_USER_IN_REQUEST_RESPONSE           InPacket;
+    PDEBUGGER_USER_OUT_REQUEST_RESPONSE          OutPacket;
     PDEBUGGER_CALLSTACK_REQUEST                  CallstackPacket;
     PDEBUGGER_SINGLE_CALLSTACK_FRAME             CallstackFramePacket;
     PDEBUGGER_DEBUGGER_TEST_QUERY_BUFFER         TestQueryPacket;
@@ -239,7 +243,7 @@ StartAgain:
             //
             // Save the current operating instruction and operating mode
             //
-            RtlZeroMemory(g_CurrentRunningInstruction, MAXIMUM_INSTR_SIZE);
+            PlatformZeroMemory(g_CurrentRunningInstruction, MAXIMUM_INSTR_SIZE);
             memcpy(g_CurrentRunningInstruction, &PausePacket->InstructionBytesOnRip, MAXIMUM_INSTR_SIZE);
 
             g_IsRunningInstruction32Bit = PausePacket->IsProcessorOn32BitMode;
@@ -574,6 +578,77 @@ StartAgain:
             // Signal the event relating to receiving result of flushing
             //
             DbgReceivedKernelResponse(DEBUGGER_SYNCRONIZATION_OBJECT_KERNEL_DEBUGGER_FLUSH_RESULT);
+
+            break;
+
+        case DEBUGGER_REMOTE_PACKET_REQUESTED_ACTION_DEBUGGEE_RESULT_OF_USER_CPUID:
+
+            CpuidPacket = (DEBUGGER_CPUID_REQUEST_RESPONSE *)(((CHAR *)TheActualPacket) + sizeof(DEBUGGER_REMOTE_PACKET));
+
+            if (CpuidPacket->KernelStatus == DEBUGGER_OPERATION_WAS_SUCCESSFUL)
+            {
+                UINT32 FunctionId    = CpuidPacket->FunctionId;
+                UINT32 SubFunctionId = CpuidPacket->SubFunctionId;
+
+                CommandShowUserCpuidMessage(FunctionId, SubFunctionId, CpuidPacket);
+            }
+            else
+            {
+                ShowErrorMessage(CpuidPacket->KernelStatus);
+            }
+
+            //
+            // Signal the event relating to receiving result of CPUID
+            //
+            DbgReceivedKernelResponse(DEBUGGER_SYNCRONIZATION_OBJECT_KERNEL_DEBUGGER_USER_CPUID_RESULT);
+
+            break;
+
+        case DEBUGGER_REMOTE_PACKET_REQUESTED_ACTION_DEBUGGEE_RESULT_OF_USER_IN_INSTRUCTION:
+
+            InPacket = (DEBUGGER_USER_IN_REQUEST_RESPONSE *)(((CHAR *)TheActualPacket) + sizeof(DEBUGGER_REMOTE_PACKET));
+
+            if (InPacket->KernelStatus == DEBUGGER_OPERATION_WAS_SUCCESSFUL)
+            {
+                USHORT UserChosenRegister = InPacket->UserChosenRegister;
+                USHORT PortAddress        = InPacket->PortAddress;
+                ULONG  Data               = InPacket->Data;
+
+                CommandShowUserInMessage(UserChosenRegister, PortAddress, Data);
+            }
+            else
+            {
+                ShowErrorMessage(InPacket->KernelStatus);
+            }
+
+            //
+            // Signal the event relating to receiving result of IN instruction
+            //
+            DbgReceivedKernelResponse(DEBUGGER_SYNCRONIZATION_OBJECT_KERNEL_DEBUGGER_USER_IN_RESULT);
+
+            break;
+
+        case DEBUGGER_REMOTE_PACKET_REQUESTED_ACTION_DEBUGGEE_RESULT_OF_USER_OUT_INSTRUCTION:
+
+            OutPacket = (DEBUGGER_USER_OUT_REQUEST_RESPONSE *)(((CHAR *)TheActualPacket) + sizeof(DEBUGGER_REMOTE_PACKET));
+
+            if (OutPacket->KernelStatus == DEBUGGER_OPERATION_WAS_SUCCESSFUL)
+            {
+                USHORT UserChosenRegister = OutPacket->UserChosenRegister;
+                USHORT PortAddress        = OutPacket->PortAddress;
+                UINT32 Value              = OutPacket->Value;
+
+                CommandShowUserOutMessage(UserChosenRegister, PortAddress, Value);
+            }
+            else
+            {
+                ShowErrorMessage(OutPacket->KernelStatus);
+            }
+
+            //
+            // Signal the event relating to receiving result of OUT instruction
+            //
+            DbgReceivedKernelResponse(DEBUGGER_SYNCRONIZATION_OBJECT_KERNEL_DEBUGGER_USER_OUT_RESULT);
 
             break;
 
@@ -1166,9 +1241,9 @@ StartAgain:
                                  PcitreePacket->DeviceInfoList[i].Function,
                                  PcitreePacket->DeviceInfoList[i].ConfigSpace.VendorId,
                                  PcitreePacket->DeviceInfoList[i].ConfigSpace.DeviceId,
-                                 strnlen_s(CurrentVendorName, PCI_NAME_STR_LENGTH),
+                                 PlatformStrnlen(CurrentVendorName, PCI_NAME_STR_LENGTH),
                                  CurrentVendorName,
-                                 strnlen_s(CurrentDeviceName, PCI_NAME_STR_LENGTH),
+                                 PlatformStrnlen(CurrentDeviceName, PCI_NAME_STR_LENGTH),
                                  CurrentDeviceName
 
                     );
@@ -1229,9 +1304,9 @@ StartAgain:
                     ShowMessages("\nCommon Header:\nVID:DID: %04x:%04x\nVendor Name: %-17.*s\nDevice Name: %.*s\nCommand: %04x\n",
                                  PcidevinfoPacket->DeviceInfo.ConfigSpace.CommonHeader.VendorId,
                                  PcidevinfoPacket->DeviceInfo.ConfigSpace.CommonHeader.DeviceId,
-                                 strnlen_s(CurrentVendorName, PCI_NAME_STR_LENGTH),
+                                 PlatformStrnlen(CurrentVendorName, PCI_NAME_STR_LENGTH),
                                  CurrentVendorName,
-                                 strnlen_s(CurrentDeviceName, PCI_NAME_STR_LENGTH),
+                                 PlatformStrnlen(CurrentDeviceName, PCI_NAME_STR_LENGTH),
                                  CurrentDeviceName,
                                  PcidevinfoPacket->DeviceInfo.ConfigSpace.CommonHeader.Command);
 
@@ -1440,13 +1515,16 @@ StartAgain:
 
     BOOL Status; /* Status */
     CHAR SerialBuffer[MaxSerialPacketSize] = {
-        0};                                         /* Buffer to send and receive data */
-    DWORD                   EventMask       = 0;    /* Event mask to trigger */
+        0}; /* Buffer to send and receive data */
+#ifdef _WIN32
+    DWORD EventMask = 0;                            /* Event mask to trigger */
+#endif                                              // _WIN32
     char                    ReadData        = NULL; /* temperory Character */
     DWORD                   NoBytesRead     = 0;    /* Bytes read by ReadFile() */
     UINT32                  Loop            = 0;
     PDEBUGGER_REMOTE_PACKET TheActualPacket = (PDEBUGGER_REMOTE_PACKET)SerialBuffer;
 
+#ifdef _WIN32
     //
     // Setting Receive Mask
     //
@@ -1474,31 +1552,76 @@ StartAgain:
         // ShowMessages("err, in setting WaitCommEvent\n");
         // return FALSE;
     }
+#else
+    //
+    // TODO(Linux): waiting for the first byte on the serial port is
+    // Win32-only here (SetCommMask/WaitCommEvent); the Linux home for it is
+    // platform-serial.c. Unreachable for now, as the Linux serial path is
+    // refused in KdPrepareAndConnectDebugPort.
+    //
+#endif // _WIN32
 
     //
     // Read data and store in a buffer
     //
     do
     {
+#ifdef _WIN32
         Status = ReadFile(g_SerialRemoteComPortHandle, &ReadData, sizeof(ReadData), &NoBytesRead, NULL);
+#else
+        //
+        // Linux: read one byte through the cross-platform serial transport
+        //
+        Status = PlatformSerialReadByte(g_SerialRemoteComPortHandle,
+                                        &ReadData,
+                                        &NoBytesRead,
+                                        PLATFORM_SERIAL_IO_DEBUGGEE);
+#endif // _WIN32
+
+        //
+        // Hard read error: restart the listen. StartAgain re-arms the wait,
+        // which blocks until data arrives, so it cannot busy-loop.
+        //
+        if (!Status)
+        {
+            goto StartAgain;
+        }
 
         //
         // Check to make sure that we don't pass the boundaries
         //
-        if (!Status || !(MaxSerialPacketSize > Loop))
+        if (!(MaxSerialPacketSize > Loop))
         {
             //
-            // Invalid buffer
+            // Overflowed without an end-of-buffer marker: the stream is
+            // desynced. Restarting into the same desynced stream floods the
+            // output, so show the warning once per episode and resync to the
+            // next frame boundary instead.
             //
-            ShowMessages("err, a buffer received in debuggee which exceeds the "
-                         "buffer limitation\n");
-            goto StartAgain;
+            if (!g_ListeningDebuggeeDesyncReported)
+            {
+                ShowMessages("err, serial stream desynced in debuggee (a buffer "
+                             "exceeded the buffer limitation with no end marker); resyncing\n");
+                g_ListeningDebuggeeDesyncReported = TRUE;
+            }
+
+            if (!KdResyncStreamToNextFrame(DEBUGGER_PACKET_RESYNC_LISTENING))
+            {
+                goto StartAgain;
+            }
+
+            Loop = 0;
+            continue;
         }
 
         SerialBuffer[Loop] = ReadData;
 
         if (KdCheckForTheEndOfTheBuffer(&Loop, (BYTE *)SerialBuffer))
         {
+            //
+            // A full frame arrived, so the stream is back in sync.
+            //
+            g_ListeningDebuggeeDesyncReported = FALSE;
             break;
         }
 
@@ -1589,7 +1712,7 @@ StartAgain:
         //
         // It's not a HyperDbg packet, it's probably a GDB packet
         //
-        DebugBreak();
+        PlatformDebugBreak();
     }
 
     //

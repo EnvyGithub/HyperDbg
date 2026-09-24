@@ -709,7 +709,11 @@ ScriptEngineFunctionSpinlockLockCustomWait(volatile long * Lock, unsigned MaxWai
 {
 #ifdef SCRIPT_ENGINE_USER_MODE
 
-    SpinlockLockWithCustomWait(Lock, MaxWait);
+    //
+    // The parameter is a raw `long`, which IS LONG on Windows but is 64-bit on
+    // Linux (LP64), so the conversion is spelled out. No-op on Windows.
+    //
+    SpinlockLockWithCustomWait((volatile LONG *)Lock, MaxWait);
 
 #endif // SCRIPT_ENGINE_USER_MODE
 
@@ -721,7 +725,7 @@ ScriptEngineFunctionSpinlockLockCustomWait(volatile long * Lock, unsigned MaxWai
         return;
     }
 
-    SpinlockLockWithCustomWait(Lock, MaxWait);
+    SpinlockLockWithCustomWait((volatile LONG *)Lock, MaxWait);
 
 #endif // SCRIPT_ENGINE_KERNEL_MODE
 }
@@ -777,16 +781,17 @@ ScriptEngineFunctionDisassembleLen(PVOID Address, BOOLEAN Is32Bit)
  * @return UINT64
  */
 UINT64
-ScriptEngineFunctionWcslen(const wchar_t * Address)
+ScriptEngineFunctionWcslen(const UINT16 * Address)
 {
     UINT64 Result = 0;
 
 #ifdef SCRIPT_ENGINE_USER_MODE
-    Result = wcslen(Address);
+    while (Address[Result] != 0)
+        Result++;
 #endif // SCRIPT_ENGINE_USER_MODE
 
 #ifdef SCRIPT_ENGINE_KERNEL_MODE
-    Result = VmFuncVmxCompatibleWcslen(Address);
+    Result = VmFuncVmxCompatibleWcslen((const WCHAR *)Address);
 #endif // SCRIPT_ENGINE_KERNEL_MODE
 
     return Result;
@@ -1103,7 +1108,7 @@ ScriptEngineFunctionPause(
     if (g_KernelDebuggerState && g_DebuggeeHaltReason == DEBUGGEE_PAUSING_REASON_NOT_PAUSED)
     {
         DEBUGGER_TRIGGERED_EVENT_DETAILS TriggeredEventDetail = {0};
-        ULONG                            CurrentCore          = KeGetCurrentProcessorNumberEx(NULL);
+        ULONG                            CurrentCore          = PlatformCpuGetCurrentProcessorNumber();
 
         //
         // Make the details of context
@@ -1120,29 +1125,10 @@ ScriptEngineFunctionPause(
             TriggeredEventDetail.Stage = VMM_CALLBACK_CALLING_STAGE_PRE_EVENT_EMULATION;
         }
 
-        if (VmFuncVmxGetCurrentExecutionMode() == TRUE)
-        {
-            //
-            // The guest is already in vmx-root mode
-            // Halt other cores
-            //
-
-            KdHandleBreakpointAndDebugBreakpointsCallback(
-                CurrentCore,
-                DEBUGGEE_PAUSING_REASON_DEBUGGEE_EVENT_TRIGGERED,
-                &TriggeredEventDetail);
-        }
-        else
-        {
-            //
-            // The guest is on vmx non-root mode, the first parameter
-            // is context and the second parameter is tag
-            //
-            VmFuncVmxVmcall(DEBUGGER_VMCALL_VM_EXIT_HALT_SYSTEM_AS_A_RESULT_OF_TRIGGERING_EVENT,
-                            (UINT64)&TriggeredEventDetail,
-                            (UINT64)GuestRegs,
-                            (UINT64)NULL);
-        }
+        //
+        // Notify debugger about the pause (whether from VMX root-mode or not root)
+        //
+        DebuggerPerformBreakToDebuggerByCoreId(CurrentCore, NULL, &TriggeredEventDetail, GuestRegs);
     }
     else
     {
@@ -1200,7 +1186,7 @@ ScriptEngineFunctionShortCircuitingEvent(UINT64 State, ACTION_BUFFER * ActionDet
         return;
     }
 
-    ULONG CurrentCore = KeGetCurrentProcessorNumberEx(NULL);
+    ULONG CurrentCore = PlatformCpuGetCurrentProcessorNumber();
 
     if (State != 0)
     {
@@ -1267,7 +1253,11 @@ CustomStrlen(UINT64 StrAddr, BOOLEAN IsWstring)
 
     if (IsWstring)
     {
-        return (UINT32)wcslen((const wchar_t *)StrAddr);
+        const UINT16 * String = (const UINT16 *)StrAddr;
+        UINT32         Length = 0;
+        while (String[Length] != 0)
+            Length++;
+        return Length;
     }
     else
     {
@@ -1278,7 +1268,7 @@ CustomStrlen(UINT64 StrAddr, BOOLEAN IsWstring)
 #ifdef SCRIPT_ENGINE_KERNEL_MODE
     if (IsWstring)
     {
-        return VmFuncVmxCompatibleWcslen((const wchar_t *)StrAddr);
+        return VmFuncVmxCompatibleWcslen((const WCHAR *)StrAddr);
     }
     else
     {
@@ -1317,6 +1307,269 @@ CheckIfStringIsSafe(UINT64 StrAddr, BOOLEAN IsWstring)
 #endif // SCRIPT_ENGINE_KERNEL_MODE
 }
 
+typedef struct _SCRIPT_ENGINE_FLOAT_BIGINT
+{
+    UINT32 Limb[40];
+} SCRIPT_ENGINE_FLOAT_BIGINT, *PSCRIPT_ENGINE_FLOAT_BIGINT;
+
+static BOOLEAN
+ScriptEngineFloatBigintIsZero(PSCRIPT_ENGINE_FLOAT_BIGINT Value)
+{
+    for (UINT32 Index = 0; Index < 40; Index++)
+    {
+        if (Value->Limb[Index])
+        {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+static BOOLEAN
+ScriptEngineFloatBigintShiftLeftOne(PSCRIPT_ENGINE_FLOAT_BIGINT Value)
+{
+    UINT32 Carry = 0;
+    for (UINT32 Index = 0; Index < 40; Index++)
+    {
+        UINT32 NextCarry = Value->Limb[Index] >> 31;
+        Value->Limb[Index] = (Value->Limb[Index] << 1) | Carry;
+        Carry = NextCarry;
+    }
+    return Carry == 0;
+}
+
+static VOID
+ScriptEngineFloatBigintShiftRightOne(PSCRIPT_ENGINE_FLOAT_BIGINT Value)
+{
+    UINT32 Carry = 0;
+    for (INT32 Index = 39; Index >= 0; Index--)
+    {
+        UINT32 NextCarry = Value->Limb[Index] & 1;
+        Value->Limb[Index] = (Value->Limb[Index] >> 1) | (Carry << 31);
+        Carry = NextCarry;
+    }
+}
+
+static BOOLEAN
+ScriptEngineFloatBigintTestBit(PSCRIPT_ENGINE_FLOAT_BIGINT Value, UINT32 Bit)
+{
+    return Bit < 1280 && (Value->Limb[Bit / 32] & (1U << (Bit % 32))) != 0;
+}
+
+static BOOLEAN
+ScriptEngineFloatBigintAnyBitsBelow(PSCRIPT_ENGINE_FLOAT_BIGINT Value, UINT32 Bit)
+{
+    UINT32 Limit = Bit < 1280 ? Bit : 1280;
+    for (UINT32 Index = 0; Index < Limit; Index++)
+    {
+        if (ScriptEngineFloatBigintTestBit(Value, Index))
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static BOOLEAN
+ScriptEngineFloatBigintIncrement(PSCRIPT_ENGINE_FLOAT_BIGINT Value)
+{
+    for (UINT32 Index = 0; Index < 40; Index++)
+    {
+        Value->Limb[Index]++;
+        if (Value->Limb[Index])
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static BOOLEAN
+ScriptEngineFloatBigintMultiplySmall(PSCRIPT_ENGINE_FLOAT_BIGINT Value, UINT32 Multiplier)
+{
+    UINT64 Carry = 0;
+    for (UINT32 Index = 0; Index < 40; Index++)
+    {
+        UINT64 Product = ((UINT64)Value->Limb[Index] * Multiplier) + Carry;
+        Value->Limb[Index] = (UINT32)Product;
+        Carry = Product >> 32;
+    }
+    return Carry == 0;
+}
+
+static UINT32
+ScriptEngineFloatBigintDivideByTen(PSCRIPT_ENGINE_FLOAT_BIGINT Value)
+{
+    UINT64 Remainder = 0;
+    for (INT32 Index = 39; Index >= 0; Index--)
+    {
+        UINT64 Dividend = (Remainder << 32) | Value->Limb[Index];
+        Value->Limb[Index] = (UINT32)(Dividend / 10);
+        Remainder = Dividend % 10;
+    }
+    return (UINT32)Remainder;
+}
+
+static BOOLEAN
+ScriptEngineFormatFixedFloat(UINT64 ValueKind, UINT64 RawBits, PCHAR Output, UINT32 OutputSize, PUINT32 OutputLength)
+{
+    SCRIPT_ENGINE_FLOAT_BIGINT ScaledValue = {0};
+    SCRIPT_ENGINE_FLOAT_BIGINT DecimalValue;
+    CHAR                       ReverseDigits[384];
+    UINT32                     DigitCount = 0;
+    UINT64                     Significand;
+    INT32                      BinaryExponent;
+    BOOLEAN                    Negative;
+
+    if (!Output || !OutputLength || OutputSize == 0)
+    {
+        return FALSE;
+    }
+
+    if (ValueKind == SYMBOL_VALUE_KIND_FLOAT32)
+    {
+        UINT32 Bits = (UINT32)RawBits;
+        UINT32 Exponent = (Bits >> 23) & 0xff;
+        UINT32 Fraction = Bits & 0x7fffff;
+        Negative = (Bits >> 31) != 0;
+        if (Exponent == 0xff)
+        {
+            return FALSE;
+        }
+        Significand = Exponent ? ((UINT64)1 << 23) | Fraction : Fraction;
+        BinaryExponent = Exponent ? (INT32)Exponent - 127 - 23 : -126 - 23;
+    }
+    else if (ValueKind == SYMBOL_VALUE_KIND_FLOAT64)
+    {
+        UINT64 Exponent = (RawBits >> 52) & 0x7ff;
+        UINT64 Fraction = RawBits & 0xfffffffffffffULL;
+        Negative = (RawBits >> 63) != 0;
+        if (Exponent == 0x7ff)
+        {
+            return FALSE;
+        }
+        Significand = Exponent ? ((UINT64)1 << 52) | Fraction : Fraction;
+        BinaryExponent = Exponent ? (INT32)Exponent - 1023 - 52 : -1022 - 52;
+    }
+    else
+    {
+        return FALSE;
+    }
+
+    ScaledValue.Limb[0] = (UINT32)Significand;
+    ScaledValue.Limb[1] = (UINT32)(Significand >> 32);
+    if (!ScriptEngineFloatBigintMultiplySmall(&ScaledValue, 1000000))
+    {
+        return FALSE;
+    }
+
+    if (BinaryExponent > 0)
+    {
+        for (INT32 Shift = 0; Shift < BinaryExponent; Shift++)
+        {
+            if (!ScriptEngineFloatBigintShiftLeftOne(&ScaledValue))
+            {
+                return FALSE;
+            }
+        }
+    }
+    else if (BinaryExponent < 0)
+    {
+        UINT32 Shift = (UINT32)-BinaryExponent;
+        BOOLEAN RoundBit = Shift && ScriptEngineFloatBigintTestBit(&ScaledValue, Shift - 1);
+        BOOLEAN Sticky = Shift > 1 && ScriptEngineFloatBigintAnyBitsBelow(&ScaledValue, Shift - 1);
+
+        for (UINT32 Index = 0; Index < Shift; Index++)
+        {
+            ScriptEngineFloatBigintShiftRightOne(&ScaledValue);
+        }
+
+        if (RoundBit && (Sticky || (ScaledValue.Limb[0] & 1)))
+        {
+            if (!ScriptEngineFloatBigintIncrement(&ScaledValue))
+            {
+                return FALSE;
+            }
+        }
+    }
+
+    DecimalValue = ScaledValue;
+    do
+    {
+        if (DigitCount >= sizeof(ReverseDigits))
+        {
+            return FALSE;
+        }
+        ReverseDigits[DigitCount++] = (CHAR)('0' + ScriptEngineFloatBigintDivideByTen(&DecimalValue));
+    } while (!ScriptEngineFloatBigintIsZero(&DecimalValue));
+
+    UINT32 Required = (Negative ? 1U : 0U) + (DigitCount > 6 ? DigitCount - 6 : 1) + 1 + 6;
+    if (Required + 1 > OutputSize)
+    {
+        return FALSE;
+    }
+
+    UINT32 Position = 0;
+    if (Negative)
+    {
+        Output[Position++] = '-';
+    }
+
+    if (DigitCount <= 6)
+    {
+        Output[Position++] = '0';
+        Output[Position++] = '.';
+        for (UINT32 Pad = DigitCount; Pad < 6; Pad++)
+        {
+            Output[Position++] = '0';
+        }
+        while (DigitCount)
+        {
+            Output[Position++] = ReverseDigits[--DigitCount];
+        }
+    }
+    else
+    {
+        for (UINT32 Index = DigitCount; Index > 6; Index--)
+        {
+            Output[Position++] = ReverseDigits[Index - 1];
+        }
+        Output[Position++] = '.';
+        for (UINT32 Index = 6; Index > 0; Index--)
+        {
+            Output[Position++] = ReverseDigits[Index - 1];
+        }
+    }
+
+    Output[Position] = '\0';
+    *OutputLength = Position;
+    return TRUE;
+}
+
+static BOOLEAN
+ApplyFloatingFormatSpecifier(CHAR * FinalBuffer,
+                             PUINT32 CurrentProcessedPositionFromStartOfFormat,
+                             PUINT32 CurrentPositionInFinalBuffer,
+                             UINT64 RawBits,
+                             UINT64 ValueKind,
+                             UINT32 SizeOfFinalBuffer)
+{
+    CHAR   TempBuffer[384] = {0};
+    UINT32 TempBufferLen = 0;
+
+    if (*CurrentPositionInFinalBuffer >= SizeOfFinalBuffer ||
+        !ScriptEngineFormatFixedFloat(ValueKind, RawBits, TempBuffer, sizeof(TempBuffer), &TempBufferLen) ||
+        TempBufferLen >= SizeOfFinalBuffer - *CurrentPositionInFinalBuffer)
+    {
+        return FALSE;
+    }
+
+    *CurrentProcessedPositionFromStartOfFormat += 2;
+    memcpy(FinalBuffer + *CurrentPositionInFinalBuffer, TempBuffer, TempBufferLen);
+    *CurrentPositionInFinalBuffer += TempBufferLen;
+    return TRUE;
+}
+
 /**
  * @brief Apply format specifiers (%d, %x, %llx, etc.)
  *
@@ -1328,18 +1581,22 @@ CheckIfStringIsSafe(UINT64 StrAddr, BOOLEAN IsWstring)
  * @param SizeOfFinalBuffer
  * @return VOID
  */
-VOID
+BOOLEAN
 ApplyFormatSpecifier(const CHAR * CurrentSpecifier, CHAR * FinalBuffer, PUINT32 CurrentProcessedPositionFromStartOfFormat, PUINT32 CurrentPositionInFinalBuffer, UINT64 Val, UINT32 SizeOfFinalBuffer)
 {
     UINT32 TempBufferLen      = 0;
     CHAR   TempBuffer[50 + 1] = {
         0}; // Maximum uint64_t is 18446744073709551615 + 1 thus its 20 character
-              // for maximum buffer + 1 end char null but we alloc 50 to be sure
+            // for maximum buffer + 1 end char null but we alloc 50 to be sure
 
     *CurrentProcessedPositionFromStartOfFormat =
         *CurrentProcessedPositionFromStartOfFormat + (UINT32)strlen(CurrentSpecifier);
-    PlatformSprintf(TempBuffer, sizeof(TempBuffer), CurrentSpecifier, Val);
-    TempBufferLen = (UINT32)strlen(TempBuffer);
+    INT FormatResult = PlatformSprintf(TempBuffer, sizeof(TempBuffer), CurrentSpecifier, Val);
+    if (FormatResult < 0)
+    {
+        return FALSE;
+    }
+    TempBufferLen = (UINT32)FormatResult;
 
     //
     // Check final buffer capacity
@@ -1349,12 +1606,13 @@ ApplyFormatSpecifier(const CHAR * CurrentSpecifier, CHAR * FinalBuffer, PUINT32 
         //
         // Over passed buffer
         //
-        return;
+        return FALSE;
     }
 
     memcpy(&FinalBuffer[*CurrentPositionInFinalBuffer], TempBuffer, TempBufferLen);
 
     *CurrentPositionInFinalBuffer = *CurrentPositionInFinalBuffer + TempBufferLen;
+    return TRUE;
 }
 
 /**
@@ -1605,6 +1863,12 @@ ScriptEngineFunctionPrintf(PGUEST_REGS                       GuestRegs,
 
         Position = (Symbol->Type >> 32) + 1;
 
+        if (Position < CurrentProcessedPositionFromStartOfFormat || Position + 1 >= LenOfFormats)
+        {
+            *HasError = TRUE;
+            return;
+        }
+
         SYMBOL TempSymbol = {0};
         memcpy(&TempSymbol, Symbol, sizeof(SYMBOL));
         TempSymbol.Type &= 0x7fffffff;
@@ -1635,6 +1899,11 @@ ScriptEngineFunctionPrintf(PGUEST_REGS                       GuestRegs,
                 CurrentProcessedPositionFromStartOfFormat += StringLen;
                 CurrentPositionInFinalBuffer += StringLen;
             }
+            else
+            {
+                *HasError = TRUE;
+                return;
+            }
         }
 
         //
@@ -1659,6 +1928,12 @@ ScriptEngineFunctionPrintf(PGUEST_REGS                       GuestRegs,
             if (IndicatorChar2 == 'l' || IndicatorChar2 == 'w' ||
                 IndicatorChar2 == 'h')
             {
+                if (Position + 2 >= LenOfFormats)
+                {
+                    *HasError = TRUE;
+                    return;
+                }
+
                 //
                 // Set second char in format specifier
                 //
@@ -1666,6 +1941,12 @@ ScriptEngineFunctionPrintf(PGUEST_REGS                       GuestRegs,
 
                 if (IndicatorChar2 == 'l' && Format[Position + 2] == 'l')
                 {
+                    if (Position + 3 >= LenOfFormats)
+                    {
+                        *HasError = TRUE;
+                        return;
+                    }
+
                     //
                     // Set third character in format specifier "ll"
                     //
@@ -1695,7 +1976,31 @@ ScriptEngineFunctionPrintf(PGUEST_REGS                       GuestRegs,
             //
             // Apply the specifier
             //
-            if (!strncmp(FormatSpecifier, "%s", 2))
+            UINT64 BaseType = TempSymbol.Type & 0xffffffffULL;
+            BOOLEAN IsFloatingValue =
+                BaseType != SYMBOL_STRING_TYPE && BaseType != SYMBOL_WSTRING_TYPE &&
+                (Symbol->Len == SYMBOL_VALUE_KIND_FLOAT32 || Symbol->Len == SYMBOL_VALUE_KIND_FLOAT64);
+
+            if (!strncmp(FormatSpecifier, "%f", 2))
+            {
+                if (!IsFloatingValue ||
+                    !ApplyFloatingFormatSpecifier(FinalBuffer,
+                                                  &CurrentProcessedPositionFromStartOfFormat,
+                                                  &CurrentPositionInFinalBuffer,
+                                                  Val,
+                                                  Symbol->Len,
+                                                  sizeof(FinalBuffer)))
+                {
+                    *HasError = TRUE;
+                    return;
+                }
+            }
+            else if (IsFloatingValue)
+            {
+                *HasError = TRUE;
+                return;
+            }
+            else if (!strncmp(FormatSpecifier, "%s", 2))
             {
                 //
                 // for string
@@ -1735,7 +2040,11 @@ ScriptEngineFunctionPrintf(PGUEST_REGS                       GuestRegs,
             }
             else
             {
-                ApplyFormatSpecifier(FormatSpecifier, FinalBuffer, &CurrentProcessedPositionFromStartOfFormat, &CurrentPositionInFinalBuffer, Val, sizeof(FinalBuffer));
+                if (!ApplyFormatSpecifier(FormatSpecifier, FinalBuffer, &CurrentProcessedPositionFromStartOfFormat, &CurrentPositionInFinalBuffer, Val, sizeof(FinalBuffer)))
+                {
+                    *HasError = TRUE;
+                    return;
+                }
             }
         }
     }
@@ -1748,6 +2057,11 @@ ScriptEngineFunctionPrintf(PGUEST_REGS                       GuestRegs,
         if (LenOfFormats < sizeof(FinalBuffer))
         {
             memcpy(FinalBuffer, Format, LenOfFormats);
+        }
+        else
+        {
+            *HasError = TRUE;
+            return;
         }
     }
     else
@@ -1766,6 +2080,11 @@ ScriptEngineFunctionPrintf(PGUEST_REGS                       GuestRegs,
                        &Format[CurrentProcessedPositionFromStartOfFormat],
                        RemainedLen);
             }
+            else
+            {
+                *HasError = TRUE;
+                return;
+            }
         }
     }
 
@@ -1773,7 +2092,7 @@ ScriptEngineFunctionPrintf(PGUEST_REGS                       GuestRegs,
 // Print final result
 //
 #ifdef SCRIPT_ENGINE_USER_MODE
-    printf("%s", FinalBuffer);
+    ShowMessages("%s", FinalBuffer);
 #endif // SCRIPT_ENGINE_USER_MODE
 
 #ifdef SCRIPT_ENGINE_KERNEL_MODE
@@ -1992,7 +2311,7 @@ ScriptEngineFunctionEventTraceInstrumentationStep()
 
 #ifdef SCRIPT_ENGINE_KERNEL_MODE
 
-    ULONG CurrentCore = KeGetCurrentProcessorNumberEx(NULL);
+    ULONG CurrentCore = PlatformCpuGetCurrentProcessorNumber();
 
     //
     // Call instrumentation step in

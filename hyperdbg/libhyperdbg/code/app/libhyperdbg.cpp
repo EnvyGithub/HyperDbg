@@ -111,7 +111,7 @@ HyperDbgInstallKdDriver()
         //
         // Use default driver name
         //
-        strcpy_s(g_DriverName, KERNEL_DEBUGGER_DRIVER_NAME);
+        PlatformStrCpy(g_DriverName, sizeof(g_DriverName), KERNEL_DEBUGGER_DRIVER_NAME);
     }
 
     if (HyperDbgStartDriver() != 0)
@@ -198,7 +198,7 @@ HyperDbgInitHyperTraceModule()
     //
     // Send IOCTL to initialize HyperTrace module
     //
-    Status = DeviceIoControl(g_DeviceHandle,                         // Handle to device
+    Status = PlatformDeviceIoControl(g_DeviceHandle,                         // Handle to device
                              IOCTL_INIT_HYPERTRACE,                  // IO Control Code (IOCTL)
                              &InitHyperTracePacket,                  // Input Buffer to driver.
                              SIZEOF_DEBUGGER_INIT_HYPERTRACE_PACKET, // Length of input buffer in bytes.
@@ -213,7 +213,7 @@ HyperDbgInitHyperTraceModule()
     //
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         return 1;
     }
 
@@ -247,12 +247,12 @@ HyperDbgInitVmmModule()
     //
     // Create event to show if the kd module is loaded or not
     //
-    g_IsDriverLoadedSuccessfully = CreateEvent(NULL, FALSE, FALSE, NULL);
+    g_IsDriverLoadedSuccessfully = PlatformCreateEvent(FALSE, FALSE);
 
     //
     // Send IOCTL to initialize VMM module
     //
-    Status = DeviceIoControl(g_DeviceHandle,                  // Handle to device
+    Status = PlatformDeviceIoControl(g_DeviceHandle,                  // Handle to device
                              IOCTL_INIT_VMM,                  // IO Control Code (IOCTL)
                              &InitVmmPacket,                  // Input Buffer to driver.
                              SIZEOF_DEBUGGER_INIT_VMM_PACKET, // Length of input buffer in bytes.
@@ -267,8 +267,8 @@ HyperDbgInitVmmModule()
     //
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
-        CloseHandle(g_IsDriverLoadedSuccessfully);
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
+        PlatformCloseHandle(g_IsDriverLoadedSuccessfully);
         return 1;
     }
 
@@ -279,21 +279,21 @@ HyperDbgInitVmmModule()
         InitVmmPacket.KernelStatus != 0)
     {
         ShowErrorMessage(InitVmmPacket.KernelStatus);
-        CloseHandle(g_IsDriverLoadedSuccessfully);
+        PlatformCloseHandle(g_IsDriverLoadedSuccessfully);
         return 1;
     }
 
     //
     // We wait for the first message from the kernel debugger to continue
     //
-    WaitForSingleObject(
+    PlatformWaitForSingleObject(
         g_IsDriverLoadedSuccessfully,
         INFINITE);
 
     //
     // No need to handle anymore
     //
-    CloseHandle(g_IsDriverLoadedSuccessfully);
+    PlatformCloseHandle(g_IsDriverLoadedSuccessfully);
 
     //
     // VMM module is initialized at this point
@@ -311,7 +311,6 @@ INT
 HyperDbgCreateHandleFromKdModule()
 {
     DWORD ErrorNum;
-    DWORD ThreadId;
 
     if (g_DeviceHandle)
     {
@@ -329,18 +328,11 @@ HyperDbgCreateHandleFromKdModule()
     //
     // Init entering vmx
     //
-    g_DeviceHandle = CreateFileA(
-        "\\\\.\\HyperDbgDebuggerDevice",
-        GENERIC_READ | GENERIC_WRITE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        NULL, /// lpSecurityAttirbutes
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
-        NULL); /// lpTemplateFile
+    g_DeviceHandle = PlatformOpenDevice("\\\\.\\HyperDbgDebuggerDevice");
 
     if (g_DeviceHandle == INVALID_HANDLE_VALUE)
     {
-        ErrorNum = GetLastError();
+        ErrorNum = PlatformGetLastError();
         if (ErrorNum == ERROR_ACCESS_DENIED)
         {
             ShowMessages("err, access denied\nare you sure you have administrator "
@@ -366,7 +358,7 @@ HyperDbgCreateHandleFromKdModule()
     InitializeListHead(&g_EventTrace);
 
 #if !UseDbgPrintInsteadOfUsermodeMessageTracking
-    HANDLE Thread = CreateThread(NULL, 0, IrpBasedBufferThread, NULL, 0, &ThreadId);
+    HANDLE Thread = PlatformCreateThread(IrpBasedBufferThread, NULL);
 
     // if (Thread)
     // {
@@ -417,7 +409,7 @@ HyperDbgUnloadVmm()
     //
     // Send IOCTL terminate VMX
     //
-    Status = DeviceIoControl(g_DeviceHandle,      // Handle to device
+    Status = PlatformDeviceIoControl(g_DeviceHandle,      // Handle to device
                              IOCTL_TERMINATE_VMX, // IO Control Code (IOCTL)
                              NULL,                // Input Buffer to driver.
                              0,                   // Length of input buffer in bytes. (x 2 is bcuz
@@ -433,7 +425,7 @@ HyperDbgUnloadVmm()
     //
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         return 1;
     }
 
@@ -466,7 +458,7 @@ HyperDbgUnloadHyperTrace()
     //
     // Send IOCTL to unload HyperTrace module
     //
-    Status = DeviceIoControl(g_DeviceHandle,                  // Handle to device
+    Status = PlatformDeviceIoControl(g_DeviceHandle,                  // Handle to device
                              IOCTL_PERFORM_HYPERTRACE_UNLOAD, // IO Control Code (IOCTL)
                              NULL,                            // Input Buffer to driver.
                              0,                               // Length of input buffer in bytes. (x 2 is bcuz
@@ -482,7 +474,7 @@ HyperDbgUnloadHyperTrace()
     //
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         return 1;
     }
 
@@ -539,7 +531,7 @@ HyperDbgUnloadKd()
     //
     // Send IOCTL to mark complete all IRP Pending
     //
-    Status = DeviceIoControl(
+    Status = PlatformDeviceIoControl(
         g_DeviceHandle,                                      // Handle to device
         IOCTL_RETURN_IRP_PENDING_PACKETS_AND_DISALLOW_IOCTL, // IO Control Code (IOCTL)
         NULL,                                                // Input Buffer to driver.
@@ -556,21 +548,21 @@ HyperDbgUnloadKd()
     //
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         return 1;
     }
 
     //
     // Wait for a while to make sure that all IRP pending are completed and the driver is ready to be unloaded
     //
-    Sleep(1000);
+    PlatformSleep(1000);
 
     //
     // Send IRP_MJ_CLOSE to driver to terminate Vmxs
     //
-    if (!CloseHandle(g_DeviceHandle))
+    if (!PlatformCloseHandle(g_DeviceHandle))
     {
-        ShowMessages("err, closing handle 0x%x\n", GetLastError());
+        ShowMessages("err, closing handle 0x%x\n", PlatformGetLastError());
         return 1;
     };
 

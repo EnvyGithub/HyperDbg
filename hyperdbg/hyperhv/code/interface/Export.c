@@ -366,6 +366,34 @@ VmFuncGetLastVmexitRip(UINT32 CoreId)
 }
 
 /**
+ * @brief Get the guest's general-purpose registers of the target core
+ *
+ * @param CoreId Target core's ID
+ * @return GUEST_REGS *
+ */
+GUEST_REGS *
+VmFuncGetGuestRegs(UINT32 CoreId)
+{
+    return g_GuestState[CoreId].Regs;
+}
+
+/**
+ * @brief Set the guest's general-purpose registers of the target core
+ * @details SHOULD NOT BE REGULARLY USED, this function is used to temporarily change the
+ * guest registers
+ *
+ * @param CoreId Target core's ID
+ * @param GuestRegs Guest registers to swap
+ *
+ * @return VOID
+ */
+VOID
+VmFuncSetGuestRegs(UINT32 CoreId, GUEST_REGS * GuestRegs)
+{
+    g_GuestState[CoreId].Regs = GuestRegs;
+}
+
+/**
  * @brief Inject pending external interrupts
  *
  * @param CoreId Target core's ID

@@ -884,7 +884,7 @@ EptFreeIdentityPageTable(_In_opt_ PVMM_EPT_PAGE_TABLE EptPageTable)
         }
     }
 
-    MmFreeContiguousMemory(EptPageTable);
+    PlatformMemFreeContiguousMemory(EptPageTable);
 }
 
 /**
@@ -903,7 +903,7 @@ EptLogicalProcessorInitialize(VOID)
     //
     // Get number of processors
     //
-    ProcessorsCount = KeQueryActiveProcessorCount(0);
+    ProcessorsCount = PlatformCpuGetActiveProcessorCount();
 
     for (SIZE_T i = 0; i < ProcessorsCount; i++)
     {
@@ -1167,7 +1167,7 @@ EptHandleEptViolation(VIRTUAL_MACHINE_STATE * VCpu)
     }
 
     LogError("Err, unexpected EPT violation at RIP: %llx", VCpu->LastVmexitRip);
-    DbgBreakPoint();
+    PlatformDbgBreakPoint();
     //
     // Redo the instruction that caused the exception
     //

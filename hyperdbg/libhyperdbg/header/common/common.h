@@ -172,7 +172,7 @@
             &g_KernelSyncronizationObjectsHandleTable[KernelSyncObjectId]; \
                                                                            \
         SyncronizationObject->IsOnWaitingState = FALSE;                    \
-        SetEvent(SyncronizationObject->EventHandle);                       \
+        PlatformSetEvent(SyncronizationObject->EventHandle);               \
     } while (FALSE);
 
 #define DbgReceivedUserResponse(UserSyncObjectId)                      \
@@ -182,7 +182,7 @@
             &g_UserSyncronizationObjectsHandleTable[UserSyncObjectId]; \
                                                                        \
         SyncronizationObject->IsOnWaitingState = FALSE;                \
-        SetEvent(SyncronizationObject->EventHandle);                   \
+        PlatformSetEvent(SyncronizationObject->EventHandle);           \
     } while (FALSE);
 
 //////////////////////////////////////////////////
@@ -248,10 +248,16 @@ BOOLEAN
 ConvertStringToUInt32(string TextToConvert, PUINT32 Result);
 
 BOOLEAN
+ConvertStringToUInt16(string TextToConvert, PUINT16 Result);
+
+BOOLEAN
 ConvertTokenToUInt64(CommandToken TargetToken, PUINT64 Result);
 
 BOOLEAN
 ConvertTokenToUInt32(CommandToken TargetToken, PUINT32 Result);
+
+BOOLEAN
+ConvertTokenToUInt16(CommandToken TargetToken, PUINT16 Result);
 
 std::string
 GetCaseSensitiveStringFromCommandToken(CommandToken TargetToken);

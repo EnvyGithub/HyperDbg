@@ -1,4 +1,4 @@
-/**
+﻿/**
  * @file test-semantic-scripts.cpp
  * @author Sina Karvandi (sina@hyperdbg.org)
  * @brief Perform test on semantic scripts

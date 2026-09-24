@@ -291,6 +291,26 @@ hyperdbg_u_unset_text_message_callback()
 }
 
 /**
+ * @brief Execute a script with the deterministic local evaluator used by tests.
+ *
+ * @param expression Script body without the leading '?' command token
+ * @return BOOLEAN TRUE when parsing and evaluation complete without error
+ */
+BOOLEAN
+hyperdbg_u_test_script_engine(CHAR * expression)
+{
+    extern BOOLEAN g_CurrentExprEvalResultHasError;
+
+    if (!expression)
+    {
+        return FALSE;
+    }
+
+    ScriptEngineWrapperTestParser(expression);
+    return !g_CurrentExprEvalResultHasError;
+}
+
+/**
  * @brief Parsing the command line options for scripts
  * @param argc
  * @param argv
@@ -417,12 +437,12 @@ hyperdbg_u_set_custom_driver_path(CHAR * driver_file_path, CHAR * driver_name)
     //
     // Copy the driver path
     //
-    strcpy_s(g_DriverLocation, MAX_PATH, driver_file_path);
+    PlatformStrCpy(g_DriverLocation, MAX_PATH, driver_file_path);
 
     //
     // Copy the driver name
     //
-    strcpy_s(g_DriverName, MAX_PATH, driver_name);
+    PlatformStrCpy(g_DriverName, MAX_PATH, driver_name);
 
     //
     // Set the flag to use the custom driver path
@@ -498,6 +518,27 @@ hyperdbg_u_show_memory_or_disassemble(DEBUGGER_SHOW_MEMORY_STYLE   style,
                                       PDEBUGGER_DT_COMMAND_OPTIONS dt_details)
 {
     HyperDbgShowMemoryOrDisassemble(style, address, memory_type, reading_type, pid, size, dt_details);
+}
+
+/**
+ * @brief Show memory linked list
+ *
+ * @param target_address The target address of the linked list
+ * @param memory_type The type of memory (physical or virtual)
+ * @param pid The process ID of the linked list
+ * @param offset The offset of the linked list
+ * @param max_nodes The maximum number of nodes to show
+ *
+ * @return VOID
+ */
+VOID
+hyperdbg_u_show_memory_linked_list(UINT64                    target_address,
+                                   DEBUGGER_READ_MEMORY_TYPE memory_type,
+                                   UINT32                    pid,
+                                   UINT64                    offset,
+                                   UINT64                    max_nodes)
+{
+    HyperDbgShowMemoryLinkedList(target_address, memory_type, pid, offset, max_nodes);
 }
 
 /**
@@ -983,4 +1024,48 @@ BOOLEAN
 hyperdbg_u_pt_mmap(HYPERTRACE_PT_MMAP_PACKETS * MmapRequest)
 {
     return HyperDbgPtMmapSendRequest(MmapRequest);
+}
+
+/**
+ * @brief Get CPUID information from the target system
+ *
+ * @param FunctionId The CPUID leaf (EAX value)
+ * @param SubFunctionId The CPUID sub-leaf (ECX value)
+ *
+ * @return BOOLEAN TRUE if successful, FALSE otherwise
+ */
+BOOLEAN
+hyperdbg_u_request_cpuid(UINT32 FunctionId, UINT32 SubFunctionId)
+{
+    //
+    // Call the existing CPUID command handler
+    // This handles both local and remote modes automatically
+    //
+    return CommandCpuidRequestCpuid(FunctionId, SubFunctionId);
+}
+
+/**
+ * @brief I/O instruction (IN)
+ *
+ * @param InRequest
+ *
+ * @return BOOLEAN TRUE if successful, FALSE otherwise
+ */
+BOOLEAN
+hyperdebg_u_in_instruction(DEBUGGER_USER_IN_REQUEST_RESPONSE InRequest)
+{
+    return CommandUserInRequest(InRequest);
+}
+
+/**
+ * @brief I/O instruction (OUT)
+ *
+ * @param OutRequest
+ *
+ * @return BOOLEAN TRUE if successful, FALSE otherwise
+ */
+BOOLEAN
+hyperdebg_u_out_instruction(DEBUGGER_USER_OUT_REQUEST_RESPONSE OutRequest)
+{
+    return CommandUserOutRequest(OutRequest);
 }

@@ -54,6 +54,10 @@ NewUnknownToken()
     Token->MaxLen            = TOKEN_VALUE_MAX_LEN;
     Token->VariableType      = (VARIABLE_TYPE *)VARIABLE_TYPE_LONG;
     Token->VariableMemoryIdx = 0;
+    Token->AddressSpace      = 0;
+    Token->IsAddress         = FALSE;
+    Token->IsImplicitType    = FALSE;
+    Token->IsSignedFunctionResult = FALSE;
 
     return Token;
 }
@@ -84,13 +88,21 @@ NewToken(SCRIPT_ENGINE_TOKEN_TYPE Type, char * Value)
     //
     // Init fields
     //
+    // Note that MaxLen is never allowed to be zero here. AppendByte()/AppendWchar()
+    // test for a full buffer with 'Len >= MaxLen - 1' on an unsigned type, so a zero
+    // MaxLen would wrap around and let those routines write past the allocation
+    //
     unsigned int Len         = (unsigned int)strlen(Value);
     Token->Type              = Type;
     Token->Len               = Len;
-    Token->MaxLen            = Len;
+    Token->MaxLen            = Len > TOKEN_VALUE_MAX_LEN ? Len : TOKEN_VALUE_MAX_LEN;
     Token->Value             = (char *)calloc(Token->MaxLen + 1, sizeof(char));
     Token->VariableType      = (VARIABLE_TYPE *)VARIABLE_TYPE_LONG;
     Token->VariableMemoryIdx = 0;
+    Token->AddressSpace      = 0;
+    Token->IsAddress         = FALSE;
+    Token->IsImplicitType    = FALSE;
+    Token->IsSignedFunctionResult = FALSE;
 
     if (Token->Value == NULL)
     {
@@ -250,11 +262,16 @@ AppendByte(PSCRIPT_ENGINE_TOKEN Token, char c)
         //
         // Double the length of the allocated space for the string
         //
-        Token->MaxLen *= 2;
-        char * NewValue = (char *)calloc(Token->MaxLen + 1, sizeof(char));
+        unsigned int NewMaxLen = Token->MaxLen * 2;
+        char *       NewValue  = (char *)calloc(NewMaxLen + 1, sizeof(char));
 
         if (NewValue == NULL)
         {
+            //
+            // MaxLen is only committed once the bigger buffer is in hand, otherwise
+            // it would describe a buffer that was never allocated and the next call
+            // would consider the (still small) buffer to have free space in it
+            //
             printf("err, could not allocate buffer");
             return;
         }
@@ -264,7 +281,8 @@ AppendByte(PSCRIPT_ENGINE_TOKEN Token, char c)
         //
         memcpy(NewValue, Token->Value, Token->Len);
         free(Token->Value);
-        Token->Value = NewValue;
+        Token->Value  = NewValue;
+        Token->MaxLen = NewMaxLen;
     }
 
     //
@@ -275,14 +293,14 @@ AppendByte(PSCRIPT_ENGINE_TOKEN Token, char c)
 }
 
 /**
- * @brief Appends wchar_t to the token value
+ * @brief Appends one fixed-width UTF-16 code unit to the token value
  *
  * @param Token
  * @param c the wide character to append
  * @return void
  */
 void
-AppendWchar(PSCRIPT_ENGINE_TOKEN Token, wchar_t c)
+AppendWchar(PSCRIPT_ENGINE_TOKEN Token, UINT16 c)
 {
     //
     // Check overflow of the string
@@ -292,11 +310,15 @@ AppendWchar(PSCRIPT_ENGINE_TOKEN Token, wchar_t c)
         //
         // Double the length of the allocated space for the wstring
         //
-        Token->MaxLen *= 2;
-        char * NewValue = (char *)calloc(Token->MaxLen + 2, sizeof(char));
+        unsigned int NewMaxLen = Token->MaxLen * 2;
+        char *       NewValue  = (char *)calloc(NewMaxLen + 2, sizeof(char));
 
         if (NewValue == NULL)
         {
+            //
+            // Keep MaxLen describing the buffer that is actually allocated, see the
+            // matching comment in AppendByte()
+            //
             printf("err, could not allocate buffer");
             return;
         }
@@ -306,13 +328,14 @@ AppendWchar(PSCRIPT_ENGINE_TOKEN Token, wchar_t c)
         //
         memcpy(NewValue, Token->Value, Token->Len);
         free(Token->Value);
-        Token->Value = NewValue;
+        Token->Value  = NewValue;
+        Token->MaxLen = NewMaxLen;
     }
 
     //
     // Append the new character to the wstring
     //
-    *((wchar_t *)(Token->Value) + Token->Len / 2) = c;
+    memcpy(Token->Value + Token->Len, &c, sizeof(c));
     Token->Len += 2;
 }
 
@@ -335,11 +358,40 @@ CopyToken(PSCRIPT_ENGINE_TOKEN Token)
         return NULL;
     }
 
-    TokenCopy->Type         = Token->Type;
-    TokenCopy->MaxLen       = Token->MaxLen;
-    TokenCopy->Len          = Token->Len;
-    TokenCopy->Value        = (char *)calloc(strlen(Token->Value) + 1, sizeof(char));
-    TokenCopy->VariableType = Token->VariableType;
+    //
+    // The number of bytes to copy is the larger of Len and the string length:
+    //
+    //  - WSTRING tokens hold UTF-16 data whose embedded null bytes make strlen()
+    //    (and strcpy()) stop early, so Len is the meaningful size for them
+    //  - tokens taken from the static grammar tables in parse-table.c only have
+    //    their Type and Value initialized, leaving Len at zero, so the string
+    //    length is the meaningful size for those
+    //
+    unsigned int ValueLen = (unsigned int)strlen(Token->Value);
+    unsigned int CopyLen  = Token->Len > ValueLen ? Token->Len : ValueLen;
+    unsigned int MaxLen   = Token->MaxLen > CopyLen ? Token->MaxLen : CopyLen;
+
+    if (MaxLen < TOKEN_VALUE_MAX_LEN)
+    {
+        MaxLen = TOKEN_VALUE_MAX_LEN;
+    }
+
+    TokenCopy->Type = Token->Type;
+    //
+    // MaxLen describes the buffer that is actually allocated below. It used to be
+    // copied verbatim from the source token while the allocation was sized from the
+    // string length, so the two could disagree and let AppendByte()/AppendWchar()
+    // write past the end of the copy
+    //
+    TokenCopy->MaxLen            = MaxLen;
+    TokenCopy->Len               = Token->Len;
+    TokenCopy->Value             = (char *)calloc(MaxLen + 2, sizeof(char));
+    TokenCopy->VariableType      = Token->VariableType;
+    TokenCopy->VariableMemoryIdx = Token->VariableMemoryIdx;
+    TokenCopy->AddressSpace      = Token->AddressSpace;
+    TokenCopy->IsAddress         = Token->IsAddress;
+    TokenCopy->IsImplicitType    = Token->IsImplicitType;
+    TokenCopy->IsSignedFunctionResult = Token->IsSignedFunctionResult;
 
     if (TokenCopy->Value == NULL)
     {
@@ -350,7 +402,7 @@ CopyToken(PSCRIPT_ENGINE_TOKEN Token)
         return NULL;
     }
 
-    strcpy(TokenCopy->Value, Token->Value);
+    memcpy(TokenCopy->Value, Token->Value, CopyLen);
 
     return TokenCopy;
 }
@@ -388,6 +440,15 @@ NewTokenList(void)
     // Allocation of memory for SCRIPT_ENGINE_TOKEN_LIST buffer
     //
     TokenList->Head = (PSCRIPT_ENGINE_TOKEN *)malloc(TokenList->Size * sizeof(PSCRIPT_ENGINE_TOKEN));
+
+    if (TokenList->Head == NULL)
+    {
+        //
+        // There was an error allocating buffer
+        //
+        free(TokenList);
+        return NULL;
+    }
 
     return TokenList;
 }
@@ -605,7 +666,7 @@ IsLetter(char c)
 char
 IsUnderscore(char c)
 {
-    if (c >= '_')
+    if (c == '_')
         return 1;
     else
     {
@@ -645,12 +706,6 @@ IsOctal(char c)
         return 0;
 }
 
-/**
- * @brief Allocates a new temporary variable and returns it
- *
- * @param Error the error type pointer
- * @return PSCRIPT_ENGINE_TOKEN
- */
 PSCRIPT_ENGINE_TOKEN
 NewTemp(PSCRIPT_ENGINE_ERROR_TYPE Error)
 {
@@ -692,8 +747,18 @@ NewTemp(PSCRIPT_ENGINE_ERROR_TYPE Error)
 VOID
 FreeTemp(PSCRIPT_ENGINE_TOKEN Temp)
 {
+    if (Temp->Type != TEMP && Temp->Type != DEFERENCE_TEMP)
+    {
+        return;
+    }
+
+    //
+    // The index is derived from the token's textual value, so it is range-checked
+    // before indexing the MAX_TEMP_COUNT-entry map
+    //
     INT Id = (INT)DecimalToInt(Temp->Value);
-    if (Temp->Type == TEMP || Temp->Type == DEFERENCE_TEMP)
+
+    if (Id >= 0 && Id < MAX_TEMP_COUNT)
     {
         CurrentUserDefinedFunction->TempMap[Id] = 0;
     }
@@ -1124,6 +1189,11 @@ GetTerminalId(PSCRIPT_ENGINE_TOKEN Token)
             if (!strcmp("_hex", TerminalMap[i]))
                 return i;
         }
+        else if (Token->Type == FLOAT_LITERAL)
+        {
+            if (!strcmp("_float", TerminalMap[i]))
+                return i;
+        }
         else if (Token->Type == GLOBAL_ID || Token->Type == GLOBAL_UNRESOLVED_ID)
         {
             if (!strcmp("_global_id", TerminalMap[i]))
@@ -1250,6 +1320,11 @@ LalrGetTerminalId(PSCRIPT_ENGINE_TOKEN Token)
             if (!strcmp("_hex", LalrTerminalMap[i]))
                 return i;
         }
+        else if (Token->Type == FLOAT_LITERAL)
+        {
+            if (!strcmp("_float", LalrTerminalMap[i]))
+                return i;
+        }
         else if (Token->Type == GLOBAL_ID || Token->Type == GLOBAL_UNRESOLVED_ID)
         {
             if (!strcmp("_global_id", LalrTerminalMap[i]))
@@ -1274,6 +1349,13 @@ LalrGetTerminalId(PSCRIPT_ENGINE_TOKEN Token)
         else if (Token->Type == FUNCTION_PARAMETER_ID)
         {
             if (!strcmp("_function_parameter_id", LalrTerminalMap[i]))
+            {
+                return i;
+            }
+        }
+        else if (Token->Type == SCRIPT_VARIABLE_TYPE)
+        {
+            if (!strcmp("_script_variable_type", LalrTerminalMap[i]))
             {
                 return i;
             }
@@ -1537,6 +1619,16 @@ RotateLeftStringOnce(char * str)
 {
     INT  Length = (INT)strlen(str);
     CHAR Temp   = str[0];
+
+    //
+    // An empty string has nothing to rotate, and writing the saved character back
+    // would land on str[-1]
+    //
+    if (Length == 0)
+    {
+        return;
+    }
+
     for (int i = 0; i < (Length - 1); i++)
     {
         str[i] = str[i + 1];

@@ -41,7 +41,7 @@ UdInitializeUserDebugger()
         for (SIZE_T i = 0; i < DEBUGGER_MAXIMUM_SYNCRONIZATION_USER_DEBUGGER_OBJECTS; i++)
         {
             g_UserSyncronizationObjectsHandleTable[i].IsOnWaitingState = FALSE;
-            g_UserSyncronizationObjectsHandleTable[i].EventHandle      = CreateEvent(NULL, FALSE, FALSE, NULL);
+            g_UserSyncronizationObjectsHandleTable[i].EventHandle      = PlatformCreateEvent(FALSE, FALSE);
         }
 
         //
@@ -85,7 +85,7 @@ UdUninitializeUserDebugger()
                     DbgReceivedUserResponse(i);
                 }
 
-                CloseHandle(g_UserSyncronizationObjectsHandleTable[i].EventHandle);
+                PlatformCloseHandle(g_UserSyncronizationObjectsHandleTable[i].EventHandle);
                 g_UserSyncronizationObjectsHandleTable[i].EventHandle = NULL;
             }
         }
@@ -166,6 +166,7 @@ UdRemoveActiveDebuggingProcess()
 VOID
 UdPrintError()
 {
+#ifdef _WIN32
     DWORD   ErrNum;
     TCHAR   SysMsg[256];
     TCHAR * p;
@@ -194,6 +195,12 @@ UdPrintError()
     // Display the message
     //
     ShowMessages("\n  WARNING: Thread32First failed with error (%x:%s)", ErrNum, SysMsg);
+#else
+    //
+    // TODO(Linux): thread-enumeration error reporting (uses Win32 FormatMessage /
+    // MAKELANGID). No Linux process/thread backend yet.
+    //
+#endif
 }
 
 /**
@@ -205,6 +212,7 @@ UdPrintError()
 BOOLEAN
 UdListProcessThreads(DWORD OwnerPID)
 {
+#ifdef _WIN32
     HANDLE        ThreadSnap = INVALID_HANDLE_VALUE;
     THREADENTRY32 Te32;
 
@@ -252,6 +260,14 @@ UdListProcessThreads(DWORD OwnerPID)
     //
     CloseHandle(ThreadSnap);
     return TRUE;
+#else
+    //
+    // TODO(Linux): enumerate threads of a process (Win32 Toolhelp snapshot).
+    // No Linux process/thread backend yet.
+    //
+    UNREFERENCED_PARAMETER(OwnerPID);
+    return FALSE;
+#endif
 }
 
 /**
@@ -265,6 +281,7 @@ UdListProcessThreads(DWORD OwnerPID)
 BOOLEAN
 UdCheckThreadByProcessId(DWORD Pid, DWORD Tid)
 {
+#ifdef _WIN32
     HANDLE        ThreadSnap = INVALID_HANDLE_VALUE;
     THREADENTRY32 Te32;
     BOOLEAN       Result = FALSE;
@@ -315,6 +332,15 @@ UdCheckThreadByProcessId(DWORD Pid, DWORD Tid)
     //
     CloseHandle(ThreadSnap);
     return Result;
+#else
+    //
+    // TODO(Linux): check whether a thread belongs to a process (Win32 Toolhelp
+    // snapshot). No Linux process/thread backend yet.
+    //
+    UNREFERENCED_PARAMETER(Pid);
+    UNREFERENCED_PARAMETER(Tid);
+    return FALSE;
+#endif
 }
 
 /**
@@ -328,29 +354,12 @@ UdCheckThreadByProcessId(DWORD Pid, DWORD Tid)
 BOOLEAN
 UdCreateSuspendedProcess(const WCHAR * FileName, const WCHAR * CommandLine, PPROCESS_INFORMATION ProcessInformation)
 {
-    STARTUPINFOW StartupInfo;
-    BOOL         CreateProcessResult;
-
-    memset(&StartupInfo, 0, sizeof(StartupInfo));
-    StartupInfo.cb = sizeof(STARTUPINFOA);
-
     //
     // Create process suspended
     //
-    CreateProcessResult = CreateProcessW(FileName,
-                                         (WCHAR *)CommandLine,
-                                         NULL,
-                                         NULL,
-                                         FALSE,
-                                         CREATE_SUSPENDED | CREATE_NEW_CONSOLE,
-                                         NULL,
-                                         NULL,
-                                         &StartupInfo,
-                                         ProcessInformation);
-
-    if (!CreateProcessResult)
+    if (!PlatformCreateProcess(FileName, CommandLine, CREATE_SUSPENDED | CREATE_NEW_CONSOLE, ProcessInformation))
     {
-        ShowMessages("err, start process failed (%x)", GetLastError());
+        ShowMessages("err, start process failed (%x)", PlatformGetLastError());
         return FALSE;
     }
 
@@ -444,7 +453,7 @@ UdAttachToProcess(UINT32        TargetPid,
     //
     // Send the request to the kernel
     //
-    Status = DeviceIoControl(
+    Status = PlatformDeviceIoControl(
         g_DeviceHandle,                                  // Handle to device
         IOCTL_DEBUGGER_ATTACH_DETACH_USER_MODE_PROCESS,  // IO Control
                                                          // code
@@ -459,7 +468,7 @@ UdAttachToProcess(UINT32        TargetPid,
 
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         return FALSE;
     }
 
@@ -487,7 +496,7 @@ UdAttachToProcess(UINT32        TargetPid,
         //
         if (ProcInfo.hThread != NULL64_ZERO)
         {
-            ResumeThread(ProcInfo.hThread);
+            PlatformResumeThread(ProcInfo.hThread);
         }
         else
         {
@@ -511,7 +520,7 @@ UdAttachToProcess(UINT32        TargetPid,
             //
             // Send the request to the kernel
             //
-            Status = DeviceIoControl(
+            Status = PlatformDeviceIoControl(
                 g_DeviceHandle,                                  // Handle to device
                 IOCTL_DEBUGGER_ATTACH_DETACH_USER_MODE_PROCESS,  // IO Control
                                                                  // code
@@ -526,7 +535,7 @@ UdAttachToProcess(UINT32        TargetPid,
 
             if (!Status)
             {
-                ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+                ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
                 return FALSE;
             }
 
@@ -548,7 +557,7 @@ UdAttachToProcess(UINT32        TargetPid,
                 //
                 // ShowMessages("entrypoint is not reached, continue sending the request...\n");
 
-                Sleep(1000);
+                PlatformSleep(1000);
                 continue;
             }
             else
@@ -595,7 +604,7 @@ UdTerminateProcessByPid(DWORD TargetPid)
     //
     // Attempt to open a handle to the process with PROCESS_TERMINATE access rights
     //
-    HANDLE Handle = OpenProcess(PROCESS_TERMINATE, FALSE, TargetPid);
+    HANDLE Handle = PlatformOpenProcess(PROCESS_TERMINATE, FALSE, TargetPid);
     if (Handle == NULL)
     {
         //
@@ -607,12 +616,12 @@ UdTerminateProcessByPid(DWORD TargetPid)
     //
     // Terminate the process
     //
-    Terminated = TerminateProcess(Handle, 0);
+    Terminated = PlatformTerminateProcess(Handle, 0);
 
     //
     // Close the process handle
     //
-    CloseHandle(Handle);
+    PlatformCloseHandle(Handle);
 
     return Terminated;
 }
@@ -627,14 +636,14 @@ UdTerminateProcessByPid(DWORD TargetPid)
 BOOLEAN
 UdDoesProcessExistByPid(DWORD TargetPid)
 {
-    if (HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, TargetPid))
+    if (HANDLE process = PlatformOpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, TargetPid))
     {
         DWORD ExitCodeOut;
 
         //
         // GetExitCodeProcess returns zero on failure
         //
-        if (GetExitCodeProcess(process, &ExitCodeOut) != 0)
+        if (PlatformGetExitCodeProcess(process, &ExitCodeOut) != 0)
         {
             //
             // Return if the process is still active
@@ -660,7 +669,7 @@ UdDoesProcessExistByHandle(HANDLE TargetHandle)
     //
     // GetExitCodeProcess returns zero on failure
     //
-    if (GetExitCodeProcess(TargetHandle, &exitCodeOut) == 0)
+    if (PlatformGetExitCodeProcess(TargetHandle, &exitCodeOut) == 0)
     {
         //
         // Optionally get the error
@@ -731,7 +740,7 @@ UdKillProcess(UINT32 TargetPid)
     //
     // Send the request to the kernel
     //
-    Status = DeviceIoControl(
+    Status = PlatformDeviceIoControl(
         g_DeviceHandle,                                  // Handle to device
         IOCTL_DEBUGGER_ATTACH_DETACH_USER_MODE_PROCESS,  // IO Control
                                                          // code
@@ -746,7 +755,7 @@ UdKillProcess(UINT32 TargetPid)
 
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         return FALSE;
     }
 
@@ -813,7 +822,7 @@ UdDetachProcess(UINT32 TargetPid, UINT64 ProcessDetailToken)
     //
     // Send the request to the kernel
     //
-    Status = DeviceIoControl(
+    Status = PlatformDeviceIoControl(
         g_DeviceHandle,                                  // Handle to device
         IOCTL_DEBUGGER_ATTACH_DETACH_USER_MODE_PROCESS,  // IO Control
                                                          // code
@@ -828,7 +837,7 @@ UdDetachProcess(UINT32 TargetPid, UINT64 ProcessDetailToken)
 
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         return FALSE;
     }
 
@@ -886,7 +895,7 @@ UdPauseProcess(UINT64 ProcessDebuggingToken)
     //
     // Send the request to the kernel
     //
-    Status = DeviceIoControl(
+    Status = PlatformDeviceIoControl(
         g_DeviceHandle,                                  // Handle to device
         IOCTL_DEBUGGER_ATTACH_DETACH_USER_MODE_PROCESS,  // IO Control
                                                          // code
@@ -901,7 +910,7 @@ UdPauseProcess(UINT64 ProcessDebuggingToken)
 
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         return FALSE;
     }
 
@@ -954,7 +963,7 @@ UdContinueProcess(UINT64 ProcessDebuggingToken)
     //
     // Send the request to the kernel
     //
-    Status = DeviceIoControl(
+    Status = PlatformDeviceIoControl(
         g_DeviceHandle,                                  // Handle to device
         IOCTL_DEBUGGER_ATTACH_DETACH_USER_MODE_PROCESS,  // IO Control
                                                          // code
@@ -969,7 +978,7 @@ UdContinueProcess(UINT64 ProcessDebuggingToken)
 
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         return FALSE;
     }
 
@@ -1052,7 +1061,7 @@ UdSendCommand(UINT64                          ProcessDetailToken,
     //
     // Zero the packet
     //
-    RtlZeroMemory(CommandPacket, TargetBufferSize);
+    PlatformZeroMemory(CommandPacket, TargetBufferSize);
 
     //
     // Set to the details
@@ -1081,7 +1090,7 @@ UdSendCommand(UINT64                          ProcessDetailToken,
     //
     // Send IOCTL
     //
-    Status = DeviceIoControl(g_DeviceHandle,                    // Handle to device
+    Status = PlatformDeviceIoControl(g_DeviceHandle,                    // Handle to device
                              IOCTL_SEND_USER_DEBUGGER_COMMANDS, // IO Control Code (IOCTL)
                              CommandPacket,                     // Input Buffer to driver.
                              TargetBufferSize,                  // Input buffer length
@@ -1093,7 +1102,7 @@ UdSendCommand(UINT64                          ProcessDetailToken,
 
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
 
         free(CommandPacket);
         return FALSE;
@@ -1189,7 +1198,7 @@ UdSendScriptBufferToProcess(UINT64  ProcessDetailToken,
 
     ScriptPacket = (DEBUGGEE_SCRIPT_PACKET *)malloc(SizeOfStruct);
 
-    RtlZeroMemory(ScriptPacket, SizeOfStruct);
+    PlatformZeroMemory(ScriptPacket, SizeOfStruct);
 
     //
     // Fill the script packet buffer
@@ -1342,7 +1351,7 @@ UdSetActiveDebuggingThreadByPidOrTid(UINT32 TargetPidOrTid, BOOLEAN IsTid)
     //
     // Send the request to the kernel
     //
-    Status = DeviceIoControl(
+    Status = PlatformDeviceIoControl(
         g_DeviceHandle,                                  // Handle to device
         IOCTL_DEBUGGER_ATTACH_DETACH_USER_MODE_PROCESS,  // IO Control code
         &SwitchRequest,                                  // Input Buffer to driver.
@@ -1356,7 +1365,7 @@ UdSetActiveDebuggingThreadByPidOrTid(UINT32 TargetPidOrTid, BOOLEAN IsTid)
 
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         return FALSE;
     }
 
@@ -1426,7 +1435,7 @@ UdShowListActiveDebuggingProcessesAndThreads()
     //
     // Send the request to the kernel
     //
-    Status = DeviceIoControl(
+    Status = PlatformDeviceIoControl(
         g_DeviceHandle,                                  // Handle to device
         IOCTL_DEBUGGER_ATTACH_DETACH_USER_MODE_PROCESS,  // IO Control
                                                          // code
@@ -1441,7 +1450,7 @@ UdShowListActiveDebuggingProcessesAndThreads()
 
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         return FALSE;
     }
 
@@ -1474,12 +1483,12 @@ UdShowListActiveDebuggingProcessesAndThreads()
                 return FALSE;
             }
 
-            RtlZeroMemory(AddressOfThreadsAndProcessDetails, SizeOfBufferForThreadsAndProcessDetails);
+            PlatformZeroMemory(AddressOfThreadsAndProcessDetails, SizeOfBufferForThreadsAndProcessDetails);
 
             //
             // Send the request to the kernel
             //
-            Status = DeviceIoControl(
+            Status = PlatformDeviceIoControl(
                 g_DeviceHandle,                                   // Handle to device
                 IOCTL_GET_DETAIL_OF_ACTIVE_THREADS_AND_PROCESSES, // IO Control
                                                                   // code
@@ -1493,7 +1502,7 @@ UdShowListActiveDebuggingProcessesAndThreads()
 
             if (!Status)
             {
-                ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+                ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
                 return FALSE;
             }
 

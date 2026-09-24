@@ -11,6 +11,15 @@
  */
 #include "pch.h"
 
+//
+// DllMain is the Windows DLL loader entry point (called by the OS loader, not by
+// any HyperDbg code). It has no Linux equivalent — a Linux shared object has no
+// such per-process/per-thread attach/detach callback, and this body does nothing
+// anyway — so the whole thing is Windows-only. On Linux this translation unit is
+// intentionally empty.
+//
+#ifdef _WIN32
+
 /**
  * @brief Dll Main Entry
  *
@@ -32,3 +41,5 @@ DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
     }
     return TRUE;
 }
+
+#endif // _WIN32

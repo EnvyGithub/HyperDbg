@@ -54,5 +54,5 @@ CommandSleep(vector<CommandToken> CommandTokens, string Command)
         CommandSleepHelp();
         return;
     }
-    Sleep(MillisecondsTime);
+    PlatformSleep(MillisecondsTime);
 }

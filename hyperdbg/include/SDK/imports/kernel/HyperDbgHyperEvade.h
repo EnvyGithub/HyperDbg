@@ -37,7 +37,7 @@ IMPORT_EXPORT_HYPEREVADE VOID
 TransparentCheckAndModifyCpuid(PGUEST_REGS Regs, INT32 CpuInfo[]);
 
 IMPORT_EXPORT_HYPEREVADE VOID
-TransparentCheckAndTrapFlagAfterVmexit();
+TransparentCheckAndMitigateVmResumeFootprints(UINT64 * ResumeRIP);
 
 IMPORT_EXPORT_HYPEREVADE BOOLEAN
 TransparentCheckAndModifyMsrRead(PGUEST_REGS Regs, UINT32 TargetMsr);

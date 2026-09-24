@@ -18,19 +18,20 @@ extern HANDLE g_SerialListeningThreadHandle;
 extern HANDLE g_SerialRemoteComPortHandle;
 extern HANDLE g_DebuggeeStopCommandEventHandle;
 extern DEBUGGER_SYNCRONIZATION_EVENTS_STATE
-                                        g_KernelSyncronizationObjectsHandleTable[DEBUGGER_MAXIMUM_SYNCRONIZATION_KERNEL_DEBUGGER_OBJECTS];
-extern BYTE                             g_CurrentRunningInstruction[MAXIMUM_INSTR_SIZE];
-extern BOOLEAN                          g_IsConnectedToHyperDbgLocally;
+               g_KernelSyncronizationObjectsHandleTable[DEBUGGER_MAXIMUM_SYNCRONIZATION_KERNEL_DEBUGGER_OBJECTS];
+extern BYTE    g_CurrentRunningInstruction[MAXIMUM_INSTR_SIZE];
+extern BOOLEAN g_IsConnectedToHyperDbgLocally;
 #ifdef _WIN32
-extern OVERLAPPED                       g_OverlappedIoStructureForReadDebugger;
-extern OVERLAPPED                       g_OverlappedIoStructureForWriteDebugger;
-extern OVERLAPPED                       g_OverlappedIoStructureForReadDebuggee;
+extern OVERLAPPED g_OverlappedIoStructureForReadDebugger;
+extern OVERLAPPED g_OverlappedIoStructureForWriteDebugger;
+extern OVERLAPPED g_OverlappedIoStructureForReadDebuggee;
 #endif // _WIN32
 extern DEBUGGER_EVENT_AND_ACTION_RESULT g_DebuggeeResultOfRegisteringEvent;
 extern DEBUGGER_EVENT_AND_ACTION_RESULT
                g_DebuggeeResultOfAddingActionsToEvent;
 extern BOOLEAN g_IsSerialConnectedToRemoteDebuggee;
 extern BOOLEAN g_IsSerialConnectedToRemoteDebugger;
+extern BOOLEAN g_KdReceiveFromDebuggerDesyncReported;
 extern BOOLEAN g_IsDebuggerConntectedToNamedPipe;
 extern BOOLEAN g_IsDebuggeeRunning;
 extern BOOLEAN g_IsKdModuleLoaded;
@@ -336,6 +337,101 @@ KdSendFlushPacketToDebuggee()
 }
 
 /**
+ * @brief Send a CPUID request to the debuggee
+ *
+ * @param FunctionId
+ * @param SubFunctionId
+ * 
+ * @return BOOLEAN
+ */
+BOOLEAN
+KdSendUserCpuidPacketToDebuggee(UINT32 FunctionId, UINT32 SubFunctionId)
+{
+    DEBUGGER_CPUID_REQUEST_RESPONSE CpuidPacket = {0};
+    CpuidPacket.FunctionId                      = FunctionId;
+    CpuidPacket.SubFunctionId                   = SubFunctionId;
+
+    //
+    // Send 'ucpuid' command as CPUID packet
+    //
+    if (!KdCommandPacketAndBufferToDebuggee(
+            DEBUGGER_REMOTE_PACKET_TYPE_DEBUGGER_TO_DEBUGGEE_EXECUTE_ON_VMX_ROOT,
+            DEBUGGER_REMOTE_PACKET_REQUESTED_ACTION_ON_VMX_ROOT_MODE_USER_CPUID_REQUEST,
+            (CHAR *)&CpuidPacket,
+            sizeof(DEBUGGER_CPUID_REQUEST_RESPONSE)))
+    {
+        return FALSE;
+    }
+
+    //
+    // Wait until the result of CPUID received
+    //
+    DbgWaitForKernelResponse(DEBUGGER_SYNCRONIZATION_OBJECT_KERNEL_DEBUGGER_USER_CPUID_RESULT);
+
+    return TRUE;
+}
+
+/**
+ * @brief Send IN instruction to the debuggee
+ *
+ * @param InRequest
+ * 
+ * @return BOOLEAN
+ */
+BOOLEAN
+KdSendUserInPacketToDebuggee(DEBUGGER_USER_IN_REQUEST_RESPONSE InRequest)
+{
+    //
+    // Send 'uin' command as packet
+    //
+    if (!KdCommandPacketAndBufferToDebuggee(
+            DEBUGGER_REMOTE_PACKET_TYPE_DEBUGGER_TO_DEBUGGEE_EXECUTE_ON_VMX_ROOT,
+            DEBUGGER_REMOTE_PACKET_REQUESTED_ACTION_ON_VMX_ROOT_MODE_USER_IN_INSTRUCTION,
+            (CHAR *)&InRequest,
+            sizeof(DEBUGGER_USER_IN_REQUEST_RESPONSE)))
+    {
+        return FALSE;
+    }
+
+    //
+    // Wait until the result of IN instruction received
+    //
+    DbgWaitForKernelResponse(DEBUGGER_SYNCRONIZATION_OBJECT_KERNEL_DEBUGGER_USER_IN_RESULT);
+
+    return TRUE;
+}
+
+/**
+ * @brief Send OUT instruction to the debuggee
+ *
+ * @param OutRequest
+ *
+ * @return BOOLEAN
+ */
+BOOLEAN
+KdSendUserOutPacketToDebuggee(DEBUGGER_USER_OUT_REQUEST_RESPONSE OutRequest)
+{
+    //
+    // Send 'uout' command as packet
+    //
+    if (!KdCommandPacketAndBufferToDebuggee(
+            DEBUGGER_REMOTE_PACKET_TYPE_DEBUGGER_TO_DEBUGGEE_EXECUTE_ON_VMX_ROOT,
+            DEBUGGER_REMOTE_PACKET_REQUESTED_ACTION_ON_VMX_ROOT_MODE_USER_OUT_INSTRUCTION,
+            (CHAR *)&OutRequest,
+            sizeof(DEBUGGER_USER_OUT_REQUEST_RESPONSE)))
+    {
+        return FALSE;
+    }
+
+    //
+    // Wait until the result of OUT instruction received
+    //
+    DbgWaitForKernelResponse(DEBUGGER_SYNCRONIZATION_OBJECT_KERNEL_DEBUGGER_USER_OUT_RESULT);
+
+    return TRUE;
+}
+
+/**
  * @brief Send a callstack request to the debuggee
  * @param BaseAddress
  * @param Size
@@ -380,7 +476,7 @@ KdSendCallStackPacketToDebuggee(UINT64                            BaseAddress,
         return FALSE;
     }
 
-    RtlZeroMemory(CallstackPacket, CallstackRequestSize);
+    PlatformZeroMemory(CallstackPacket, CallstackRequestSize);
 
     //
     // Set the details
@@ -424,7 +520,7 @@ KdSendCallStackPacketToDebuggee(UINT64                            BaseAddress,
 BOOLEAN
 KdSendTestQueryPacketToDebuggee(DEBUGGER_TEST_QUERY_STATE Type)
 {
-    DEBUGGER_DEBUGGER_TEST_QUERY_BUFFER TestQueryPacket = {0};
+    DEBUGGER_DEBUGGER_TEST_QUERY_BUFFER TestQueryPacket = {};
 
     TestQueryPacket.RequestType = Type;
 
@@ -459,7 +555,7 @@ KdSendTestQueryPacketToDebuggee(DEBUGGER_TEST_QUERY_STATE Type)
 BOOLEAN
 KdSendTestQueryPacketWithContextToDebuggee(DEBUGGER_TEST_QUERY_STATE Type, UINT64 Context)
 {
-    DEBUGGER_DEBUGGER_TEST_QUERY_BUFFER TestQueryPacket = {0};
+    DEBUGGER_DEBUGGER_TEST_QUERY_BUFFER TestQueryPacket = {};
 
     TestQueryPacket.RequestType = Type;
     TestQueryPacket.Context     = Context;
@@ -683,7 +779,7 @@ KdSendRegisterEventPacketToDebuggee(PDEBUGGER_GENERAL_EVENT_DETAIL Event,
         return NULL;
     }
 
-    RtlZeroMemory(Header, Len);
+    PlatformZeroMemory(Header, Len);
 
     //
     // Set length in header
@@ -698,8 +794,8 @@ KdSendRegisterEventPacketToDebuggee(PDEBUGGER_GENERAL_EVENT_DETAIL Event,
            (PVOID)Event,
            EventBufferLength);
 
-    RtlZeroMemory(&g_DebuggeeResultOfRegisteringEvent,
-                  sizeof(DEBUGGER_EVENT_AND_ACTION_RESULT));
+    PlatformZeroMemory(&g_DebuggeeResultOfRegisteringEvent,
+                       sizeof(DEBUGGER_EVENT_AND_ACTION_RESULT));
 
     //
     // Send register event packet
@@ -750,7 +846,7 @@ KdSendAddActionToEventPacketToDebuggee(PDEBUGGER_GENERAL_ACTION GeneralAction,
         return NULL;
     }
 
-    RtlZeroMemory(Header, Len);
+    PlatformZeroMemory(Header, Len);
 
     //
     // Set length in header
@@ -765,8 +861,8 @@ KdSendAddActionToEventPacketToDebuggee(PDEBUGGER_GENERAL_ACTION GeneralAction,
            (PVOID)GeneralAction,
            GeneralActionLength);
 
-    RtlZeroMemory(&g_DebuggeeResultOfAddingActionsToEvent,
-                  sizeof(DEBUGGER_EVENT_AND_ACTION_RESULT));
+    PlatformZeroMemory(&g_DebuggeeResultOfAddingActionsToEvent,
+                       sizeof(DEBUGGER_EVENT_AND_ACTION_RESULT));
 
     //
     // Send add action to event packet
@@ -808,7 +904,7 @@ KdSendSwitchProcessPacketToDebuggee(DEBUGGEE_DETAILS_AND_SWITCH_PROCESS_TYPE Act
                                     BOOLEAN                                  SetChangeByClockInterrupt,
                                     PDEBUGGEE_PROCESS_LIST_NEEDED_DETAILS    SymDetailsForProcessList)
 {
-    DEBUGGEE_DETAILS_AND_SWITCH_PROCESS_PACKET ProcessChangePacket = {0};
+    DEBUGGEE_DETAILS_AND_SWITCH_PROCESS_PACKET ProcessChangePacket = {};
 
     ProcessChangePacket.ActionType        = ActionType;
     ProcessChangePacket.ProcessId         = NewPid;
@@ -861,7 +957,7 @@ KdSendSwitchThreadPacketToDebuggee(DEBUGGEE_DETAILS_AND_SWITCH_THREAD_TYPE Actio
                                    BOOLEAN                                 CheckByClockInterrupt,
                                    PDEBUGGEE_THREAD_LIST_NEEDED_DETAILS    SymDetailsForThreadList)
 {
-    DEBUGGEE_DETAILS_AND_SWITCH_THREAD_PACKET ThreadChangePacket = {0};
+    DEBUGGEE_DETAILS_AND_SWITCH_THREAD_PACKET ThreadChangePacket = {};
 
     ThreadChangePacket.ActionType            = ActionType;
     ThreadChangePacket.ThreadId              = NewTid;
@@ -1237,7 +1333,7 @@ KdSendScriptPacketToDebuggee(UINT64 BufferAddress, UINT32 BufferLength, UINT32 P
 
     ScriptPacket = (DEBUGGEE_SCRIPT_PACKET *)malloc(SizeOfStruct);
 
-    RtlZeroMemory(ScriptPacket, SizeOfStruct);
+    PlatformZeroMemory(ScriptPacket, SizeOfStruct);
 
     //
     // Fill the script packet buffer
@@ -1301,7 +1397,7 @@ KdSendUserInputPacketToDebuggee(const CHAR * Sendbuf, INT Len, BOOLEAN IgnoreBre
 
     UserInputPacket = (DEBUGGEE_USER_INPUT_PACKET *)malloc(SizeOfStruct);
 
-    RtlZeroMemory(UserInputPacket, SizeOfStruct);
+    PlatformZeroMemory(UserInputPacket, SizeOfStruct);
 
     //
     // Fill the script packet buffer descriptors
@@ -1380,7 +1476,7 @@ KdSendSearchRequestPacketToDebuggee(UINT64 * SearchRequestBuffer, UINT32 SearchR
 BOOLEAN
 KdSendStepPacketToDebuggee(DEBUGGER_REMOTE_STEPPING_REQUEST StepRequestType)
 {
-    DEBUGGEE_STEP_PACKET StepPacket = {0};
+    DEBUGGEE_STEP_PACKET StepPacket = {};
     UINT32               CallInstructionSize;
 
     //
@@ -1489,6 +1585,7 @@ KdSendPausePacketToDebuggee()
 BOOLEAN
 KdGetWindowVersion(CHAR * BufferToSave)
 {
+#ifdef _WIN32
     HKeyHolder currentVersion;
     DWORD      valueType;
     CHAR       bufferResult[MAXIMUM_CHARACTER_FOR_OS_NAME]         = {0};
@@ -1544,6 +1641,256 @@ KdGetWindowVersion(CHAR * BufferToSave)
     memcpy(BufferToSave, bufferResult, MAXIMUM_CHARACTER_FOR_OS_NAME);
 
     return TRUE;
+#else
+    //
+    // TODO(Linux): the OS name/version is read from the Windows registry
+    // (SOFTWARE\Microsoft\Windows NT\CurrentVersion), which has no Linux
+    // analog. The caller treats a FALSE result as non-fatal and leaves the
+    // (already zeroed) buffer empty.
+    //
+    UNREFERENCED_PARAMETER(BufferToSave);
+
+    return FALSE;
+#endif // _WIN32
+}
+
+//
+// Set when the debugger-side serial receiver desyncs, so the warning is shown
+// once per episode (cleared on the next good frame) instead of on every
+// overflow while the stream stays desynced.
+//
+static BOOLEAN g_KdSerialReceiverDesyncReported = FALSE;
+
+/**
+ * @brief Read a single byte from the debuggee over the serial link
+ *
+ * @details Encapsulates the platform-specific single-byte read used by the
+ * debugger-side receiver so the framing loop and the resync path share one
+ * implementation.
+ *
+ * @param ReadData receives the byte that was read
+ * @param NoBytesRead receives the number of bytes actually read
+ *
+ * @return BOOLEAN TRUE on a successful read, FALSE on a hard read error
+ */
+static BOOLEAN
+KdReadByteFromDebuggeeSerial(CHAR * ReadData, DWORD * NoBytesRead)
+{
+#ifdef _WIN32
+    //
+    // Try to read one byte in overlapped I/O (in debugger)
+    //
+    if (!ReadFile(g_SerialRemoteComPortHandle, ReadData, sizeof(CHAR), NULL, &g_OverlappedIoStructureForReadDebugger))
+    {
+        DWORD e = GetLastError();
+
+        if (e != ERROR_IO_PENDING)
+        {
+            return FALSE;
+        }
+    }
+
+    //
+    // Wait till one packet becomes available
+    //
+    WaitForSingleObject(g_OverlappedIoStructureForReadDebugger.hEvent,
+                        INFINITE);
+
+    //
+    // Get the result
+    //
+    GetOverlappedResult(g_SerialRemoteComPortHandle,
+                        &g_OverlappedIoStructureForReadDebugger,
+                        NoBytesRead,
+                        FALSE);
+
+    //
+    // Reset event for next try
+    //
+    ResetEvent(g_OverlappedIoStructureForReadDebugger.hEvent);
+
+    return TRUE;
+#else
+    //
+    // Linux: read one byte through the cross-platform serial transport
+    //
+    return PlatformSerialReadByte(g_SerialRemoteComPortHandle,
+                                  ReadData,
+                                  NoBytesRead,
+                                  PLATFORM_SERIAL_IO_DEBUGGER);
+#endif // _WIN32
+}
+
+/**
+ * @brief Read a single byte from the debugger over the serial link
+ *
+ * @details Debuggee-side counterpart of KdReadByteFromDebuggeeSerial(); reads
+ * through the read-from-debugger overlapped structure so the framing loop and
+ * the resync path share one implementation.
+ *
+ * @param ReadData receives the byte that was read
+ * @param NoBytesRead receives the number of bytes actually read
+ *
+ * @return BOOLEAN TRUE on a successful read, FALSE on a hard read error
+ */
+static BOOLEAN
+KdReadByteFromDebuggerSerial(CHAR * ReadData, DWORD * NoBytesRead)
+{
+#ifdef _WIN32
+    //
+    // Try to read one byte in overlapped I/O (in debuggee)
+    //
+    if (!ReadFile(g_SerialRemoteComPortHandle, ReadData, sizeof(CHAR), NULL, &g_OverlappedIoStructureForReadDebuggee))
+    {
+        DWORD e = GetLastError();
+
+        if (e != ERROR_IO_PENDING)
+        {
+            return FALSE;
+        }
+    }
+
+    //
+    // Wait till one packet becomes available
+    //
+    WaitForSingleObject(g_OverlappedIoStructureForReadDebuggee.hEvent,
+                        INFINITE);
+
+    //
+    // Get the result
+    //
+    GetOverlappedResult(g_SerialRemoteComPortHandle,
+                        &g_OverlappedIoStructureForReadDebuggee,
+                        NoBytesRead,
+                        FALSE);
+
+    //
+    // Reset event for next try
+    //
+    ResetEvent(g_OverlappedIoStructureForReadDebuggee.hEvent);
+
+    return TRUE;
+#else
+    //
+    // Linux: read one byte through the cross-platform serial transport
+    // (the 5s read timeout is applied inside the platform layer)
+    //
+    return PlatformSerialReadByte(g_SerialRemoteComPortHandle,
+                                  ReadData,
+                                  NoBytesRead,
+                                  PLATFORM_SERIAL_IO_DEBUGGEE);
+#endif // _WIN32
+}
+
+/**
+ * @brief Discard bytes until the next end-of-buffer marker, re-aligning the
+ * debugger-side serial receiver to a frame boundary after a desync
+ *
+ * @details Mirrors SerialConnectionResyncToNextFrame() on the debuggee side
+ * Bounded by SERIAL_RESYNC_MAX_BYTES so a dead or garbage link cannot spin
+ * forever
+ *
+ * @param IsDebuggee
+ *
+ * @return BOOLEAN TRUE if a marker was found (stream re-aligned), FALSE if too
+ * many bytes arrived without one (treat the link as dead)
+ */
+BOOLEAN
+KdResyncStreamToNextFrame(DEBUGGER_PACKET_RESYNC_ENUM ReSyncType)
+{
+    BOOL   Status;
+    BYTE   Window[SERIAL_END_OF_BUFFER_CHARS_COUNT] = {NULL_ZERO, NULL_ZERO, NULL_ZERO, NULL_ZERO};
+    UINT32 Discarded                                = 0;
+
+    while (Discarded < SERIAL_RESYNC_MAX_BYTES)
+    {
+        CHAR  ReadData    = NULL_ZERO;
+        DWORD NoBytesRead = 0;
+
+        if (ReSyncType == DEBUGGER_PACKET_RESYNC_DEBUGGEE)
+        {
+            //
+            // It is for the debuggee
+            //
+            if (!KdReadByteFromDebuggeeSerial(&ReadData, &NoBytesRead))
+            {
+                return FALSE;
+            }
+        }
+        else if (ReSyncType == DEBUGGER_PACKET_RESYNC_DEBUGGER)
+        {
+            //
+            // It is for the debugger
+            //
+            if (!KdReadByteFromDebuggerSerial(&ReadData, &NoBytesRead))
+            {
+                return FALSE;
+            }
+        }
+        else if (ReSyncType == DEBUGGER_PACKET_RESYNC_LISTENING)
+        {
+#ifdef _WIN32
+            Status = ReadFile(g_SerialRemoteComPortHandle, &ReadData, sizeof(ReadData), &NoBytesRead, NULL);
+#else
+            //
+            // Linux: read one byte through the cross-platform serial transport
+            //
+            Status = PlatformSerialReadByte(g_SerialRemoteComPortHandle,
+                                            &ReadData,
+                                            &NoBytesRead,
+                                            PLATFORM_SERIAL_IO_DEBUGGEE);
+#endif // _WIN32
+
+            if (!Status)
+            {
+                return FALSE;
+            }
+        }
+        else
+        {
+            ShowMessages("err, invalid resync type\n");
+            return FALSE;
+        }
+
+        if (NoBytesRead == 0)
+        {
+            if (ReSyncType == DEBUGGER_PACKET_RESYNC_DEBUGGEE || ReSyncType == DEBUGGER_PACKET_RESYNC_LISTENING)
+            {
+                //
+                // For the debuggee and listening
+                //
+                continue;
+            }
+            else if (DEBUGGER_PACKET_RESYNC_DEBUGGER)
+            {
+                //
+                // For the debugger
+                //
+
+                //
+                // The read timed out with no data: the link is idle, so stop
+                // discarding and let the caller fall back to its idle handling.
+                //
+                return FALSE;
+            }
+        }
+
+        Window[0] = Window[1];
+        Window[1] = Window[2];
+        Window[2] = Window[3];
+        Window[3] = (BYTE)ReadData;
+        Discarded++;
+
+        if (Window[0] == SERIAL_END_OF_BUFFER_CHAR_1 &&
+            Window[1] == SERIAL_END_OF_BUFFER_CHAR_2 &&
+            Window[2] == SERIAL_END_OF_BUFFER_CHAR_3 &&
+            Window[3] == SERIAL_END_OF_BUFFER_CHAR_4)
+        {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
 }
 
 /**
@@ -1567,54 +1914,10 @@ KdReceivePacketFromDebuggee(CHAR *   BufferToSave,
     //
     do
     {
-#ifdef _WIN32
-        //
-        // It's in the debugger
-        //
-
-        //
-        // Try to read one byte in overlapped I/O (in debugger)
-        //
-        if (!ReadFile(g_SerialRemoteComPortHandle, &ReadData, sizeof(ReadData), NULL, &g_OverlappedIoStructureForReadDebugger))
-        {
-            DWORD e = GetLastError();
-
-            if (e != ERROR_IO_PENDING)
-            {
-                return FALSE;
-            }
-        }
-
-        //
-        // Wait till one packet becomes available
-        //
-        WaitForSingleObject(g_OverlappedIoStructureForReadDebugger.hEvent,
-                            INFINITE);
-
-        //
-        // Get the result
-        //
-        GetOverlappedResult(g_SerialRemoteComPortHandle,
-                            &g_OverlappedIoStructureForReadDebugger,
-                            &NoBytesRead,
-                            FALSE);
-
-        //
-        // Reset event for next try
-        //
-        ResetEvent(g_OverlappedIoStructureForReadDebugger.hEvent);
-#else
-        //
-        // Linux: read one byte through the cross-platform serial transport
-        //
-        if (!PlatformSerialReadByte(g_SerialRemoteComPortHandle,
-                                    &ReadData,
-                                    &NoBytesRead,
-                                    PLATFORM_SERIAL_IO_DEBUGGER))
+        if (!KdReadByteFromDebuggeeSerial(&ReadData, &NoBytesRead))
         {
             return FALSE;
         }
-#endif
 
         //
         // We already now that the maximum packet size is MaxSerialPacketSize
@@ -1623,11 +1926,30 @@ KdReceivePacketFromDebuggee(CHAR *   BufferToSave,
         if (!(MaxSerialPacketSize > Loop))
         {
             //
-            // Invalid buffer
+            // Overflowed without an end-of-buffer marker: the stream is
+            // desynced (the debuggee most likely dropped the link mid-frame
+            // without sending a close packet). Returning FALSE here sends the
+            // caller straight back into the same desynced stream, which
+            // overflows again at once and floods the output. Show the warning
+            // once per episode and resync to the next frame boundary instead.
             //
-            ShowMessages("err, a buffer received in which exceeds the "
-                         "buffer limitation\n");
-            return FALSE;
+            if (!g_KdSerialReceiverDesyncReported)
+            {
+                ShowMessages("err, serial stream desynced (a buffer exceeded the "
+                             "buffer limitation with no end marker); resyncing\n");
+                g_KdSerialReceiverDesyncReported = TRUE;
+            }
+
+            if (!KdResyncStreamToNextFrame(DEBUGGER_PACKET_RESYNC_DEBUGGEE))
+            {
+                //
+                // Too many bytes without a marker: treat the link as dead.
+                //
+                return FALSE;
+            }
+
+            Loop = 0;
+            continue;
         }
 
         BufferToSave[Loop] = ReadData;
@@ -1640,6 +1962,11 @@ KdReceivePacketFromDebuggee(CHAR *   BufferToSave,
         Loop++;
 
     } while (NoBytesRead > 0);
+
+    //
+    // A full frame arrived, so the stream is back in sync.
+    //
+    g_KdSerialReceiverDesyncReported = FALSE;
 
     //
     // Set the length
@@ -1689,55 +2016,10 @@ KdReceivePacketFromDebugger(CHAR *   BufferToSave,
     //
     do
     {
-#ifdef _WIN32
-        //
-        // It's in the debuggee
-        //
-
-        //
-        // Try to read one byte in overlapped I/O (in debugger)
-        //
-        if (!ReadFile(g_SerialRemoteComPortHandle, &ReadData, sizeof(ReadData), NULL, &g_OverlappedIoStructureForReadDebuggee))
-        {
-            DWORD e = GetLastError();
-
-            if (e != ERROR_IO_PENDING)
-            {
-                return FALSE;
-            }
-        }
-
-        //
-        // Wait till one packet becomes available
-        //
-        WaitForSingleObject(g_OverlappedIoStructureForReadDebuggee.hEvent,
-                            INFINITE);
-
-        //
-        // Get the result
-        //
-        GetOverlappedResult(g_SerialRemoteComPortHandle,
-                            &g_OverlappedIoStructureForReadDebuggee,
-                            &NoBytesRead,
-                            FALSE);
-
-        //
-        // Reset event for next try
-        //
-        ResetEvent(g_OverlappedIoStructureForReadDebuggee.hEvent);
-#else
-        //
-        // Linux: read one byte through the cross-platform serial transport
-        // (the 5s read timeout is applied inside the platform layer)
-        //
-        if (!PlatformSerialReadByte(g_SerialRemoteComPortHandle,
-                                    &ReadData,
-                                    &NoBytesRead,
-                                    PLATFORM_SERIAL_IO_DEBUGGEE))
+        if (!KdReadByteFromDebuggerSerial(&ReadData, &NoBytesRead))
         {
             return FALSE;
         }
-#endif
 
         //
         // We already now that the maximum packet size is MaxSerialPacketSize
@@ -1746,11 +2028,31 @@ KdReceivePacketFromDebugger(CHAR *   BufferToSave,
         if (!(MaxSerialPacketSize > Loop))
         {
             //
-            // Invalid buffer
+            // Overflowed without an end-of-buffer marker: the stream is
+            // desynced (the debugger most likely dropped the link mid-frame
+            // without sending a close packet). Returning FALSE here sends the
+            // caller straight back into the same desynced stream, which
+            // overflows again at once and floods the output. Show the warning
+            // once per episode and resync to the next frame boundary instead.
             //
-            ShowMessages("err, a buffer received in which exceeds the "
-                         "buffer limitation\n");
-            return FALSE;
+            if (!g_KdReceiveFromDebuggerDesyncReported)
+            {
+                ShowMessages("err, serial stream desynced (a buffer exceeded the "
+                             "buffer limitation with no end marker); resyncing\n");
+                g_KdReceiveFromDebuggerDesyncReported = TRUE;
+            }
+
+            if (!KdResyncStreamToNextFrame(DEBUGGER_PACKET_RESYNC_DEBUGGER))
+            {
+                //
+                // The link went idle or stayed garbage past the bound: treat it
+                // as dead so the caller can fall back to its idle handling.
+                //
+                return FALSE;
+            }
+
+            Loop = 0;
+            continue;
         }
 
         BufferToSave[Loop] = ReadData;
@@ -1763,6 +2065,11 @@ KdReceivePacketFromDebugger(CHAR *   BufferToSave,
         Loop++;
 
     } while (NoBytesRead > 0);
+
+    //
+    // A full frame arrived, so the stream is back in sync.
+    //
+    g_KdReceiveFromDebuggerDesyncReported = FALSE;
 
     //
     // Set the length
@@ -2176,8 +2483,10 @@ KdPrepareSerialConnectionToRemoteSystem(HANDLE  SerialHandle,
                                         BOOLEAN IsNamedPipe,
                                         BOOLEAN PauseAfterConnection)
 {
+#ifdef _WIN32
     BOOL  Status;        /* Status */
     DWORD EventMask = 0; /* Event mask to trigger */
+#endif                   // _WIN32
 
     //
     // Show an indication to connect the debugger
@@ -2186,6 +2495,7 @@ KdPrepareSerialConnectionToRemoteSystem(HANDLE  SerialHandle,
 
     if (!IsNamedPipe)
     {
+#ifdef _WIN32
         //
         // Setting Receive Mask
         //
@@ -2212,6 +2522,14 @@ KdPrepareSerialConnectionToRemoteSystem(HANDLE  SerialHandle,
             // ShowMessages("err, in setting WaitCommEvent\n");
             // return FALSE;
         }
+#else
+        //
+        // TODO(Linux): waiting for the first byte on the serial port is
+        // Win32-only here (SetCommMask/WaitCommEvent); the Linux home for it is
+        // platform-serial.c. Unreachable for now, as the Linux serial path is
+        // refused in KdPrepareAndConnectDebugPort.
+        //
+#endif // _WIN32
     }
 
     //
@@ -2221,7 +2539,7 @@ KdPrepareSerialConnectionToRemoteSystem(HANDLE  SerialHandle,
     {
         g_KernelSyncronizationObjectsHandleTable[i].IsOnWaitingState = FALSE;
         g_KernelSyncronizationObjectsHandleTable[i].EventHandle =
-            CreateEvent(NULL, FALSE, FALSE, NULL);
+            PlatformCreateEvent(FALSE, FALSE);
     }
 
     //
@@ -2234,7 +2552,7 @@ KdPrepareSerialConnectionToRemoteSystem(HANDLE  SerialHandle,
     //
 
     g_SerialListeningThreadHandle =
-        CreateThread(NULL, 0, ListeningSerialPauseDebuggerThread, NULL, 0, NULL);
+        PlatformCreateThread(ListeningSerialPauseDebuggerThread, NULL);
 
     //
     // Wait for the 'Start' packet on the listener side
@@ -2472,11 +2790,13 @@ KdPrepareAndConnectDebugPort(const CHAR * PortName,
                              BOOLEAN      IsNamedPipe,
                              BOOLEAN      PauseAfterConnection)
 {
-    HANDLE                     Comm;               /* Handle to the Serial port */
-    BOOL                       Status;             /* Status */
-    DCB                        SerialParams = {0}; /* Initializing DCB structure */
-    COMMTIMEOUTS               Timeouts     = {0}; /* Initializing timeouts structure */
-    CHAR                       PortNo[20]   = {0}; /* contain friendly name */
+    HANDLE Comm; /* Handle to the Serial port */
+#ifdef _WIN32
+    BOOL         Status;             /* Status */
+    DCB          SerialParams = {0}; /* Initializing DCB structure */
+    COMMTIMEOUTS Timeouts     = {0}; /* Initializing timeouts structure */
+    CHAR         PortNo[20]   = {0}; /* contain friendly name */
+#endif                               // _WIN32
     BOOLEAN                    StatusIoctl;
     ULONG                      ReturnedLength;
     PDEBUGGER_PREPARE_DEBUGGEE DebuggeeRequest;
@@ -2497,6 +2817,7 @@ KdPrepareAndConnectDebugPort(const CHAR * PortName,
 
     if (!IsNamedPipe)
     {
+#ifdef _WIN32
         //
         // It's a serial
         //
@@ -2617,6 +2938,16 @@ KdPrepareAndConnectDebugPort(const CHAR * PortName,
       return FALSE;
     }
     */
+#else
+        //
+        // TODO(Linux): opening and configuring the serial port is Win32-only
+        // here (CreateFile/PurgeComm/GetCommState/SetCommState). The Linux
+        // home for this is platform-serial.c, whose serial routines are still
+        // stubs. Until they are implemented, refuse the serial path.
+        //
+        ShowMessages("err, serial connection is not supported on Linux yet\n");
+        return FALSE;
+#endif // _WIN32
     }
     else
     {
@@ -2656,7 +2987,7 @@ KdPrepareAndConnectDebugPort(const CHAR * PortName,
         //
         if (!KdCheckIfDebuggerIsListening(Comm))
         {
-            CloseHandle(Comm);
+            PlatformCloseHandle(Comm);
             g_SerialRemoteComPortHandle    = NULL;
             g_IsDebuggeeInHandshakingPhase = FALSE;
 
@@ -2681,7 +3012,7 @@ KdPrepareAndConnectDebugPort(const CHAR * PortName,
         //
         if (HyperDbgInstallKdDriver() == 1 || HyperDbgLoadVmmModule() == 1)
         {
-            CloseHandle(Comm);
+            PlatformCloseHandle(Comm);
             g_SerialRemoteComPortHandle    = NULL;
             g_IsConnectedToHyperDbgLocally = FALSE;
 
@@ -2695,7 +3026,7 @@ KdPrepareAndConnectDebugPort(const CHAR * PortName,
         //
         if (!g_DeviceHandle)
         {
-            CloseHandle(Comm);
+            PlatformCloseHandle(Comm);
             g_SerialRemoteComPortHandle    = NULL;
             g_IsConnectedToHyperDbgLocally = FALSE;
 
@@ -2710,7 +3041,7 @@ KdPrepareAndConnectDebugPort(const CHAR * PortName,
 
         if (DebuggeeRequest == NULL)
         {
-            CloseHandle(Comm);
+            PlatformCloseHandle(Comm);
             g_SerialRemoteComPortHandle    = NULL;
             g_IsConnectedToHyperDbgLocally = FALSE;
 
@@ -2718,7 +3049,7 @@ KdPrepareAndConnectDebugPort(const CHAR * PortName,
             return FALSE;
         }
 
-        RtlZeroMemory(DebuggeeRequest, SIZEOF_DEBUGGER_PREPARE_DEBUGGEE);
+        PlatformZeroMemory(DebuggeeRequest, SIZEOF_DEBUGGER_PREPARE_DEBUGGEE);
 
         //
         // Prepare the details structure
@@ -2746,25 +3077,25 @@ KdPrepareAndConnectDebugPort(const CHAR * PortName,
         // Send the request to the kernel
         //
         StatusIoctl =
-            DeviceIoControl(g_DeviceHandle,                   // Handle to device
-                            IOCTL_PREPARE_DEBUGGEE,           // IO Control Code (IOCTL)
-                            DebuggeeRequest,                  // Input Buffer to driver.
-                            SIZEOF_DEBUGGER_PREPARE_DEBUGGEE, // Input buffer
-                                                              // length
-                            DebuggeeRequest,                  // Output Buffer from driver.
-                            SIZEOF_DEBUGGER_PREPARE_DEBUGGEE, // Length of output
-                                                              // buffer in bytes.
-                            &ReturnedLength,                  // Bytes placed in buffer.
-                            NULL                              // synchronous call
+            PlatformDeviceIoControl(g_DeviceHandle,                   // Handle to device
+                                    IOCTL_PREPARE_DEBUGGEE,           // IO Control Code (IOCTL)
+                                    DebuggeeRequest,                  // Input Buffer to driver.
+                                    SIZEOF_DEBUGGER_PREPARE_DEBUGGEE, // Input buffer
+                                                                      // length
+                                    DebuggeeRequest,                  // Output Buffer from driver.
+                                    SIZEOF_DEBUGGER_PREPARE_DEBUGGEE, // Length of output
+                                                                      // buffer in bytes.
+                                    &ReturnedLength,                  // Bytes placed in buffer.
+                                    NULL                              // synchronous call
             );
 
         if (!StatusIoctl)
         {
-            CloseHandle(Comm);
+            PlatformCloseHandle(Comm);
             g_SerialRemoteComPortHandle    = NULL;
             g_IsConnectedToHyperDbgLocally = FALSE;
 
-            ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+            ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
 
             //
             // Free the buffer
@@ -2789,11 +3120,11 @@ KdPrepareAndConnectDebugPort(const CHAR * PortName,
             //
             // Do not pause debugger after finish
             //
-            KdReloadSymbolsInDebuggee(FALSE, GetCurrentProcessId());
+            KdReloadSymbolsInDebuggee(FALSE, PlatformGetCurrentProcessId());
         }
         else
         {
-            CloseHandle(Comm);
+            PlatformCloseHandle(Comm);
             g_SerialRemoteComPortHandle    = NULL;
             g_IsConnectedToHyperDbgLocally = FALSE;
 
@@ -2834,19 +3165,14 @@ KdPrepareAndConnectDebugPort(const CHAR * PortName,
         // Wait here so the user can't give new commands
         // Create an event (manually. no signal)
         //
-        g_DebuggeeStopCommandEventHandle = CreateEvent(NULL, FALSE, FALSE, NULL);
+        g_DebuggeeStopCommandEventHandle = PlatformCreateEvent(FALSE, FALSE);
 
         //
         // Create a thread to listen for pauses from the remote debugger
         //
 
-        g_SerialListeningThreadHandle = CreateThread(
-            NULL,
-            0,
-            ListeningSerialPauseDebuggeeThread,
-            NULL,
-            0,
-            NULL);
+        g_SerialListeningThreadHandle =
+            PlatformCreateThread(ListeningSerialPauseDebuggeeThread, NULL);
 
         //
         // Test should be removed
@@ -2860,12 +3186,12 @@ KdPrepareAndConnectDebugPort(const CHAR * PortName,
         // Now we should wait on this state until the user closes the connection to
         // debuggee from debugger
         //
-        WaitForSingleObject(g_DebuggeeStopCommandEventHandle, INFINITE);
+        PlatformWaitForSingleObject(g_DebuggeeStopCommandEventHandle, INFINITE);
 
         //
         // Close the event's handle
         //
-        CloseHandle(g_DebuggeeStopCommandEventHandle);
+        PlatformCloseHandle(g_DebuggeeStopCommandEventHandle);
         g_DebuggeeStopCommandEventHandle = NULL;
 
         //
@@ -2940,7 +3266,7 @@ KdSendGeneralBuffersFromDebuggeeToDebugger(
         return FALSE;
     }
 
-    RtlZeroMemory(GeneralPacketFromDebuggeeToDebuggerRequest, Length);
+    PlatformZeroMemory(GeneralPacketFromDebuggeeToDebuggerRequest, Length);
 
     //
     // Fill the header structure
@@ -2962,7 +3288,7 @@ KdSendGeneralBuffersFromDebuggeeToDebugger(
     //
     // Send Ioctl to the kernel
     //
-    Status = DeviceIoControl(
+    Status = PlatformDeviceIoControl(
         g_DeviceHandle,                                                // Handle to device
         IOCTL_SEND_GENERAL_BUFFER_FROM_DEBUGGEE_TO_DEBUGGER,           // IO Control Code (IOCTL)
         GeneralPacketFromDebuggeeToDebuggerRequest,                    // Input Buffer to driver.
@@ -2981,7 +3307,7 @@ KdSendGeneralBuffersFromDebuggeeToDebugger(
 
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         free(GeneralPacketFromDebuggeeToDebuggerRequest);
         return FALSE;
     }
@@ -3022,7 +3348,7 @@ KdReloadSymbolsInDebuggee(BOOLEAN PauseDebuggee, UINT32 UserProcessId)
     //
     if (UserProcessId == NULL)
     {
-        UserProcessId = GetCurrentProcessId();
+        UserProcessId = PlatformGetCurrentProcessId();
     }
 
     //
@@ -3154,25 +3480,25 @@ KdRegisterEventInDebuggee(PDEBUGGER_GENERAL_EVENT_DETAIL EventRegBuffer,
     // Send IOCTL
     //
     Status =
-        DeviceIoControl(g_DeviceHandle,                // Handle to device
-                        IOCTL_DEBUGGER_REGISTER_EVENT, // IO Control Code (IOCTL)
-                        EventRegBuffer,
-                        Length                                    // Input Buffer to driver.
-                        ,                                         // Input buffer length
-                        &ReturnedBuffer,                          // Output Buffer from driver.
-                        sizeof(DEBUGGER_EVENT_AND_ACTION_RESULT), // Length
-                                                                  // of
-                                                                  // output
-                                                                  // buffer
-                                                                  // in
-                                                                  // bytes.
-                        &ReturnedLength,                          // Bytes placed in buffer.
-                        NULL                                      // synchronous call
+        PlatformDeviceIoControl(g_DeviceHandle,                // Handle to device
+                                IOCTL_DEBUGGER_REGISTER_EVENT, // IO Control Code (IOCTL)
+                                EventRegBuffer,
+                                Length                                    // Input Buffer to driver.
+                                ,                                         // Input buffer length
+                                &ReturnedBuffer,                          // Output Buffer from driver.
+                                sizeof(DEBUGGER_EVENT_AND_ACTION_RESULT), // Length
+                                                                          // of
+                                                                          // output
+                                                                          // buffer
+                                                                          // in
+                                                                          // bytes.
+                                &ReturnedLength,                          // Bytes placed in buffer.
+                                NULL                                      // synchronous call
         );
 
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         return FALSE;
     }
 
@@ -3205,24 +3531,24 @@ KdAddActionToEventInDebuggee(PDEBUGGER_GENERAL_ACTION ActionAddingBuffer,
     AssertShowMessageReturnStmt(g_IsVmmModuleLoaded, g_DeviceHandle, ASSERT_MESSAGE_VMM_NOT_LOADED, ASSERT_MESSAGE_DRIVER_NOT_LOADED, AssertReturnFalse);
 
     Status =
-        DeviceIoControl(g_DeviceHandle,                           // Handle to device
-                        IOCTL_DEBUGGER_ADD_ACTION_TO_EVENT,       // IO Control Code (IOCTL)
-                        ActionAddingBuffer,                       // Input Buffer to driver.
-                        Length,                                   // Input buffer length
-                        &ReturnedBuffer,                          // Output Buffer from driver.
-                        sizeof(DEBUGGER_EVENT_AND_ACTION_RESULT), // Length
-                                                                  // of
-                                                                  // output
-                                                                  // buffer
-                                                                  // in
-                                                                  // bytes.
-                        &ReturnedLength,                          // Bytes placed in buffer.
-                        NULL                                      // synchronous call
+        PlatformDeviceIoControl(g_DeviceHandle,                           // Handle to device
+                                IOCTL_DEBUGGER_ADD_ACTION_TO_EVENT,       // IO Control Code (IOCTL)
+                                ActionAddingBuffer,                       // Input Buffer to driver.
+                                Length,                                   // Input buffer length
+                                &ReturnedBuffer,                          // Output Buffer from driver.
+                                sizeof(DEBUGGER_EVENT_AND_ACTION_RESULT), // Length
+                                                                          // of
+                                                                          // output
+                                                                          // buffer
+                                                                          // in
+                                                                          // bytes.
+                                &ReturnedLength,                          // Bytes placed in buffer.
+                                NULL                                      // synchronous call
         );
 
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         return FALSE;
     }
 
@@ -3265,20 +3591,20 @@ KdSendModifyEventInDebuggee(PDEBUGGER_MODIFY_EVENTS ModifyEvent, BOOLEAN SendThe
     // Send the request to the kernel
     //
 
-    Status = DeviceIoControl(g_DeviceHandle,                // Handle to device
-                             IOCTL_DEBUGGER_MODIFY_EVENTS,  // IO Control Code (IOCTL)
-                             ModifyEvent,                   // Input Buffer to driver.
-                             SIZEOF_DEBUGGER_MODIFY_EVENTS, // Input buffer length
-                             ModifyEvent,                   // Output Buffer from driver.
-                             SIZEOF_DEBUGGER_MODIFY_EVENTS, // Length of output
-                                                            // buffer in bytes.
-                             &ReturnedLength,               // Bytes placed in buffer.
-                             NULL                           // synchronous call
+    Status = PlatformDeviceIoControl(g_DeviceHandle,                // Handle to device
+                                     IOCTL_DEBUGGER_MODIFY_EVENTS,  // IO Control Code (IOCTL)
+                                     ModifyEvent,                   // Input Buffer to driver.
+                                     SIZEOF_DEBUGGER_MODIFY_EVENTS, // Input buffer length
+                                     ModifyEvent,                   // Output Buffer from driver.
+                                     SIZEOF_DEBUGGER_MODIFY_EVENTS, // Length of output
+                                                                    // buffer in bytes.
+                                     &ReturnedLength,               // Bytes placed in buffer.
+                                     NULL                           // synchronous call
     );
 
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         return FALSE;
     }
 
@@ -3332,7 +3658,7 @@ KdHandleUserInputInDebuggee(DEBUGGEE_USER_INPUT_PACKET * Descriptor)
         // want to pass some other arguments to the kernel in
         // the future
         //
-        Status = DeviceIoControl(
+        Status = PlatformDeviceIoControl(
             g_DeviceHandle,                                         // Handle to device
             IOCTL_SEND_SIGNAL_EXECUTION_IN_DEBUGGEE_FINISHED,       // IO Control Code (IOCTL)
             &FinishExecutionRequest,                                // Input Buffer to driver.
@@ -3348,7 +3674,7 @@ KdHandleUserInputInDebuggee(DEBUGGEE_USER_INPUT_PACKET * Descriptor)
 
         if (!Status)
         {
-            ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+            ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
             return;
         }
     }
@@ -3373,7 +3699,7 @@ KdSendUsermodePrints(CHAR * Input, UINT32 Length)
     UsermodeMessageRequest =
         (DEBUGGER_SEND_USERMODE_MESSAGES_TO_DEBUGGER *)malloc(SizeToSend);
 
-    RtlZeroMemory(UsermodeMessageRequest, SizeToSend);
+    PlatformZeroMemory(UsermodeMessageRequest, SizeToSend);
 
     //
     // Set the length
@@ -3388,7 +3714,7 @@ KdSendUsermodePrints(CHAR * Input, UINT32 Length)
            (PVOID)Input,
            Length);
 
-    Status = DeviceIoControl(
+    Status = PlatformDeviceIoControl(
         g_DeviceHandle,                           // Handle to device
         IOCTL_SEND_USERMODE_MESSAGES_TO_DEBUGGER, // IO Control Code (IOCTL)
         UsermodeMessageRequest,                   // Input Buffer to driver.
@@ -3404,7 +3730,7 @@ KdSendUsermodePrints(CHAR * Input, UINT32 Length)
 
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         free(UsermodeMessageRequest);
         return;
     }
@@ -3429,7 +3755,7 @@ KdSendSymbolDetailPacket(PMODULE_SYMBOL_DETAIL SymbolDetailPacket, UINT32 Curren
     UsermodeSymDetailRequest =
         (DEBUGGER_UPDATE_SYMBOL_TABLE *)malloc(sizeof(DEBUGGER_UPDATE_SYMBOL_TABLE));
 
-    RtlZeroMemory(UsermodeSymDetailRequest, sizeof(DEBUGGER_UPDATE_SYMBOL_TABLE));
+    PlatformZeroMemory(UsermodeSymDetailRequest, sizeof(DEBUGGER_UPDATE_SYMBOL_TABLE));
 
     //
     // Set other parameters for the symbol details
@@ -3478,10 +3804,15 @@ KdUninitializeConnection()
     //
     if (g_SerialListeningThreadHandle != NULL)
     {
-        CloseHandle(g_SerialListeningThreadHandle);
+        PlatformCloseHandle(g_SerialListeningThreadHandle);
         g_SerialListeningThreadHandle = NULL;
     }
 
+#ifdef _WIN32
+    //
+    // The overlapped I/O events only exist on the Windows serial path (they are
+    // created in KdPrepareAndConnectDebugPort), so they are only closed here.
+    //
     if (g_OverlappedIoStructureForReadDebugger.hEvent != NULL)
     {
         CloseHandle(g_OverlappedIoStructureForReadDebugger.hEvent);
@@ -3496,13 +3827,14 @@ KdUninitializeConnection()
     {
         CloseHandle(g_OverlappedIoStructureForWriteDebugger.hEvent);
     }
+#endif // _WIN32
 
     if (g_DebuggeeStopCommandEventHandle != NULL)
     {
         //
         // Signal the debuggee to get new commands
         //
-        SetEvent(g_DebuggeeStopCommandEventHandle);
+        PlatformSetEvent(g_DebuggeeStopCommandEventHandle);
     }
 
     //
@@ -3522,7 +3854,7 @@ KdUninitializeConnection()
                 DbgReceivedKernelResponse(i);
             }
 
-            CloseHandle(g_KernelSyncronizationObjectsHandleTable[i].EventHandle);
+            PlatformCloseHandle(g_KernelSyncronizationObjectsHandleTable[i].EventHandle);
             g_KernelSyncronizationObjectsHandleTable[i].EventHandle = NULL;
         }
     }
@@ -3567,7 +3899,7 @@ KdUninitializeConnection()
     //
     if (g_SerialRemoteComPortHandle != NULL)
     {
-        CloseHandle(g_SerialRemoteComPortHandle);
+        PlatformCloseHandle(g_SerialRemoteComPortHandle);
         g_SerialRemoteComPortHandle = NULL;
     }
 

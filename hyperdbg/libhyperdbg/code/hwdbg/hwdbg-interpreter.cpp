@@ -102,7 +102,7 @@ HwdbgInterpretPacket(PVOID BufferReceived, UINT32 LengthReceived)
             //
             // Copy the instance info into the global hwdbg instance info
             //
-            RtlCopyMemory(&g_HwdbgInstanceInfo, InstanceInfoPacket, sizeof(HWDBG_INSTANCE_INFORMATION));
+            PlatformCopyMemory(&g_HwdbgInstanceInfo, InstanceInfoPacket, sizeof(HWDBG_INSTANCE_INFORMATION));
 
             //
             // Reset previous port configurations (if any)
@@ -488,7 +488,7 @@ HwdbgInterpreterSendPacketAndBufferToHwdbg(HWDBG_INSTANCE_INFORMATION * Instance
         return FALSE;
     }
 
-    RtlZeroMemory(FinalBuffer, FinalBufferSize);
+    PlatformZeroMemory(FinalBuffer, FinalBufferSize);
 
     //
     // Leave the offset

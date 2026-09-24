@@ -17,6 +17,7 @@
 //
 extern BOOLEAN g_IsKdModuleLoaded;
 extern BOOLEAN g_IsSerialConnectedToRemoteDebuggee;
+extern BOOLEAN g_AddressConversion;
 
 /**
  * @brief Read memory and disassembler
@@ -81,7 +82,7 @@ HyperDbgReadMemory(UINT64                              TargetAddress,
         return FALSE;
     }
 
-    ZeroMemory(MemReadRequest, SizeOfTargetBuffer);
+    PlatformZeroMemory(MemReadRequest, SizeOfTargetBuffer);
 
     //
     // Copy the buffer to send
@@ -107,7 +108,7 @@ HyperDbgReadMemory(UINT64                              TargetAddress,
         //
         // It's on local debugging mode
         //
-        Status = DeviceIoControl(g_DeviceHandle,              // Handle to device
+        Status = PlatformDeviceIoControl(g_DeviceHandle,              // Handle to device
                                  IOCTL_DEBUGGER_READ_MEMORY,  // IO Control Code (IOCTL)
                                  MemReadRequest,              // Input Buffer to driver.
                                  SIZEOF_DEBUGGER_READ_MEMORY, // Input buffer length
@@ -119,7 +120,7 @@ HyperDbgReadMemory(UINT64                              TargetAddress,
 
         if (!Status)
         {
-            ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+            ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
             std::free(MemReadRequest);
             return FALSE;
         }
@@ -308,6 +309,17 @@ HyperDbgShowMemoryOrDisassemble(DEBUGGER_SHOW_MEMORY_STYLE   Style,
 
         break;
 
+    case DEBUGGER_SHOW_COMMAND_DW:
+
+        ShowMemoryCommandDW(
+            Buffer,
+            Size,
+            Address,
+            MemoryType,
+            ReturnedLength);
+
+        break;
+
     case DEBUGGER_SHOW_COMMAND_DD:
 
         ShowMemoryCommandDD(
@@ -322,6 +334,50 @@ HyperDbgShowMemoryOrDisassemble(DEBUGGER_SHOW_MEMORY_STYLE   Style,
     case DEBUGGER_SHOW_COMMAND_DQ:
 
         ShowMemoryCommandDQ(
+            Buffer,
+            Size,
+            Address,
+            MemoryType,
+            ReturnedLength);
+
+        break;
+
+    case DEBUGGER_SHOW_COMMAND_DA:
+
+        ShowMemoryCommandDA(
+            Buffer,
+            Size,
+            Address,
+            MemoryType,
+            ReturnedLength);
+
+        break;
+
+    case DEBUGGER_SHOW_COMMAND_DDS:
+
+        ShowMemoryCommandDDS(
+            Buffer,
+            Size,
+            Address,
+            MemoryType,
+            ReturnedLength);
+
+        break;
+
+    case DEBUGGER_SHOW_COMMAND_DQS:
+
+        ShowMemoryCommandDQS(
+            Buffer,
+            Size,
+            Address,
+            MemoryType,
+            ReturnedLength);
+
+        break;
+
+    case DEBUGGER_SHOW_COMMAND_DPS:
+
+        ShowMemoryCommandDPS(
             Buffer,
             Size,
             Address,
@@ -547,6 +603,57 @@ ShowMemoryCommandDC(UCHAR * OutputBuffer, UINT32 Size, UINT64 Address, DEBUGGER_
 }
 
 /**
+ * @brief Show memory in word format (DW)
+ *
+ * @param OutputBuffer the buffer to show
+ * @param Size size of memory to read
+ * @param Address location of where to read the memory
+ * @param MemoryType type of memory (phyical or virtual)
+ * @param Length Length of memory to show
+ *
+ * @return VOID
+ */
+VOID
+ShowMemoryCommandDW(UCHAR * OutputBuffer, UINT32 Size, UINT64 Address, DEBUGGER_READ_MEMORY_TYPE MemoryType, UINT64 Length)
+{
+    for (UINT32 i = 0; i < Size; i += 16)
+    {
+        if (MemoryType == DEBUGGER_READ_PHYSICAL_ADDRESS)
+        {
+            ShowMessages("#\t");
+        }
+
+        //
+        // Print address
+        //
+        ShowMessages("%s  ", SeparateTo64BitValue((UINT64)(Address + i)).c_str());
+
+        //
+        // Print the hex code
+        //
+        for (SIZE_T j = 0; j < 16; j += 2)
+        {
+            //
+            // check to see if the address is valid or not
+            //
+            if (i + j >= Length)
+            {
+                ShowMessages("???? ");
+            }
+            else
+            {
+                UINT16 OutputBufferVar = *((UINT16 *)&OutputBuffer[i + j]);
+                ShowMessages("%04X ", OutputBufferVar);
+            }
+        }
+        //
+        // Go to new line
+        //
+        ShowMessages("\n");
+    }
+}
+
+/**
  * @brief Show memory in dword format (DD)
  *
  * @param OutputBuffer the buffer to show
@@ -649,5 +756,309 @@ ShowMemoryCommandDQ(UCHAR * OutputBuffer, UINT32 Size, UINT64 Address, DEBUGGER_
         // Go to new line
         //
         ShowMessages("\n");
+    }
+}
+
+/**
+ * @brief Show memory in dword format with symbol resolution (DDS)
+ *
+ * @param OutputBuffer the buffer to show
+ * @param Size size of memory to read
+ * @param Address location of where to read the memory
+ * @param MemoryType type of memory (phyical or virtual)
+ * @param Length Length of memory to show
+ *
+ * @return VOID
+ */
+VOID
+ShowMemoryCommandDDS(UCHAR * OutputBuffer, UINT32 Size, UINT64 Address, DEBUGGER_READ_MEMORY_TYPE MemoryType, UINT64 Length)
+{
+    UINT64 UsedBaseAddress = NULL;
+
+    for (UINT32 i = 0; i < Size; i += 4)
+    {
+        if (MemoryType == DEBUGGER_READ_PHYSICAL_ADDRESS)
+        {
+            ShowMessages("#\t");
+        }
+
+        //
+        // Print address
+        //
+        ShowMessages("%s  ", SeparateTo64BitValue((UINT64)(Address + i)).c_str());
+
+        //
+        // check to see if the address is valid or not
+        //
+        if (i + 4 > Length)
+        {
+            ShowMessages("????????\n");
+            continue;
+        }
+
+        UINT32 OutputBufferVar = *((UINT32 *)&OutputBuffer[i]);
+
+        ShowMessages("%08X", OutputBufferVar);
+
+        //
+        // Apply addressconversion of settings here
+        //
+        if (g_AddressConversion)
+        {
+            ShowMessages("  ");
+
+            //
+            // Showing function names here (function prints the symbol itself)
+            //
+            SymbolShowFunctionNameBasedOnAddress((UINT64)OutputBufferVar, &UsedBaseAddress);
+        }
+
+        //
+        // Go to new line
+        //
+        ShowMessages("\n");
+    }
+}
+
+/**
+ * @brief Show memory in quad-word format with symbol resolution (DQS)
+ *
+ * @param OutputBuffer the buffer to show
+ * @param Size size of memory to read
+ * @param Address location of where to read the memory
+ * @param MemoryType type of memory (phyical or virtual)
+ * @param Length Length of memory to show
+ *
+ * @return VOID
+ */
+VOID
+ShowMemoryCommandDQS(UCHAR * OutputBuffer, UINT32 Size, UINT64 Address, DEBUGGER_READ_MEMORY_TYPE MemoryType, UINT64 Length)
+{
+    UINT64 UsedBaseAddress = NULL;
+
+    for (UINT32 i = 0; i < Size; i += 8)
+    {
+        if (MemoryType == DEBUGGER_READ_PHYSICAL_ADDRESS)
+        {
+            ShowMessages("#\t");
+        }
+
+        //
+        // Print address
+        //
+        ShowMessages("%s  ", SeparateTo64BitValue((UINT64)(Address + i)).c_str());
+
+        //
+        // check to see if the address is valid or not
+        //
+        if (i + 8 > Length)
+        {
+            ShowMessages("????????`????????\n");
+            continue;
+        }
+
+        UINT64 OutputBufferVar = *((UINT64 *)&OutputBuffer[i]);
+
+        ShowMessages("%s", SeparateTo64BitValue(OutputBufferVar).c_str());
+
+        //
+        // Apply addressconversion of settings here
+        //
+        if (g_AddressConversion)
+        {
+            ShowMessages("  ");
+
+            //
+            // Showing function names here (function prints the symbol itself)
+            //
+            SymbolShowFunctionNameBasedOnAddress(OutputBufferVar, &UsedBaseAddress);
+        }
+
+        //
+        // Go to new line
+        //
+        ShowMessages("\n");
+    }
+}
+
+/**
+ * @brief Show memory in pointer-sized format with symbol resolution (DPS)
+ *
+ * @param OutputBuffer the buffer to show
+ * @param Size size of memory to read
+ * @param Address location of where to read the memory
+ * @param MemoryType type of memory (phyical or virtual)
+ * @param Length Length of memory to show
+ *
+ * @return VOID
+ */
+VOID
+ShowMemoryCommandDPS(UCHAR * OutputBuffer, UINT32 Size, UINT64 Address, DEBUGGER_READ_MEMORY_TYPE MemoryType, UINT64 Length)
+{
+    //
+    // HyperDbg targets x64 natively, so pointer size is treated as
+    // 8 bytes here (same width as DQS).
+    //
+    UINT64 UsedBaseAddress = NULL;
+
+    for (UINT32 i = 0; i < Size; i += 8)
+    {
+        if (MemoryType == DEBUGGER_READ_PHYSICAL_ADDRESS)
+        {
+            ShowMessages("#\t");
+        }
+
+        //
+        // Print address
+        //
+        ShowMessages("%s  ", SeparateTo64BitValue((UINT64)(Address + i)).c_str());
+
+        //
+        // check to see if the address is valid or not
+        //
+        if (i + 8 > Length)
+        {
+            ShowMessages("????????`????????\n");
+            continue;
+        }
+
+        UINT64 OutputBufferVar = *((UINT64 *)&OutputBuffer[i]);
+
+        ShowMessages("%s", SeparateTo64BitValue(OutputBufferVar).c_str());
+
+        //
+        // Apply addressconversion of settings here
+        //
+        if (g_AddressConversion)
+        {
+            ShowMessages("  ");
+
+            //
+            // Showing function names here (function prints the symbol itself)
+            //
+            SymbolShowFunctionNameBasedOnAddress(OutputBufferVar, &UsedBaseAddress);
+        }
+
+        //
+        // Go to new line
+        //
+        ShowMessages("\n");
+    }
+}
+
+/**
+ * @brief Formats and prints a buffer as a printable ASCII string, replacing
+ *        non-printable bytes with '.' and stopping at a null terminator
+ *
+ * @param OutputBuffer the buffer to show
+ * @param Size size of memory to read
+ * @param Address location of where to read the memory
+ * @param MemoryType type of memory (phyical or virtual)
+ * @param Length Length of memory to show
+ *
+ * @return VOID
+ */
+VOID
+ShowMemoryCommandDA(UCHAR * OutputBuffer, UINT32 Size, UINT64 Address, DEBUGGER_READ_MEMORY_TYPE MemoryType, UINT64 Length)
+{
+    if (MemoryType == DEBUGGER_READ_PHYSICAL_ADDRESS)
+    {
+        ShowMessages("#\t");
+    }
+
+    ShowMessages("%s  ", SeparateTo64BitValue((UINT64)(Address)).c_str());
+
+    for (UINT32 i = 0; i < Length; i++)
+    {
+        UCHAR Ch = OutputBuffer[i];
+
+        if (Ch == '\0')
+        {
+            break;
+        }
+
+        if (Ch >= 0x20 && Ch <= 0x7e)
+        {
+            ShowMessages("%c", Ch);
+        }
+        else
+        {
+            ShowMessages(".");
+        }
+    }
+
+    ShowMessages("\n");
+}
+
+/**
+ * @brief Walk a linked list and show the nodes
+ *
+ * @param TargetAddress The address of the head of the linked list
+ * @param MemoryType The type of memory (physical or virtual)
+ * @param Pid The process ID to read from
+ * @param Offset The offset to the next pointer in the structure
+ * @param MaxNodes The maximum number of nodes to walk
+ *
+ * @return VOID
+ */
+VOID
+HyperDbgShowMemoryLinkedList(UINT64                    TargetAddress,
+                             DEBUGGER_READ_MEMORY_TYPE MemoryType,
+                             UINT32                    Pid,
+                             UINT64                    Offset,
+                             UINT64                    MaxNodes)
+{
+    ShowMessages("walking linked list (%s address) from %llx (offset = %llx)\n\n",
+                 MemoryType == DEBUGGER_READ_VIRTUAL_ADDRESS ? "virtual" : "physical",
+                 TargetAddress,
+                 Offset);
+
+    UINT64 CurrentAddress = TargetAddress;
+    UINT64 Index          = 0;
+
+    while (CurrentAddress != 0 && Index < MaxNodes)
+    {
+        ShowMessages("%02llx: %016llx\n", Index, CurrentAddress);
+
+        UINT64                            NextPointer    = 0;
+        UINT32                            ReturnedLength = 0;
+        DEBUGGER_READ_MEMORY_ADDRESS_MODE AddressMode;
+        BOOLEAN                           Status;
+
+        Status = HyperDbgReadMemory(CurrentAddress + Offset,
+                                    MemoryType,
+                                    READ_FROM_KERNEL,
+                                    Pid,
+                                    sizeof(UINT64),
+                                    FALSE,
+                                    &AddressMode,
+                                    (BYTE *)&NextPointer,
+                                    &ReturnedLength);
+
+        if (!Status || ReturnedLength != sizeof(UINT64))
+        {
+            ShowMessages("err, unable to read memory at %llx\n",
+                         CurrentAddress + Offset);
+            break;
+        }
+
+        //
+        // Cycle detection: stop if we looped back to the head
+        // (common for doubly linked circular lists like LIST_ENTRY)
+        //
+        if (NextPointer == TargetAddress && Index > 0)
+        {
+            ShowMessages("\n(list is circular, returned to head)\n");
+            break;
+        }
+
+        CurrentAddress = NextPointer;
+        Index++;
+    }
+
+    if (Index >= MaxNodes)
+    {
+        ShowMessages("\n(stopped after %llx nodes; use 'l Count' to see more)\n",
+                     MaxNodes);
     }
 }

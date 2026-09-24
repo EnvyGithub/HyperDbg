@@ -1,6 +1,6 @@
 /**
  * @file platform-ioctl.h
- * @author Max Raulea (max.raulea@gmail.com)
+ * @author Max Raulea (max.raulea@hyperdbg.org)
  * @brief User mode cross-platform interface for the local kernel-driver IOCTL transport
  * @details Distinct from the serial transport (platform-serial), which talks to a remote
  *          debuggee. This interface is the LOCAL control channel: the userspace library
@@ -38,3 +38,13 @@ PlatformDeviceIoControl(HANDLE  Device,
                         DWORD   OutBufferSize,
                         LPDWORD BytesReturned,
                         LPVOID  Overlapped);
+
+//
+// OPEN the local kernel-driver device and return a handle to it. Windows maps onto
+// CreateFileA over the \\.\HyperDbgDebuggerDevice symbolic link (GENERIC_READ|WRITE,
+// shared, OPEN_EXISTING). Returns INVALID_HANDLE_VALUE on failure; the caller inspects
+// PlatformGetLastError for the reason, exactly like the Win32 CreateFile it replaces.
+// Linux will map onto open("/dev/HyperDbg", O_RDWR) once the kernel module exists.
+//
+HANDLE
+PlatformOpenDevice(LPCSTR DeviceName);

@@ -27,8 +27,8 @@ ObjectShowProcessesOrThreadDetails(BOOLEAN IsProcess)
 {
     BOOLEAN                                    Status;
     ULONG                                      ReturnedLength;
-    DEBUGGEE_DETAILS_AND_SWITCH_PROCESS_PACKET GetInformationProcess = {0};
-    DEBUGGEE_DETAILS_AND_SWITCH_THREAD_PACKET  GetInformationThread  = {0};
+    DEBUGGEE_DETAILS_AND_SWITCH_PROCESS_PACKET GetInformationProcess = {};
+    DEBUGGEE_DETAILS_AND_SWITCH_THREAD_PACKET  GetInformationThread  = {};
 
     if (IsProcess)
     {
@@ -39,7 +39,7 @@ ObjectShowProcessesOrThreadDetails(BOOLEAN IsProcess)
         //
         // Send the request to the kernel
         //
-        Status = DeviceIoControl(
+        Status = PlatformDeviceIoControl(
             g_DeviceHandle,                                    // Handle to device
             IOCTL_QUERY_CURRENT_PROCESS,                       // IO Control
                                                                // code
@@ -54,7 +54,7 @@ ObjectShowProcessesOrThreadDetails(BOOLEAN IsProcess)
 
         if (!Status)
         {
-            ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+            ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
             return FALSE;
         }
 
@@ -85,7 +85,7 @@ ObjectShowProcessesOrThreadDetails(BOOLEAN IsProcess)
         //
         // Send the request to the kernel
         //
-        Status = DeviceIoControl(
+        Status = PlatformDeviceIoControl(
             g_DeviceHandle,                                   // Handle to device
             IOCTL_QUERY_CURRENT_THREAD,                       // IO Control
                                                               // code
@@ -100,7 +100,7 @@ ObjectShowProcessesOrThreadDetails(BOOLEAN IsProcess)
 
         if (!Status)
         {
-            ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+            ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
             return FALSE;
         }
 
@@ -181,7 +181,7 @@ ObjectShowProcessesOrThreadList(BOOLEAN                               IsProcess,
         //
         // Copy items needed for getting the details of processes
         //
-        RtlCopyMemory(&QueryCountOfActiveThreadsOrProcessesRequest.ProcessListNeededDetails,
+        PlatformCopyMemory(&QueryCountOfActiveThreadsOrProcessesRequest.ProcessListNeededDetails,
                       SymDetailsForProcessList,
                       sizeof(DEBUGGEE_PROCESS_LIST_NEEDED_DETAILS));
     }
@@ -190,7 +190,7 @@ ObjectShowProcessesOrThreadList(BOOLEAN                               IsProcess,
         //
         // Copy items needed for getting the details of threads
         //
-        RtlCopyMemory(&QueryCountOfActiveThreadsOrProcessesRequest.ThreadListNeededDetails,
+        PlatformCopyMemory(&QueryCountOfActiveThreadsOrProcessesRequest.ThreadListNeededDetails,
                       SymDetailsForThreadList,
                       sizeof(DEBUGGEE_THREAD_LIST_NEEDED_DETAILS));
     }
@@ -198,7 +198,7 @@ ObjectShowProcessesOrThreadList(BOOLEAN                               IsProcess,
     //
     // Send the request to the kernel
     //
-    Status = DeviceIoControl(
+    Status = PlatformDeviceIoControl(
         g_DeviceHandle,                                    // Handle to device
         IOCTL_QUERY_COUNT_OF_ACTIVE_PROCESSES_OR_THREADS,  // IO Control
                                                            // code
@@ -213,7 +213,7 @@ ObjectShowProcessesOrThreadList(BOOLEAN                               IsProcess,
 
     if (!Status)
     {
-        ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+        ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
         return FALSE;
     }
 
@@ -253,7 +253,7 @@ ObjectShowProcessesOrThreadList(BOOLEAN                               IsProcess,
 
             Entries = (PVOID)malloc(SizeOfBufferForThreadsAndProcessDetails);
 
-            RtlZeroMemory(Entries, SizeOfBufferForThreadsAndProcessDetails);
+            PlatformZeroMemory(Entries, SizeOfBufferForThreadsAndProcessDetails);
 
             // ShowMessages("count of active processes/threads : %lld\n", QueryCountOfActiveThreadsOrProcessesRequest.Count);
 
@@ -269,7 +269,7 @@ ObjectShowProcessesOrThreadList(BOOLEAN                               IsProcess,
             //
             // Send the request to the kernel
             //
-            Status = DeviceIoControl(
+            Status = PlatformDeviceIoControl(
                 g_DeviceHandle,                                    // Handle to device
                 IOCTL_GET_LIST_OF_THREADS_AND_PROCESSES,           // IO Control Code (IOCTL)
                 &QueryCountOfActiveThreadsOrProcessesRequest,      // Input Buffer to driver.
@@ -282,7 +282,7 @@ ObjectShowProcessesOrThreadList(BOOLEAN                               IsProcess,
 
             if (!Status)
             {
-                ShowMessages("ioctl failed with code 0x%x\n", GetLastError());
+                ShowMessages("ioctl failed with code 0x%x\n", PlatformGetLastError());
                 return FALSE;
             }
 

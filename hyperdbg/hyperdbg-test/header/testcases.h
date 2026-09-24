@@ -1,4 +1,4 @@
-/**
+﻿/**
  * @file testcases.h
  * @author Sina Karvandi (sina@hyperdbg.org)
  * @brief header for test cases
@@ -26,3 +26,6 @@ TestCodeViewRsdsParser();
 
 BOOLEAN
 TestSemanticScripts();
+
+BOOLEAN
+TestScriptEngineFloatingPoint();

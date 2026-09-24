@@ -1,4 +1,4 @@
-/**
+﻿/**
  * @file Definition.h
  * @author Sina Karvandi (sina@hyperdbg.org)
  * @brief Header files for global definitions

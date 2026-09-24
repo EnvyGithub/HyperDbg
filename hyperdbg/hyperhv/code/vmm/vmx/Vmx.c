@@ -30,7 +30,7 @@ VmxCheckVmxSupport()
     //
     // Check For VMX Bit CPUID.ECX[5]
     //
-    if (!_bittest((const LONG *)&Data.ecx, 5))
+    if (!CpuBitTest((const LONG *)&Data.ecx, 5))
     {
         //
         // returns FALSE if vmx is not supported
@@ -77,7 +77,7 @@ VmxGetCurrentExecutionMode()
 {
     if (g_GuestState)
     {
-        ULONG                   CurrentCore    = KeGetCurrentProcessorNumberEx(NULL);
+        ULONG                   CurrentCore    = PlatformCpuGetCurrentProcessorNumber();
         VIRTUAL_MACHINE_STATE * CurrentVmState = &g_GuestState[CurrentCore];
 
         return CurrentVmState->IsOnVmxRootMode ? VmxExecutionModeRoot : VmxExecutionModeNonRoot;
@@ -99,7 +99,7 @@ VmxGetCurrentExecutionMode()
 BOOLEAN
 VmxGetCurrentLaunchState()
 {
-    ULONG                   CurrentCore    = KeGetCurrentProcessorNumberEx(NULL);
+    ULONG                   CurrentCore    = PlatformCpuGetCurrentProcessorNumber();
     VIRTUAL_MACHINE_STATE * CurrentVmState = &g_GuestState[CurrentCore];
 
     return CurrentVmState->HasLaunched;
@@ -118,7 +118,7 @@ VmxResetLastOperationResults()
         return;
     }
 
-    ProcessorsCount = KeQueryActiveProcessorCount(0);
+    ProcessorsCount = PlatformCpuGetActiveProcessorCount();
     for (ULONG ProcessorId = 0; ProcessorId < ProcessorsCount; ProcessorId++)
     {
         g_GuestState[ProcessorId].LastVmxOperationSucceeded = FALSE;
@@ -142,7 +142,7 @@ VmxAllLastOperationResultsSucceeded(_In_z_ const CHAR * OperationName)
         return FALSE;
     }
 
-    ProcessorsCount = KeQueryActiveProcessorCount(0);
+    ProcessorsCount = PlatformCpuGetActiveProcessorCount();
     for (ULONG ProcessorId = 0; ProcessorId < ProcessorsCount; ProcessorId++)
     {
         if (!g_GuestState[ProcessorId].LastVmxOperationSucceeded)
@@ -177,7 +177,7 @@ VmxRollbackCurrentCoreInitialization(_Inout_ VIRTUAL_MACHINE_STATE * VCpu)
 static VOID
 VmxFreeSharedLifecycleResources()
 {
-    ULONG ProcessorsCount = KeQueryActiveProcessorCount(0);
+    ULONG ProcessorsCount = PlatformCpuGetActiveProcessorCount();
 
     if (g_MsrBitmapInvalidMsrs != NULL)
     {
@@ -237,7 +237,7 @@ VmxInitialize()
         goto Error;
     }
 
-    ProcessorsCount = KeQueryActiveProcessorCount(0);
+    ProcessorsCount = PlatformCpuGetActiveProcessorCount();
 
     for (SIZE_T ProcessorID = 0; ProcessorID < ProcessorsCount; ProcessorID++)
     {
@@ -330,7 +330,7 @@ VmxInitialize()
     // we let windows execute our routine for us
     //
     VmxResetLastOperationResults();
-    KeGenericCallDpc(DpcRoutineInitializeGuest, 0x0);
+    PlatformDpcGenericCall(DpcRoutineInitializeGuest, 0x0);
 
     if (!VmxAllLastOperationResultsSucceeded("VMLAUNCH"))
     {
@@ -458,7 +458,7 @@ VmxPerformVirtualizationOnAllCores()
 BOOLEAN
 VmxPerformVirtualizationOnSpecificCore()
 {
-    ULONG                   CurrentCore = KeGetCurrentProcessorNumberEx(NULL);
+    ULONG                   CurrentCore = PlatformCpuGetCurrentProcessorNumber();
     VIRTUAL_MACHINE_STATE * VCpu        = &g_GuestState[CurrentCore];
 
     LogDebugInfo("Allocating vmx regions for logical core %d", CurrentCore);
@@ -537,6 +537,7 @@ VmxCheckIsOnVmxRoot()
 {
     UINT64 VmcsLink = 0;
 
+#ifdef _WIN32
     __try
     {
         if (!VmxVmread64P(VMCS_GUEST_VMCS_LINK_POINTER, &VmcsLink))
@@ -550,6 +551,20 @@ VmxCheckIsOnVmxRoot()
     __except (1)
     {
     }
+#else
+    //
+    // TODO(Linux): the __try guards VMREAD against faulting (#UD) when the CPU
+    // is not in VMX-root. Port the SEH guard to an _ASM_EXTABLE fixup around the
+    // VMREAD. Unguarded for now (safe while the module is not yet virtualizing).
+    //
+    if (!VmxVmread64P(VMCS_GUEST_VMCS_LINK_POINTER, &VmcsLink))
+    {
+        if (VmcsLink != 0)
+        {
+            return TRUE;
+        }
+    }
+#endif
 
     return FALSE;
 }
@@ -565,7 +580,7 @@ BOOLEAN
 VmxVirtualizeCurrentSystem(PVOID GuestStack)
 {
     UINT64                  ErrorCode   = 0;
-    ULONG                   CurrentCore = KeGetCurrentProcessorNumberEx(NULL);
+    ULONG                   CurrentCore = PlatformCpuGetCurrentProcessorNumber();
     VIRTUAL_MACHINE_STATE * VCpu        = &g_GuestState[CurrentCore];
 
     LogDebugInfo("Virtualizing current system (logical core : 0x%x)", CurrentCore);
@@ -655,7 +670,7 @@ BOOLEAN
 VmxTerminate()
 {
     NTSTATUS                Status      = STATUS_SUCCESS;
-    ULONG                   CurrentCore = KeGetCurrentProcessorNumberEx(NULL);
+    ULONG                   CurrentCore = PlatformCpuGetCurrentProcessorNumber();
     VIRTUAL_MACHINE_STATE * VCpu        = &g_GuestState[CurrentCore];
 
     if (VCpu->HasLaunched)
@@ -1002,7 +1017,7 @@ VmxPerformVmresume()
 
     LogError("Err, in executing VMRESUME, status : 0x%llx, last VM-exit reason: 0x%x",
              ErrorCode,
-             g_GuestState[KeGetCurrentProcessorNumberEx(NULL)].ExitReason);
+             g_GuestState[PlatformCpuGetCurrentProcessorNumber()].ExitReason);
 }
 
 /**
@@ -1160,7 +1175,7 @@ VmxPerformVmxoff(VIRTUAL_MACHINE_STATE * VCpu)
 UINT64
 VmxReturnStackPointerForVmxoff()
 {
-    return g_GuestState[KeGetCurrentProcessorNumberEx(NULL)].VmxoffState.GuestRsp;
+    return g_GuestState[PlatformCpuGetCurrentProcessorNumber()].VmxoffState.GuestRsp;
 }
 
 /**
@@ -1171,7 +1186,7 @@ VmxReturnStackPointerForVmxoff()
 UINT64
 VmxReturnInstructionPointerForVmxoff()
 {
-    return g_GuestState[KeGetCurrentProcessorNumberEx(NULL)].VmxoffState.GuestRip;
+    return g_GuestState[PlatformCpuGetCurrentProcessorNumber()].VmxoffState.GuestRip;
 }
 
 /**
@@ -1217,7 +1232,7 @@ VmxPerformTermination()
     // Broadcast to terminate Vmx
     //
     VmxResetLastOperationResults();
-    KeGenericCallDpc(DpcRoutineTerminateGuest, 0x0);
+    PlatformDpcGenericCall(DpcRoutineTerminateGuest, 0x0);
 
     if (!VmxAllLastOperationResultsSucceeded("VMXOFF"))
     {
@@ -1421,15 +1436,15 @@ VOID
 VmxCompatibleMicroSleep(UINT64 Us)
 {
     LARGE_INTEGER Start, End, Frequency;
-    KeQueryPerformanceCounter(&Frequency);
+    PlatformTimeQueryPerformanceCounter(&Frequency);
 
     LONGLONG Ticks = (Frequency.QuadPart / 1000000) * Us;
 
-    Start = KeQueryPerformanceCounter(NULL);
+    Start = PlatformTimeQueryPerformanceCounter(NULL);
 
     while (TRUE)
     {
-        End = KeQueryPerformanceCounter(NULL);
+        End = PlatformTimeQueryPerformanceCounter(NULL);
         if (End.QuadPart - Start.QuadPart > Ticks)
             break;
     }

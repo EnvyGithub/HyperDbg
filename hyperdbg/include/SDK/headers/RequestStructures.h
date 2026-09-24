@@ -281,6 +281,11 @@ typedef enum _DEBUGGER_SHOW_MEMORY_STYLE
     DEBUGGER_SHOW_COMMAND_DC,
     DEBUGGER_SHOW_COMMAND_DQ,
     DEBUGGER_SHOW_COMMAND_DD,
+    DEBUGGER_SHOW_COMMAND_DW,
+    DEBUGGER_SHOW_COMMAND_DA,
+    DEBUGGER_SHOW_COMMAND_DDS,
+    DEBUGGER_SHOW_COMMAND_DQS,
+    DEBUGGER_SHOW_COMMAND_DPS,
     DEBUGGER_SHOW_COMMAND_DUMP
 } DEBUGGER_SHOW_MEMORY_STYLE;
 
@@ -1735,5 +1740,84 @@ typedef struct _DEBUGGEE_PCIDEVINFO_REQUEST_RESPONSE_PACKET
  */
 static_assert(sizeof(DEBUGGEE_PCIDEVINFO_REQUEST_RESPONSE_PACKET) < PacketChunkSize,
               "err (static_assert), size of PacketChunkSize should be bigger than DEBUGGEE_PCIDEVINFO_REQUEST_RESPONSE_PACKET");
+
+// ==============================================================================================
+
+#define SIZEOF_DEBUGGER_CPUID_REQUEST_RESPONSE \
+    sizeof(DEBUGGER_CPUID_REQUEST_RESPONSE)
+
+/**
+ * @brief Request and response for CPUID information (for ucpuid.cpp, not cpuid.cpp)
+ *
+ */
+typedef struct _DEBUGGER_CPUID_REQUEST_RESPONSE
+{
+    CHAR BrandString[49];
+
+    UINT32 EAX;
+    UINT32 EBX;
+    UINT32 ECX;
+    UINT32 EDX;
+
+    UINT32 FunctionId;
+    UINT32 SubFunctionId;
+
+    UINT32 Leaf4MaxSubLeaf;
+    UINT32 LeafBMaxSubleaf;
+    UINT32 Leaf12MaxSubLeaf;
+    UINT32 LeafEaxMaxSubleaf;
+
+    BOOLEAN LeafBSupported;
+    BOOLEAN Leaf12Supported;
+
+    UINT64 XCR0Vector;
+    UINT64 IA32_XSS_Vector;
+
+    UINT32 KernelStatus;
+} DEBUGGER_CPUID_REQUEST_RESPONSE, *PDEBUGGER_CPUID_REQUEST_RESPONSE;
+
+// ==============================================================================================
+
+#define SIZEOF_DEBUGGER_USER_IN_REQUEST_RESPONSE \
+    sizeof(DEBUGGER_USER_IN_REQUEST_RESPONSE)
+
+/**
+ * @brief Cpu registers for I/O instructions (related to _DEBUGGER_USER_IN_REQUEST_RESPONSE 
+ *  and SIZEOF_DEBUGGER_USER_OUT_REQUEST_RESPONSE structs)
+ *
+ */
+typedef enum _DEBUGGER_CPU_REGISTER_USER_IO
+{
+    AL_8_BIT_REGISTER,
+    AX_16_BIT_REGISTER,
+    EAX_32_BIT_REGISTER
+} DEBUGGER_CPU_REGISTER_USER_IO;
+
+/**
+ * @brief Request and response for user IN instruction
+ *
+ */
+typedef struct _DEBUGGER_USER_IN_REQUEST_RESPONSE
+{
+    DEBUGGER_CPU_REGISTER_USER_IO UserChosenRegister; // from enum data type (_DEBUGGER_CPU_REGISTER_USER_IO)
+    USHORT                        PortAddress;        // totally 65,536 (2^16) port address (0 - 65,535)
+    ULONG                         Data;               // returned result
+
+    UINT32                        KernelStatus;
+} DEBUGGER_USER_IN_REQUEST_RESPONSE, *PDEBUGGER_USER_IN_REQUEST_RESPONSE;
+
+// ==============================================================================================
+
+#define SIZEOF_DEBUGGER_USER_OUT_REQUEST_RESPONSE \
+    sizeof(DEBUGGER_USER_OUT_REQUEST_RESPONSE)
+
+typedef struct _DEBUGGER_USER_OUT_REQUEST_RESPONSE
+{
+    DEBUGGER_CPU_REGISTER_USER_IO UserChosenRegister; // from enum data type (_DEBUGGER_CPU_REGISTER_USER_IO)
+    USHORT                        PortAddress;        // totally 65,536 (2^16) port address (0 - 65,535)
+    UINT32                        Value;              // the value to be written to the port address
+
+    UINT32                        KernelStatus;
+} DEBUGGER_USER_OUT_REQUEST_RESPONSE, *PDEBUGGER_USER_OUT_REQUEST_RESPONSE;
 
 // ==============================================================================================

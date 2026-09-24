@@ -48,7 +48,7 @@ class LL1Parser:
         self.MAXIMUM_RHS_LEN = 0
 
 
-        self.SPECIAL_TOKENS = ['%', '+', '~', '++', '-', '--', "*", "/", "=", "==", "!=", ",", ";", "(", ")", "{", "}", "|", "||", ">>", ">=", "<<", "<=", "&", "&&", "^",
+        self.SPECIAL_TOKENS = ['%', '+', '~', '!', '++', '-', '--', '->', '.', "*", "/", "=", "==", "!=", ",", ";", "(", ")", "{", "}", "|", "||", ">>", ">=", "<<", "<=", "&", "&&", "^",
                               "+=", "-=", "*=", "/=", "%=", "<<=", ">>=", "&=", "^=", "|=" , "[", "]"]
 
         # INVALID rule indicator
@@ -375,7 +375,7 @@ class LL1Parser:
                 self.FunctionsDict[L[0]] = Elements
                 continue
 
-            L = Line.split("->")
+            L = Line.split("->", 1)
             Lhs = L[0]
             Rhs = L[1].split(" ")
 
@@ -384,7 +384,7 @@ class LL1Parser:
             MapKeywordIdx2 = 0
             Idx = 0
             for X in Rhs:
-                if X[0] == ".":
+                if X and X[0] == "." and X in self.FunctionsDict:
                     HasMapKeyword = True
                     MapKeywordIdx1 = Idx 
                 elif X[0] == "@":
@@ -430,12 +430,50 @@ class LL1Parser:
 
         self.TerminalSet.add("$")
         
-        self.NonTerminalList = list(self.NonTerminalSet)
+        self.NonTerminalList = sorted(self.NonTerminalSet)
         
-        self.TerminalList = list(self.TerminalSet)
+        self.TerminalList = sorted(self.TerminalSet)
 
         
     def WriteSemanticMaps(self):
+        # Serialized script buffers contain FUNC_* values.  Keep every legacy
+        # value stable and append aggregate-language additions after them.
+        aggregate_semantics = {
+            "struct_forward_declaration", "struct_definition_begin",
+            "struct_definition_end", "struct_variable_declaration",
+            "struct_member_declaration", "typedef_declaration",
+            "struct_pointer", "struct_array_dimension",
+            "struct_declarator_complete", "typed_load", "typed_store",
+            "aggregate_copy", "aggregate_zero"
+            , "struct_initializer_begin", "struct_initializer_end",
+            "struct_pointer_cast", "member_address", "member_read",
+            "member_dot_lvalue", "member_arrow_lvalue", "member_dot_read", "member_arrow_read",
+            "mov_float", "neg_float", "add_float", "sub_float", "mul_float", "div_float",
+            "gt_float", "lt_float", "egt_float", "elt_float", "equal_float", "neq_float",
+            "convert_float"
+        }
+        aggregate_keywords = {"struct", "typedef"}
+        append_only_semantics = [
+            "cast_scalar",
+            "add_typed", "sub_typed", "mul_typed", "div_typed", "mod_typed",
+            "bitwise_and_typed", "bitwise_or_typed", "bitwise_xor_typed",
+            "shift_left_typed", "shift_right_typed",
+            "gt_typed", "lt_typed", "egt_typed", "elt_typed", "equal_typed", "neq_typed",
+            "neg_typed", "bitwise_not_typed", "logical_not_typed", "pointer_diff",
+            "push_aggregate"
+        ]
+        compiler_only_semantics = {
+            "type_name_begin", "sizeof_begin", "sizeof_type", "sizeof_expression",
+            "logical_or_begin", "logical_or_end", "logical_and_begin", "logical_and_end",
+            "function_parameter_struct_base", "function_parameter_pointer_to_array",
+            "function_parameter_array_dimension", "function_parameter_empty_array_dimension",
+            "member_dot_array_read", "member_arrow_array_read"
+        }
+        legacy_semantics = [x for x in self.SemantiRulesList if x not in aggregate_semantics and x not in append_only_semantics and x not in compiler_only_semantics]
+        new_semantics = [x for x in self.SemantiRulesList if x in aggregate_semantics]
+        legacy_keywords = [x for x in self.keywordList if x not in aggregate_keywords]
+        new_keywords = [x for x in self.keywordList if x in aggregate_keywords]
+        numbered_semantics = legacy_semantics + legacy_keywords + new_semantics + new_keywords + append_only_semantics
         
         self.CommonHeaderFileScala.write("object ScriptEvalFunc {\n  object ScriptOperators extends ChiselEnum {\n    val ")
         
@@ -463,24 +501,10 @@ class LL1Parser:
                 CheckForDuplicateList.append(X)
                 Counter += 1
         
-        for X in self.SemantiRulesList:
-        
+        for X in numbered_semantics:
             if X not in CheckForDuplicateList:
                 self.CommonHeaderFile.write("#define " + "FUNC_" + X.upper() + " " + str(Counter) + "\n")
-                self.CommonHeaderFileScala.write(", sFunc" + X.capitalize())
-                CheckForDuplicateList.append(X)
-                Counter += 1
-        
-        for X in self.keywordList:
-        
-            if X not in CheckForDuplicateList:
-                self.CommonHeaderFile.write("#define " + "FUNC_" + X.upper() + " " + str(Counter) + "\n")
-                
-                #
-                # Check if it's the last item
-                #
                 self.CommonHeaderFileScala.write(", sFunc" + X.capitalize() + "")
-                    
                 CheckForDuplicateList.append(X)
                 Counter += 1
                 
@@ -498,7 +522,10 @@ class LL1Parser:
             self.SourceFile.write("{\"@" + X.upper() + "\", "+ "FUNC_" + X.upper()   + "},\n")
 
         for X in self.SemantiRulesList:
-            self.SourceFile.write("{\"@" + X.upper() + "\", "+ "FUNC_" + X.upper()   + "},\n")
+            if X in compiler_only_semantics:
+                self.SourceFile.write("{\"@" + X.upper() + "\", FUNC_UNDEFINED},\n")
+            else:
+                self.SourceFile.write("{\"@" + X.upper() + "\", "+ "FUNC_" + X.upper()   + "},\n")
 
         for X in self.keywordList:
                 self.SourceFile.write("{\"@" + X.upper() + "\", "+ "FUNC_" + X.upper()   + "},\n")
@@ -521,12 +548,7 @@ class LL1Parser:
                 self.CommonHeaderFile.write("\"" + "FUNC_" + X.upper() + "\"" + ",\n")
                 CheckForDuplicateList.append(X)
     
-        for X in self.SemantiRulesList:
-            if X not in CheckForDuplicateList:
-                self.CommonHeaderFile.write("\"" + "FUNC_" + X.upper() + "\"" + ",\n")
-                CheckForDuplicateList.append(X)
-        
-        for X in self.keywordList:
+        for X in numbered_semantics:
             if X not in CheckForDuplicateList:
                 self.CommonHeaderFile.write("\"" + "FUNC_" + X.upper() + "\"" + ",\n")
                 CheckForDuplicateList.append(X)
@@ -701,6 +723,8 @@ class LL1Parser:
 
         elif Var in self.SPECIAL_TOKENS:
             return "SPECIAL_TOKEN"
+        elif Var == "_float":
+            return "FLOAT_LITERAL"
         elif Var[0] == "_":
             return Var[1:].upper()
         else:
@@ -867,8 +891,9 @@ class LL1Parser:
                         self.ParseTable[i][j] = RuleId
 
                     else:
-
-                        print("Error! Input grammar is not LL1.")
+                        print("Error! Input grammar is not LL1: " + Lhs +
+                              " on " + Terminal + " conflicts between rules " +
+                              str(self.ParseTable[i][j]) + " and " + str(RuleId) + ".")
                         exit()
 
                 j += 1

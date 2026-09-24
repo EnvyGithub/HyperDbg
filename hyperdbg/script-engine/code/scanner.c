@@ -11,6 +11,67 @@
  */
 #include "pch.h"
 
+static BOOLEAN PreviousTokenCanEndExpression;
+
+static PSCRIPT_ENGINE_TOKEN
+ScanCharacterLiteral(PSCRIPT_ENGINE_TOKEN Token, char * c, char * str, BOOLEAN IsWide)
+{
+    UINT32 Value = 0;
+    UINT32 Digits = 0;
+    UINT32 MaxHexDigits = IsWide ? 4 : 2;
+
+    *c = sgetc(str);
+    if ((int)*c == EOF || *c == '\'')
+        goto InvalidLiteral;
+
+    if (*c == '\\')
+    {
+        *c = sgetc(str);
+        switch (*c)
+        {
+        case 'n': Value = '\n'; *c = sgetc(str); break;
+        case 't': Value = '\t'; *c = sgetc(str); break;
+        case 'r': Value = '\r'; *c = sgetc(str); break;
+        case '0': Value = 0; *c = sgetc(str); break;
+        case '\\': Value = '\\'; *c = sgetc(str); break;
+        case '\'': Value = '\''; *c = sgetc(str); break;
+        case '"': Value = '"'; *c = sgetc(str); break;
+        case 'x':
+            *c = sgetc(str);
+            while (IsHex(*c) && Digits < MaxHexDigits)
+            {
+                Value = (Value << 4) | (UINT32)(*c <= '9' ? *c - '0' : ((*c | 0x20) - 'a' + 10));
+                Digits++;
+                *c = sgetc(str);
+            }
+            if (!Digits || IsHex(*c))
+                goto InvalidLiteral;
+            break;
+        default:
+            goto InvalidLiteral;
+        }
+    }
+    else
+    {
+        Value = (UINT8)*c;
+        *c = sgetc(str);
+    }
+
+    if (*c != '\'')
+        goto InvalidLiteral;
+
+    PlatformSnprintf(Token->Value, Token->MaxLen, "%x", Value);
+    Token->Len          = (unsigned int)strlen(Token->Value);
+    Token->Type         = HEX;
+    Token->VariableType = IsWide ? (VARIABLE_TYPE *)VARIABLE_TYPE_WCHAR : (VARIABLE_TYPE *)VARIABLE_TYPE_INT;
+    *c                  = sgetc(str);
+    return Token;
+
+InvalidLiteral:
+    Token->Type = UNKNOWN;
+    return Token;
+}
+
 /**
  * @brief reads a token from the input string
  *
@@ -25,10 +86,23 @@ GetToken(char * c, char * str)
 
     switch (*c)
     {
+    case '\'':
+        return ScanCharacterLiteral(Token, c, str, FALSE);
+
     case '"':
         do
         {
             *c = sgetc(str);
+
+            //
+            // An unterminated string literal would otherwise spin here forever,
+            // since sgetc() keeps returning EOF without consuming any input
+            //
+            if ((int)*c == EOF)
+            {
+                Token->Type = UNKNOWN;
+                return Token;
+            }
 
             if (*c == '\\')
             {
@@ -132,7 +206,14 @@ GetToken(char * c, char * str)
         }
     case '-':
         *c = sgetc(str);
-        if (*c == '-')
+        if (*c == '>')
+        {
+            strcpy(Token->Value, "->");
+            Token->Type = SPECIAL_TOKEN;
+            *c          = sgetc(str);
+            return Token;
+        }
+        else if (*c == '-')
         {
             strcpy(Token->Value, "--");
             Token->Type = SPECIAL_TOKEN;
@@ -309,7 +390,7 @@ GetToken(char * c, char * str)
         else
         {
             strcpy(Token->Value, "!");
-            Token->Type = UNKNOWN;
+            Token->Type = SPECIAL_TOKEN;
             return Token;
         }
     case '%':
@@ -483,6 +564,18 @@ GetToken(char * c, char * str)
     case '.':
         AppendByte(Token, *c);
         *c = sgetc(str);
+        if (IsDecimal(*c))
+        {
+            do
+            {
+                AppendByte(Token, *c);
+                *c = sgetc(str);
+            } while (IsDecimal(*c));
+
+            Token->Type = FLOAT_LITERAL;
+            Token->VariableType = (VARIABLE_TYPE *)VARIABLE_TYPE_DOUBLE;
+            return Token;
+        }
         if (IsLetter(*c) || IsHex(*c) || (*c == '_') || (*c == '!'))
         {
             do
@@ -520,6 +613,7 @@ GetToken(char * c, char * str)
                     {
                         Token->Type         = GLOBAL_ID;
                         Token->VariableType = GetGlobalIdentifierVariableType(Token);
+                        Token->IsImplicitType = GetGlobalIdentifierIsImplicitType(Token);
                     }
                     else
                     {
@@ -554,6 +648,7 @@ GetToken(char * c, char * str)
 
     case ' ':
     case '\t':
+    case '\r':
         strcpy(Token->Value, "");
         Token->Type = WHITE_SPACE;
         *c          = sgetc(str);
@@ -615,6 +710,20 @@ GetToken(char * c, char * str)
             return Token;
         }
 
+        else if (*c == '.')
+        {
+            AppendByte(Token, '0');
+            AppendByte(Token, '.');
+            *c = sgetc(str);
+            while (IsDecimal(*c))
+            {
+                AppendByte(Token, *c);
+                *c = sgetc(str);
+            }
+            Token->Type = FLOAT_LITERAL;
+            Token->VariableType = (VARIABLE_TYPE *)VARIABLE_TYPE_DOUBLE;
+            return Token;
+        }
         else if (IsHex(*c))
         {
             do
@@ -634,6 +743,11 @@ GetToken(char * c, char * str)
         }
 
     case 'L':
+        if (*(str + InputIdx) == '\'')
+        {
+            InputIdx++;
+            return ScanCharacterLiteral(Token, c, str, TRUE);
+        }
         if (*(str + InputIdx) == '"')
         {
             InputIdx++;
@@ -641,22 +755,32 @@ GetToken(char * c, char * str)
             {
                 *c = sgetc(str);
 
+                //
+                // An unterminated wide string literal would otherwise spin here
+                // forever, since sgetc() keeps returning EOF without consuming input
+                //
+                if ((int)*c == EOF)
+                {
+                    Token->Type = UNKNOWN;
+                    return Token;
+                }
+
                 if (*c == '\\')
                 {
                     *c = sgetc(str);
                     if (*c == 'n')
                     {
-                        AppendWchar(Token, L'\n');
+                        AppendWchar(Token, (UINT16)'\n');
                         continue;
                     }
                     if (*c == '\\')
                     {
-                        AppendWchar(Token, L'\\');
+                        AppendWchar(Token, (UINT16)'\\');
                         continue;
                     }
                     else if (*c == 't')
                     {
-                        AppendWchar(Token, L'\t');
+                        AppendWchar(Token, (UINT16)'\t');
                         continue;
                     }
                     else if (*c == 'x')
@@ -683,13 +807,13 @@ GetToken(char * c, char * str)
                         else
                         {
                             InputIdx--;
-                            WCHAR Num = (WCHAR)strtol(ByteString, NULL, 16);
+                            UINT16 Num = (UINT16)strtol(ByteString, NULL, 16);
                             AppendWchar(Token, Num);
                         }
                     }
                     else if (*c == '"')
                     {
-                        AppendWchar(Token, L'"');
+                        AppendWchar(Token, (UINT16)'"');
                         continue;
                     }
                     else
@@ -705,7 +829,7 @@ GetToken(char * c, char * str)
                 }
                 else
                 {
-                    AppendWchar(Token, (wchar_t)*c);
+                    AppendWchar(Token, (UINT16)(UINT8)*c);
                 }
             } while (1);
 
@@ -718,12 +842,34 @@ GetToken(char * c, char * str)
     default:
         if (*c >= '0' && *c <= '9')
         {
+            BOOLEAN HasOnlyDecimalDigits = TRUE;
             do
             {
                 if (*c != '`')
+                {
                     AppendByte(Token, *c);
+                    if (!IsDecimal(*c))
+                    {
+                        HasOnlyDecimalDigits = FALSE;
+                    }
+                }
                 *c = sgetc(str);
             } while (IsHex(*c) || *c == '`');
+
+            if (*c == '.' && HasOnlyDecimalDigits)
+            {
+                AppendByte(Token, '.');
+                *c = sgetc(str);
+                while (IsDecimal(*c))
+                {
+                    AppendByte(Token, *c);
+                    *c = sgetc(str);
+                }
+                Token->Type = FLOAT_LITERAL;
+                Token->VariableType = (VARIABLE_TYPE *)VARIABLE_TYPE_DOUBLE;
+                return Token;
+            }
+
             Token->Type = HEX;
             return Token;
         }
@@ -770,6 +916,10 @@ GetToken(char * c, char * str)
                 {
                     Token->Type = SCRIPT_VARIABLE_TYPE;
                 }
+                else if ((Token->VariableType = FindTypedefType(Token->Value)) != NULL)
+                {
+                    Token->Type = SCRIPT_VARIABLE_TYPE;
+                }
                 else
                 {
                     BOOLEAN WasFound = FALSE;
@@ -804,11 +954,16 @@ GetToken(char * c, char * str)
                             else if (GetFunctionParameterIdentifier(Token) != -1)
                             {
                                 Token->Type = FUNCTION_PARAMETER_ID;
+                                Token->VariableType = GetFunctionParameterVariableType(Token);
+                                Token->VariableMemoryIdx = GetFunctionParameterMemoryIndex(Token);
+                                Token->Len = GetFunctionParameterSlotCount(Token);
+                                Token->AddressSpace = SCRIPT_ENGINE_ADDRESS_SPACE_LOCAL;
                             }
                             else if (GetLocalIdentifierVal(Token) != -1)
                             {
                                 Token->Type         = LOCAL_ID;
                                 Token->VariableType = GetLocalIdentifierVariableType(Token);
+                                Token->IsImplicitType = GetLocalIdentifierIsImplicitType(Token);
                             }
                             else
                             {
@@ -830,6 +985,10 @@ GetToken(char * c, char * str)
                     Token->Type = REGISTER;
                 }
                 else if (IsVariableType(Token->Value))
+                {
+                    Token->Type = SCRIPT_VARIABLE_TYPE;
+                }
+                else if ((Token->VariableType = FindTypedefType(Token->Value)) != NULL)
                 {
                     Token->Type = SCRIPT_VARIABLE_TYPE;
                 }
@@ -867,11 +1026,16 @@ GetToken(char * c, char * str)
                             else if (GetFunctionParameterIdentifier(Token) != -1)
                             {
                                 Token->Type = FUNCTION_PARAMETER_ID;
+                                Token->VariableType = GetFunctionParameterVariableType(Token);
+                                Token->VariableMemoryIdx = GetFunctionParameterMemoryIndex(Token);
+                                Token->Len = GetFunctionParameterSlotCount(Token);
+                                Token->AddressSpace = SCRIPT_ENGINE_ADDRESS_SPACE_LOCAL;
                             }
                             else if (GetLocalIdentifierVal(Token) != -1)
                             {
                                 Token->Type         = LOCAL_ID;
                                 Token->VariableType = GetLocalIdentifierVariableType(Token);
+                                Token->IsImplicitType = GetLocalIdentifierIsImplicitType(Token);
                             }
                             else
                             {
@@ -905,6 +1069,10 @@ GetToken(char * c, char * str)
                 Token->Type = REGISTER;
             }
             else if (IsVariableType(Token->Value))
+            {
+                Token->Type = SCRIPT_VARIABLE_TYPE;
+            }
+            else if ((Token->VariableType = FindTypedefType(Token->Value)) != NULL)
             {
                 Token->Type = SCRIPT_VARIABLE_TYPE;
             }
@@ -942,11 +1110,16 @@ GetToken(char * c, char * str)
                         else if (GetFunctionParameterIdentifier(Token) != -1)
                         {
                             Token->Type = FUNCTION_PARAMETER_ID;
+                            Token->VariableType = GetFunctionParameterVariableType(Token);
+                            Token->VariableMemoryIdx = GetFunctionParameterMemoryIndex(Token);
+                            Token->Len = GetFunctionParameterSlotCount(Token);
+                            Token->AddressSpace = SCRIPT_ENGINE_ADDRESS_SPACE_LOCAL;
                         }
                         else if (GetLocalIdentifierVal(Token) != -1)
                         {
                             Token->Type         = LOCAL_ID;
                             Token->VariableType = GetLocalIdentifierVariableType(Token);
+                            Token->IsImplicitType = GetLocalIdentifierIsImplicitType(Token);
                         }
                         else
                         {
@@ -980,7 +1153,8 @@ Scan(char * str, char * c)
 
     if (InputIdx <= 1)
     {
-        ReturnEndOfString = FALSE;
+        ReturnEndOfString             = FALSE;
+        PreviousTokenCanEndExpression = FALSE;
     }
 
     if (ReturnEndOfString)
@@ -996,7 +1170,15 @@ Scan(char * str, char * c)
     {
         CurrentTokenIdx = InputIdx - 1;
 
-        Token = GetToken(c, str);
+        if (*c == '.' && PreviousTokenCanEndExpression)
+        {
+            Token       = NewToken(SPECIAL_TOKEN, ".");
+            *c          = sgetc(str);
+        }
+        else
+        {
+            Token = GetToken(c, str);
+        }
 
         if ((int)*c == EOF)
         {
@@ -1028,6 +1210,15 @@ Scan(char * str, char * c)
             }
             continue;
         }
+        PreviousTokenCanEndExpression =
+            Token->Type == GLOBAL_ID || Token->Type == GLOBAL_UNRESOLVED_ID ||
+            Token->Type == LOCAL_ID || Token->Type == LOCAL_UNRESOLVED_ID ||
+            Token->Type == FUNCTION_PARAMETER_ID || Token->Type == REGISTER ||
+            Token->Type == PSEUDO_REGISTER || Token->Type == HEX ||
+            Token->Type == DECIMAL || Token->Type == OCTAL || Token->Type == BINARY ||
+            Token->Type == FLOAT_LITERAL ||
+            (Token->Type == SPECIAL_TOKEN &&
+             (!strcmp(Token->Value, ")") || !strcmp(Token->Value, "]")));
         return Token;
     }
 }

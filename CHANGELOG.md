@@ -4,6 +4,101 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0.0] - 2026-09-22
+New release of the HyperDbg Debugger.
+
+### Added
+- All HyperDbg's kernel modules now compile on Linux
+- Added the 'dw' and '!dw' commands to read word (2-byte) values ([link](https://docs.hyperdbg.org/commands/debugging-commands/d))([link](https://docs.hyperdbg.org/commands/extension-commands/d))([link](https://github.com/HyperDbg/HyperDbg/pull/666))
+- Added the 'da' and '!da' commands to read printable ASCII (null-terminated) strings ([link](https://docs.hyperdbg.org/commands/debugging-commands/d))([link](https://docs.hyperdbg.org/commands/extension-commands/d))([link](https://github.com/HyperDbg/HyperDbg/pull/666))
+- Added the 'dds', 'dqs', and 'dps' plus physical memory counterpart commands to read double-word, quad-word, and pointer-sized values resolved to symbol names (module!symbol+offset) ([link](https://docs.hyperdbg.org/commands/debugging-commands/d))([link](https://docs.hyperdbg.org/commands/extension-commands/d))([link](https://github.com/HyperDbg/HyperDbg/pull/684))
+- Added the 'uin' and 'uout' commands to read from and write to I/O ports (port-mapped I/O) from the user debugger ([link](https://docs.hyperdbg.org/commands/debugging-commands/uin))([link](https://docs.hyperdbg.org/commands/debugging-commands/uout))([link](https://github.com/HyperDbg/HyperDbg/pull/671))
+- Added the 'test script-semantic' CLI command for running script engine semantic test cases
+- Ported the hyperhv and hyperlog projects, along with core platform components (spinlocks, IRQL, process, time, and I/O), to the Linux kernel module ([link](https://github.com/HyperDbg/HyperDbg/pull/673))([link](https://github.com/HyperDbg/HyperDbg/pull/678))([link](https://github.com/HyperDbg/HyperDbg/pull/683))
+- Added GNU assembler (GAS) stub files to replace the MASM assembly files for the Linux kernel module build
+- Added arrays as function parameters in the script engine ([link](https://docs.hyperdbg.org/commands/scripting-language/constants-and-functions#arrays-as-function-parameters))
+- Added 'char' and 'wide-char (wchar_t)' arrays in the script engine ([link](https://docs.hyperdbg.org/commands/scripting-language/structures-and-arrays#char-and-wide-char-wchar_t-arrays))
+
+### Changed
+- Refactored the 'dl', 'da', and 'dw' commands ([link](https://github.com/HyperDbg/HyperDbg/pull/676))
+- Updated 'char' and 'wchar_t' type handling in the script engine ([link](https://github.com/HyperDbg/HyperDbg/pull/672))
+- Updated function parameter handling in the script engine ([link](https://github.com/HyperDbg/HyperDbg/pull/675))
+- Fixed the problem with the user I/O ('uin'/'uout') instructions ([link](https://github.com/HyperDbg/HyperDbg/pull/677))
+- Changed the help messages and the result formatting of the 'uin' and 'uout' commands, and cleaned up the interpreter commands ([link](https://docs.hyperdbg.org/commands/debugging-commands/uin))([link](https://docs.hyperdbg.org/commands/debugging-commands/uout))
+- Preserve the original byte of the first hidden breakpoint on a page ([link](https://github.com/HyperDbg/HyperDbg/pull/680))([link](https://github.com/HyperDbg/HyperDbg/issues/637))
+- Improve error handling for malformed command arguments ([link](https://github.com/HyperDbg/HyperDbg/pull/669))
+- Size the PCI CAM config space buffer at its real 256 bytes ([link](https://github.com/HyperDbg/HyperDbg/pull/682))
+- Fixed CPUID SDK function to return the correct status results
+
+## [0.23.0.0] - 2026-08-03
+New release of the HyperDbg Debugger.
+
+### Added
+- Added the 'ucpuid' command, thanks to [@nikzad66](https://github.com/nikzad66) ([link](https://docs.hyperdbg.org/commands/debugging-commands/ucpuid))([link](https://github.com/HyperDbg/HyperDbg/pull/658))
+- Added floating-point support in the script engine ([link](https://docs.hyperdbg.org/commands/scripting-language/data-types-and-operators))([link](https://github.com/HyperDbg/HyperDbg/pull/655))
+- Added new platform functions for missed CPUID wrapper ([link](https://github.com/HyperDbg/HyperDbg/commit/dd38a30d224d05bb9cfab28f6024db8cc51acffd))
+- Added guards and compilation flags in CMake ([link](https://github.com/HyperDbg/HyperDbg/commit/860f736bd21a274930420a12ed7eac970732717a))
+- Added SDK function for the 'ucpuid' command ([link](https://docs.hyperdbg.org/commands/debugging-commands/ucpuid))([link](https://github.com/HyperDbg/HyperDbg/pull/659))
+- Added a new socket platform API and named-pipe Linux file ([link](https://github.com/HyperDbg/HyperDbg/commit/6683c2dc3db640e8b75786570759daf4e630c7f0))
+- Added unix implementation of 'asm-vmx-checks.asm', and made naming convention for both files ([link](https://github.com/HyperDbg/HyperDbg/commit/7141e23aadd6cc92d7edf1259fc0a6438a96737a)) 
+- Added the hwdbg files to the CMake files and replaced the platform files, 'RTLZeroMemory' ([link](https://github.com/HyperDbg/HyperDbg/commit/f5f822a46f5aa3041cda6f7a1c29aaf18f705f15)) 
+- Added ucpuid to CMakeList.txt and made it portable ([link](https://github.com/HyperDbg/HyperDbg/commit/8583d99d14eed83e982df08106d8f50d04c36e6a)) 
+- Script engine Linux build completed, and added undefined references with empty stubs for the Linux port and updated the CMake file accordingly ([link](https://github.com/HyperDbg/HyperDbg/commit/5175381c7304a268660377f3ed1c2e8860f96c55)) 
+- Added missing files to the CMake build file and swept them for the Platform functions and guarded Windows-only code ([link](https://github.com/HyperDbg/HyperDbg/commit/4bf987a5968a65eebdbb69f514e50ee08d74aa34)) 
+- Added stub for vendorID on the 'pci-id.cpp' file ([link](https://github.com/HyperDbg/HyperDbg/commit/600eaa47ba7bc5731c677030dea7d0562e95b97b)) 
+- Added Linux kernel module build file (Kbuild) ([link](https://github.com/HyperDbg/HyperDbg/commit/e8650e43ac563d451c835b1a01c0241929cf3c2c)) 
+- Added PlatformCPU Linux implementation ([link](https://github.com/HyperDbg/HyperDbg/commit/953af9388a163b9e71f48bc68966f8e670fcef27)) 
+- Added 'vprintk' in the kernel module files for Linux ([link](https://github.com/HyperDbg/HyperDbg/commit/652721be62f759535d59fec5e603923076bc62b0)) 
+
+### Changed
+- Updated variable types and added float types in the script engine ([link](https://github.com/HyperDbg/HyperDbg/commit/d44c726dff91402a1f093455b69449b65657bce0))
+- Porting status update and terminate thread platform call ([link](https://github.com/HyperDbg/HyperDbg/commit/a29e210ab067d4a96a0d130f61aeed5b53387565))
+- Sweep and extra guards and some new platform functions ([link](https://github.com/HyperDbg/HyperDbg/commit/926070135d44b7459409e1cce1d4595426062daa))
+- Fix 'UInt32' conversion for negative (signed) values ([link](https://github.com/HyperDbg/HyperDbg/commit/d4132ee7db092140b526d4cd31e445114aa470ec))
+- Fix the 'snprintf_s' wrapper function for cross-platform compilation ([link](https://github.com/HyperDbg/HyperDbg/commit/aa96eaa617c0c1a432682b83a5021ac4963182d1))
+- Changed 'CpuIdEx' variants to a cross-platform 'CpuCpuIdEx' ([link](https://github.com/HyperDbg/HyperDbg/commit/c13f45f8b05743c5d87d3a50687507defe54af2b))
+- Updated number of CPUs to a cross-platform function ([link](https://github.com/HyperDbg/HyperDbg/commit/5fdd2e7738e6f68ed5ff516467fbc5bfdaec9759))
+- Empty Linux stub for the keystone library ([link](https://github.com/HyperDbg/HyperDbg/commit/f938929a8cd8391a00c52f39dd9a129a7abf9b33))
+- Build file edit for first build on 'hyperdbg-cli' ([link](https://github.com/HyperDbg/HyperDbg/commit/2024cb9374e29fbd511ba931ab8b2bf7d483457c))
+- Fixed bug that made script-engine segfault, so we can type commands now ([link](https://github.com/HyperDbg/HyperDbg/commit/bdc7a150cbefbc3d85a05d2a995bad4db34fc321))
+- Resync serial stream on framing overflow instead of flooding the debuggee, thanks to [@munraimix](https://github.com/munraimix) ([link](https://github.com/HyperDbg/HyperDbg/pull/663))([link](https://github.com/HyperDbg/HyperDbg/issues/661))
+- Resync libhyperdbg's serial receivers on framing overflow too, thanks to [@munraimix](https://github.com/munraimix) ([link](https://github.com/HyperDbg/HyperDbg/pull/663))([link](https://github.com/HyperDbg/HyperDbg/issues/661))
+- Updated Linux port documentation ([link](https://github.com/HyperDbg/HyperDbg/commit/622ea9df9730e3fe0a8ff22f035772631308ac36))
+- Applied cleanup for resync serial codes ([link](https://github.com/HyperDbg/HyperDbg/commit/a24c8c0a91485132ac9e28bfb588a689c8359359))
+- Fix memory-safety and robustness issues in the script engine and the PCI ID parser, thanks to [@enzo-berry](https://github.com/enzo-berry) ([link](https://github.com/HyperDbg/HyperDbg/pull/665))
+
+### Removed
+- Removed unused serial codes ([link](https://github.com/HyperDbg/HyperDbg/commit/b77df6a62bacf4bff29198b3d1acd7961a3e7f38))
+
+## [0.22.0.0] - 2026-07-20
+New release of the HyperDbg Debugger.
+
+### Added
+- Added a new 'dl' command to traverse linked lists using virtual addresses, thanks to [@FallinBinary](https://github.com/FallinBinary) ([link](https://docs.hyperdbg.org/commands/debugging-commands/dl))([link](https://github.com/HyperDbg/HyperDbg/pull/635))
+- Added a new '!dl' command to traverse linked lists using physical addresses, thanks to [@FallinBinary](https://github.com/FallinBinary) ([link](https://docs.hyperdbg.org/commands/extension-commands/dl))([link](https://github.com/HyperDbg/HyperDbg/pull/635))
+- Exported SDK API for traversing linked lists (using virtual and physical memory) ([link](https://github.com/HyperDbg/HyperDbg/pull/635))
+- Added 'pname' to the '!pt' command ([link](https://github.com/HyperDbg/HyperDbg/commit/00c81606fac70d18e7f61fd6509cac74662b116b))
+- Added '!pt' initialization to a separate thread ([link](https://github.com/HyperDbg/HyperDbg/commit/07630fc05ac8501602a79707b51d9ebe62b70c0c))
+- Added new definitions for GCC Linux compilation ([link](https://github.com/HyperDbg/HyperDbg/commit/4d398662ce631c778fb069460da653e8c24e9a94))([link](https://github.com/HyperDbg/HyperDbg/commit/ffc2595941e54f34add73ccf35b9c1b90a37a0a8))
+- Added mitigation for hypervisor crash in a non- long mode RIP overflow ([link](https://github.com/HyperDbg/HyperDbg/pull/642))
+- Added new lib calls and reverted sleep macro to functions ([link](https://github.com/HyperDbg/HyperDbg/commit/38a59b795fd8bf9474feb3bfbd7684b6319ca941))
+- Added status for porting HyperDbg to Linux ([link](https://github.com/HyperDbg/HyperDbg/commit/5bd330c6deaa1e39a679f5af4f2e1a570aae1957))
+- Add 'ud.cpp' new additions to the platform API and guards ([link](https://github.com/HyperDbg/HyperDbg/commit/3805190db8e81c65971209ad5c648ae65fdcc7c6))
+- Added driver install for Linux stub, and new platform functions and 1:1 mappings ([link](https://github.com/HyperDbg/HyperDbg/commit/d6f70eecd9205453893f9dff8fc102f4a794785f))
+- Added a new platform IOCTL function and some sweeps of already existing platform functions ([link](https://github.com/HyperDbg/HyperDbg/commit/0c7adbd244ef54ad45ca9155b4268df3d95de393))
+- Added structures in the script engine, thanks to [@xmaple555](https://github.com/xmaple555) ([link](https://docs.hyperdbg.org/commands/scripting-language/structures-and-arrays#structures))([link](https://github.com/HyperDbg/HyperDbg/pull/649))
+
+### Changed
+- Fix the double-enable error of the '!pt' command and create a new window for the suspended process ([link](https://github.com/HyperDbg/HyperDbg/commit/01b6f1ca32eb437e7faad327c853b5eb5131da01))
+- Fix creating a new window for the suspended process in the '!pt' command ([link](https://github.com/HyperDbg/HyperDbg/commit/01b6f1ca32eb437e7faad327c853b5eb5131da01))
+- Compiling user-mode KD functions on Linux ([link](https://github.com/HyperDbg/HyperDbg/commit/2a2425dc68a62bd59331b94d20d7881a1756c472))
+- One-to-one conversion and stubbed `w_char` issue ([link](https://github.com/HyperDbg/HyperDbg/commit/72e18d7ad1ccea1c0b0e863d1f0208d16b04030b))
+- Compiling Linux PE-parser (left for the future) ([link](https://github.com/HyperDbg/HyperDbg/commit/1e19826b6cf870b6e69b489fdffc8faa87d0f79f))
+- Fix `DRIVER_IRQL_NOT_LESS_OR_EQUAL` when reading registers on a manually-halted core, thanks to [@munraimix](https://github.com/munraimix) ([link](https://github.com/HyperDbg/HyperDbg/pull/648))
+- Fix the error for referencing guest registers twice in both KD and VMX codes ([link](https://github.com/HyperDbg/HyperDbg/commit/d37352fd7ee3b7c9a4a5383c847f210dc6c3d716))
+- Fix handle compound assignment to struct members ([link](https://github.com/HyperDbg/HyperDbg/commit/9d60a4ddd484603043ad74fcc665899af7f4ff21))
+- Updated semantic scripts by adding test cases for the structs in the script engine ([link](https://github.com/HyperDbg/HyperDbg/pull/651))
+
 ## [0.21.0.0] - 2026-07-05
 New release of the HyperDbg Debugger.
 
@@ -127,7 +222,7 @@ New release of the HyperDbg Debugger.
 New release of the HyperDbg Debugger. All credit for this release goes to [@xmaple555](https://github.com/xmaple555).
 
 ### Added
-- Added 1D and 2D arrays (multidimensional arrays) in the script engine ([link](https://docs.hyperdbg.org/commands/scripting-language/variables-and-assignments#multidimensional-array))([link](https://github.com/HyperDbg/HyperDbg/pull/554))
+- Added 1D and 2D arrays (multidimensional arrays) in the script engine ([link](https://docs.hyperdbg.org/commands/scripting-language/structures-and-arrays))([link](https://github.com/HyperDbg/HyperDbg/pull/554))
 - Added compound assignments in the script engine ([link](https://docs.hyperdbg.org/commands/scripting-language/variables-and-assignments#compound-assignment))([link](https://github.com/HyperDbg/HyperDbg/pull/554))
 - Added multiple assignments in the script engine ([link](https://docs.hyperdbg.org/commands/scripting-language/variables-and-assignments#multiple-assignment))([link](https://github.com/HyperDbg/HyperDbg/pull/554))
 

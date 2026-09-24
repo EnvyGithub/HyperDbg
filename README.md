@@ -9,7 +9,7 @@
 # HyperDbg Debugger
 
 <a href="https://hyperdbg.org/"><img align="right" width="150" height="150" src="https://github.com/HyperDbg/graphics/raw/master/Art%20Board/HyperDbg-Cat.Circle.Compressed.png" alt="HyperDbg Debugger"></a></br>
-**HyperDbg Debugger** is a free (as in free beer), open-source, community-driven, hypervisor-assisted, user-mode, and kernel-mode Windows debugger with a focus on using modern hardware technologies. It is a debugger designed for analyzing, fuzzing, and reversing.
+**HyperDbg Debugger** is an open-source, hypervisor-assisted debugger for **Windows** (**Linux** support is currently under development!) with support for both user-mode and kernel-mode (native) debugging. It is built for reverse engineering, fuzzing, and advanced system analysis using modern hardware virtualization and tracing features.
 
 You can follow **HyperDbg** on **[Twitter](https://twitter.com/HyperDbg)** or **[Mastodon](https://infosec.exchange/@hyperdbg)** to get notified about new releases, or join any of the HyperDbg groups, where you can ask developers and open-source reversing enthusiasts for help setting up and using HyperDbg.
 
@@ -19,16 +19,21 @@ You can follow **HyperDbg** on **[Twitter](https://twitter.com/HyperDbg)** or **
 
 ## Description
 
-**HyperDbg** is designed with a focus on using modern hardware technologies to provide new features to the debuggers' world. It operates on top of Windows by virtualizing an already running system using Intel VT-x and EPT. This debugger aims not to use any APIs and software debugging mechanisms, but instead, it uses Second Layer Page Table (a.k.a. Extended Page Table or EPT) extensively to monitor both kernel and user executions.
-<p align="center"><a href="https://hyperdbg.org/"><img align="center" width="600" height="500" src="https://raw.githubusercontent.com/HyperDbg/graphics/master/Art%20Board/Artboard%201.png" alt="HyperDbg Debugger"></a></br>
-</p>
-HyperDbg comes with features like hidden hooks, which are as fast as old inline hooks, but also stealth. It mimics hardware debug registers for (read & write) to a specific location, but this time invisible for both the Windows kernel and the programs, and of course, without any limitation in size or count!
+**HyperDbg** is built around modern hardware virtualization technologies to introduce capabilities beyond those of traditional debuggers. It runs on top of the operating system by virtualizing an already running system using Intel VT-x and Extended Page Tables (EPT). By combining virtualization with advanced tracing technologies such as Intel Processor Trace (Intel PT), **HyperDbg** provides powerful tracing and **V**irtual **M**achine **I**ntrospection (**VMI**) capabilities.
 
-Using TLB-splitting and having features such as measuring code coverage and monitoring all mov(s) to/from memory by a function, makes HyperDbg a unique debugger.
+<p align="center"><a href="https://hyperdbg.org/"><img align="center" width="600" height="500" src="https://raw.githubusercontent.com/HyperDbg/graphics/master/Art%20Board/Artboard%201.png" alt="HyperDbg Debugger"></a></br></p>
 
-Although it has novel features, HyperDbg tries to be as stealthy as possible. It doesn’t use any debugging APIs to debug Windows or any application, so classic anti-debugging methods won’t detect it. Also, it resists the exploitation of time delta methods (e.g., RDTSC/RDTSCP) to detect the presence of hypervisors, therefore making it much harder for applications, packers, protectors, malware, anti-cheat engines, etc. to discover the debugger.
+### Core Capabilities
 
-## Why HyperDbg?
+**HyperDbg** provides a wide range of advanced debugging features, including several types of [EPT-based hidden hooks](https://docs.hyperdbg.org/commands/extension-commands/epthook). It can emulate hardware data breakpoints for [monitoring memory](https://docs.hyperdbg.org/commands/extension-commands/monitor) reads, writes, and executions at specific address ranges while remaining transparent to both the operating system and target applications. Unlike [hardware debug registers](https://docs.hyperdbg.org/commands/extension-commands/dr), these monitoring facilities are not limited by the number of available debug registers or size constraints. Moreover, **HyperDbg** is capable of [tracking execution](https://docs.hyperdbg.org/commands/debugging-commands/i) across different privilege levels, including transitions from user mode to kernel mode (e.g., through system calls, heaven's gate, faults, [exceptions](https://docs.hyperdbg.org/commands/extension-commands/exception), and [interrupts](https://docs.hyperdbg.org/commands/extension-commands/interrupt)), from the kernel to device drivers, and from kernel mode back to user mode, enabling comprehensive analysis of the entire execution flow.
+
+In addition, **HyperDbg** supports [system call hooking](https://docs.hyperdbg.org/commands/extension-commands/syscall), [control flow tracing](https://docs.hyperdbg.org/commands/extension-commands/pt) through hardware tracing features, and comprehensive monitoring of I/O operations, including both [Memory-Mapped I/O (MMIO)](https://docs.hyperdbg.org/commands/extension-commands/monitor) and [Port-Mapped I/O](https://docs.hyperdbg.org/commands/extension-commands/ioin) ([PMIO](https://docs.hyperdbg.org/commands/extension-commands/ioout)), enabling detailed analysis of device interactions and external peripherals.
+
+Beyond that, **HyperDbg** includes a large collection of additional [events](https://docs.hyperdbg.org/commands/extension-commands) specifically designed for reverse engineering, malware analysis, and low-level program analysis. For a complete list of supported events and their documentation, refer to the [full feature list](https://github.com/HyperDbg/HyperDbg#unique-features).
+
+**HyperDbg** is designed to operate as stealthily as possible. It does not use any debugging APIs to debug the operating system or any application, so classic anti-debugging methods will not detect it. It also includes a [specialized module](https://fosdem.org/2026/schedule/event/CDPRDX-invisible_hypervisors_debugging_with_hyperdbg/) designed to enhance its stealth capabilities. This module monitors attempts to detect the presence of a hypervisor or debugger and applies various techniques to first report and then mitigate or bypass such detection mechanisms. Although complete transparency cannot be guaranteed in all scenarios, these features significantly increase the difficulty of detecting **HyperDbg**, making it substantially harder for applications, packers, software protectors, malware, anti-cheat systems, and other security mechanisms to identify its presence.
+
+### Why HyperDbg?
 
 HyperDbg is harder to set up and use, and also requires deeper low-level system knowledge compared to traditional debuggers. However, it provides two major advantages:
 

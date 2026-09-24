@@ -31,7 +31,7 @@ MetaDispatchEventInstrumentationTrace(PROCESSOR_DEBUGGING_STATE * DbgState)
                                                VMM_CALLBACK_CALLING_STAGE_PRE_EVENT_EMULATION,
                                                (PVOID)DEBUGGER_EVENT_TRACE_TYPE_STEP_IN,
                                                &PostEventTriggerReq,
-                                               DbgState->Regs);
+                                               VmFuncGetGuestRegs(DbgState->CoreId));
 
     //
     // *** short-circuiting doesn't make sense for this kind of event! ***

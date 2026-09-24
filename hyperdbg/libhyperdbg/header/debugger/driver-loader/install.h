@@ -39,6 +39,14 @@
 //					Functions                   //
 //////////////////////////////////////////////////
 
+//
+// The low-level driver (un)registration helpers talk to the Windows Service
+// Control Manager (SC_HANDLE) directly, so they are Windows-only. On Linux the
+// SC_HANDLE type does not exist and these are never referenced (ManageDriver is
+// the only public entry point, and its Linux stub does nothing). See
+// install-linux.cpp.
+//
+#ifdef _WIN32
 BOOLEAN
 InstallDriver(SC_HANDLE SchSCManager, LPCTSTR DriverName, LPCTSTR ServiceExe);
 
@@ -50,6 +58,7 @@ StartDriver(SC_HANDLE SchSCManager, LPCTSTR DriverName);
 
 BOOLEAN
 StopDriver(SC_HANDLE SchSCManager, LPCTSTR DriverName);
+#endif // _WIN32
 
 BOOLEAN
 ManageDriver(_In_ LPCTSTR DriverName, _In_ LPCTSTR ServiceName, _In_ UINT16 Function);

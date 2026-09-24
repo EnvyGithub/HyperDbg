@@ -12,7 +12,7 @@
 #pragma once
 
 #if defined(__linux__)
-#    include "../../../../include/SDK/HyperDbgSdk.h"
+#    include "../../../../../include/SDK/HyperDbgSdk.h"
 #endif // defined(__linux__)
 
 //////////////////////////////////////////////////

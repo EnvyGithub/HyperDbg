@@ -163,3 +163,43 @@ TransparentCheckAndTrapFlagAfterVmexit()
     //
     g_Callbacks.HvHandleTrapFlag();
 }
+
+/**
+ * @brief Handle anti-debugging method of overflowing RIP in non-long mode when resuming VM exit
+ * @brief ResumeRIP
+ *
+ * @return VOID
+ */
+VOID
+TransparentCheckOverflowingRipNonLongMode(UINT64 * ResumeRIP)
+{
+    if ((g_TransparentEvadeMask & TRANSPARENT_EVADE_CHECK_NON_LONG_MODE_RIP_OVERFLOW) == 0)
+    {
+        return;
+    }
+
+    //
+    // If needs to be adjusted, the following function will adjust it (in non-long mode)
+    //
+    g_Callbacks.HvHandleNonLongModeResumingRipOverflow(ResumeRIP);
+}
+
+/**
+ * @brief Handle VMRESUME footprints
+ * @brief ResumeRIP
+ *
+ * @return VOID
+ */
+VOID
+TransparentCheckAndMitigateVmResumeFootprints(UINT64 * ResumeRIP)
+{
+    //
+    // Handle trap flag after VM-exit
+    //
+    TransparentCheckAndTrapFlagAfterVmexit();
+
+    //
+    // Handle overflowing RIP in non-long mode when resuming VM exit
+    //
+    TransparentCheckOverflowingRipNonLongMode(ResumeRIP);
+}

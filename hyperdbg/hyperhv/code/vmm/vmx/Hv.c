@@ -306,6 +306,14 @@ HvResumeToNextInstruction()
 
     ResumeRIP = CurrentRIP + ExitInstructionLength;
 
+    //
+    // If we are in transparent-mode, then we need to handle the VMRESUME artifacts
+    //
+    if (g_CheckForFootprints)
+    {
+        TransparentCheckAndMitigateVmResumeFootprints(&ResumeRIP);
+    }
+
     VmxVmwrite64(VMCS_GUEST_RIP, ResumeRIP);
 }
 
@@ -1400,7 +1408,7 @@ HvInitVmm(VMM_CALLBACKS * VmmCallbacks)
     //
     // We have a zeroed guest state
     //
-    ProcessorsCount = KeQueryActiveProcessorCount(0);
+    ProcessorsCount = PlatformCpuGetActiveProcessorCount();
 
     //
     // Set the core's id and initialize memory mapper
@@ -1784,10 +1792,34 @@ HvHandleTrapFlag()
         // We also must clear this flag in case of instruction emulation to achieve
         // correctness of the single-step exception
         //
-        if (InterruptibilityState.BlockingByMovSs)
+        if (InterruptibilityState.BlockingByMovSs || InterruptibilityState.BlockingBySti)
         {
             InterruptibilityState.BlockingByMovSs = 0;
+            InterruptibilityState.BlockingBySti   = 0;
             HvSetInterruptibilityState(InterruptibilityState.AsUInt);
         }
+    }
+}
+
+/**
+ * @brief Handle the case of non-long mode resuming of RIP overflow
+ * @param ResumeRIP
+ *
+ * @return VOID
+ */
+VOID
+HvHandleNonLongModeResumingRipOverflow(UINT64 * ResumeRIP)
+{
+    VMX_SEGMENT_ACCESS_RIGHTS Cs = {0};
+
+    //
+    // If the processor not in the long mode, just going to the next instruction may cause guest
+    // invalid state in case of RIP is overflown
+    //
+    VmxVmread32P(VMCS_GUEST_CS_ACCESS_RIGHTS, &Cs.AsUInt);
+
+    if (!Cs.LongMode)
+    {
+        *ResumeRIP = *ResumeRIP & 0xFFFFFFFF;
     }
 }

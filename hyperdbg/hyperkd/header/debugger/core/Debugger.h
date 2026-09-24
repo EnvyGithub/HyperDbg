@@ -303,16 +303,35 @@ BOOLEAN
 DebuggerClearEvent(UINT64 Tag, BOOLEAN InputFromVmxRoot, BOOLEAN PoolManagerAllocatedMemory);
 
 VOID
-DebuggerPerformActions(PROCESSOR_DEBUGGING_STATE * DbgState, DEBUGGER_EVENT * Event, DEBUGGER_TRIGGERED_EVENT_DETAILS * EventTriggerDetail);
+DebuggerPerformActions(PROCESSOR_DEBUGGING_STATE *        DbgState,
+                       DEBUGGER_EVENT *                   Event,
+                       DEBUGGER_TRIGGERED_EVENT_DETAILS * EventTriggerDetail,
+                       GUEST_REGS *                       Regs);
 
 VOID
-DebuggerPerformBreakToDebugger(PROCESSOR_DEBUGGING_STATE * DbgState, DEBUGGER_EVENT_ACTION * Action, DEBUGGER_TRIGGERED_EVENT_DETAILS * EventTriggerDetail);
+DebuggerPerformBreakToDebugger(PROCESSOR_DEBUGGING_STATE *        DbgState,
+                               DEBUGGER_EVENT_ACTION *            Action,
+                               DEBUGGER_TRIGGERED_EVENT_DETAILS * EventTriggerDetail,
+                               GUEST_REGS *                       Regs);
+
+VOID
+DebuggerPerformBreakToDebuggerByCoreId(UINT32                             CoreId,
+                                       DEBUGGER_EVENT_ACTION *            Action,
+                                       DEBUGGER_TRIGGERED_EVENT_DETAILS * EventTriggerDetail,
+                                       GUEST_REGS *                       Regs);
 
 BOOLEAN
-DebuggerPerformRunScript(PROCESSOR_DEBUGGING_STATE * DbgState, DEBUGGER_EVENT_ACTION * Action, DEBUGGEE_SCRIPT_PACKET * ScriptDetails, DEBUGGER_TRIGGERED_EVENT_DETAILS * EventTriggerDetail);
+DebuggerPerformRunScript(PROCESSOR_DEBUGGING_STATE *        DbgState,
+                         DEBUGGER_EVENT_ACTION *            Action,
+                         DEBUGGEE_SCRIPT_PACKET *           ScriptDetails,
+                         DEBUGGER_TRIGGERED_EVENT_DETAILS * EventTriggerDetail,
+                         GUEST_REGS *                       Regs);
 
 VOID
-DebuggerPerformRunTheCustomCode(PROCESSOR_DEBUGGING_STATE * DbgState, DEBUGGER_EVENT_ACTION * Action, DEBUGGER_TRIGGERED_EVENT_DETAILS * EventTriggerDetail);
+DebuggerPerformRunTheCustomCode(PROCESSOR_DEBUGGING_STATE *        DbgState,
+                                DEBUGGER_EVENT_ACTION *            Action,
+                                DEBUGGER_TRIGGERED_EVENT_DETAILS * EventTriggerDetail,
+                                GUEST_REGS *                       Regs);
 
 PLIST_ENTRY
 DebuggerGetEventListByEventType(VMM_EVENT_TYPE_ENUM EventType);

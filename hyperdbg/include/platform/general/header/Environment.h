@@ -43,12 +43,35 @@
 #    define _In_reads_bytes_(x)
 #    define _Out_writes_bytes_(x)
 #    define _Inout_updates_bytes_all_(x)
+#    define _In_reads_bytes_opt_(x)
+#    define _Success_(x)
+#    define _Ret_maybenull_
+#    define _Must_inspect_result_
+#    define _Use_decl_annotations_
+#    define _Analysis_assume_(x)
+
+// MSVC extended-attribute keyword. The only forms used in the shared tree are
+// dllexport/dllimport (the per-module import/export plumbing, which collapses to
+// nothing in the single Linux module) and deprecated (a harmless hint). No
+// __declspec(align(...)) exists in kernel scope, so emptying it is safe.
+#    define __declspec(x)
+
+// The following libc headers exist only in user space; a Linux KERNEL build
+// (HYPERDBG_KERNEL_MODE) has no libc, so they are guarded out there. User-mode
+// Linux is unaffected — HYPERDBG_KERNEL_MODE is never defined in that path.
+#    ifndef HYPERDBG_KERNEL_MODE
 
 // wchar_t is a C++ built-in but needs this header in C
-#    include <wchar.h>
+#        include <wchar.h>
 
 // POSIX sleep primitives (usleep) backing the Win32 Sleep() shim below
-#    include <unistd.h>
+#        include <unistd.h>
+
+// DECIMAL_DIG and the FLT/DBL limits (ISO C99 <float.h>); MSVC exposes these
+// transitively through its CRT/pch, glibc needs the explicit include
+#        include <float.h>
+
+#    endif // !HYPERDBG_KERNEL_MODE
 
 // Windows string/char types
 typedef char         TCHAR;
@@ -60,6 +83,19 @@ typedef const char * PCSTR;
 typedef char *       PSTR;
 typedef short *      PWCHAR;
 
+// Windows generic type aliases (winnt.h): CONST is the const qualifier keyword,
+// FLOAT is a plain float. Kept so shared source using the Win32 spellings
+// compiles unchanged.
+#    define CONST const
+typedef float FLOAT;
+
+// MSVC secure-CRT truncation sentinel and status code (crtdefs.h / errno.h).
+// _TRUNCATE passed as the count to strncpy_s and friends means "copy as much as
+// fits and always null-terminate"; STRUNCATE is what they return when that
+// truncation actually happened. Kept at their canonical MSVC values.
+#    define _TRUNCATE ((SIZE_T)-1)
+#    define STRUNCATE 80
+
 // Windows socket type (Linux sockets are plain int)
 typedef int SOCKET;
 #    define INVALID_SOCKET ((SOCKET)(-1))
@@ -67,12 +103,18 @@ typedef int SOCKET;
 
 // Windows calling convention (no-op on Linux)
 #    define WINAPI
+#    define NTAPI
+#    define __stdcall
+#    define __cdecl
+#    define __fastcall
 
 // Windows module handle (equivalent to dlopen's void * on Linux)
 typedef void * HMODULE;
 
 // Misc Windows macros
 #    define UNREFERENCED_PARAMETER(P) ((void)(P))
+
+// NT/WDK types, status codes and ntdef macros: see WdkTypes.h
 
 // Win32 wait/event constants (used by the cross-platform sync wrappers)
 #    define INFINITE      0xFFFFFFFF
@@ -90,7 +132,39 @@ typedef void * HMODULE;
 #    define CTRL_LOGOFF_EVENT   5
 #    define CTRL_SHUTDOWN_EVENT 6
 
-// Win32 Sleep(milliseconds) -> POSIX usleep(microseconds)
-#    define Sleep(Milliseconds) usleep((useconds_t)(Milliseconds) * 1000)
+// Win32 process access rights / creation flags / exit-code sentinel, kept at
+// their Windows values so the user-debugger process call sites compile
+// unchanged. The underlying process wrappers are stubbed on Linux for now.
+#    define PROCESS_TERMINATE                 0x0001
+#    define PROCESS_QUERY_LIMITED_INFORMATION 0x1000
+#    define CREATE_SUSPENDED                  0x00000004
+#    define CREATE_NEW_CONSOLE                0x00000010
+#    define STILL_ACTIVE                      0x00000103
+
+//
+// Win32 system error codes referenced by the shared device-open error handling
+//
+#    define ERROR_ACCESS_DENIED 5
+#    define ERROR_GEN_FAILURE   31
+
+// Win32 serial baud-rate constants (winbase.h CBR_*), kept at their Windows
+// values so the shared serial-config / baud-rate-validation code compiles
+// unchanged. Each constant equals its baud rate; actual Linux serial I/O is
+// handled by the platform-serial layer (termios impl still TODO).
+#    define CBR_110    110
+#    define CBR_300    300
+#    define CBR_600    600
+#    define CBR_1200   1200
+#    define CBR_2400   2400
+#    define CBR_4800   4800
+#    define CBR_9600   9600
+#    define CBR_14400  14400
+#    define CBR_19200  19200
+#    define CBR_38400  38400
+#    define CBR_56000  56000
+#    define CBR_57600  57600
+#    define CBR_115200 115200
+#    define CBR_128000 128000
+#    define CBR_256000 256000
 
 #endif // HYPERDBG_ENV_LINUX

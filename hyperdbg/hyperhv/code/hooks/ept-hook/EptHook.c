@@ -180,7 +180,7 @@ EptHookReservePreallocatedPoolsForEptHooks(UINT32 Count)
     //
     // Get number of processors
     //
-    ProcessorsCount = KeQueryActiveProcessorCount(0);
+    ProcessorsCount = PlatformCpuGetActiveProcessorCount();
 
     //
     // Request pages to be allocated for converting 2MB to 4KB pages
@@ -220,7 +220,7 @@ EptHookAllocateExtraHookingPagesForMemoryMonitorsAndExecEptHooks(UINT32 Count)
     //
     // Get number of processors
     //
-    ProcessorsCount = KeQueryActiveProcessorCount(0);
+    ProcessorsCount = PlatformCpuGetActiveProcessorCount();
 
     //
     // Request pages to be allocated for converting 2MB to 4KB pages
@@ -264,7 +264,7 @@ EptHookCreateHookPage(_Inout_ VIRTUAL_MACHINE_STATE * VCpu,
     //
     // Get number of processors
     //
-    ProcessorsCount = KeQueryActiveProcessorCount(0);
+    ProcessorsCount = PlatformCpuGetActiveProcessorCount();
 
     //
     // Translate the page from a physical address to virtual so we can read its memory.
@@ -369,9 +369,14 @@ EptHookCreateHookPage(_Inout_ VIRTUAL_MACHINE_STATE * VCpu,
     //
     MemoryMapperReadMemorySafe((UINT64)VirtualTarget, &HookedPage->FakePageContents, PAGE_SIZE);
 
-    // Preserve the first breakpoint's real byte. Removing it while another
-    // breakpoint remains on this page restores from this slot instead of
-    // removing the whole EPT hook.
+    //
+    // Save the original byte of the first breakpoint
+    //
+    // It has to be read after the page contents are copied and before the 0xcc is
+    // written over it. EptHookUnHookSingleAddressHiddenBreakpoint() restores this
+    // entry like any other one, so leaving it at the zero the pool manager hands
+    // out would write a 0x00 over the target instruction instead of restoring it
+    //
     HookedPage->PreviousBytesOnBreakpointAddresses[0] = *(BYTE *)TargetAddressInFakePageContent;
 
     //
@@ -681,7 +686,7 @@ EptHookPerformHook(PVOID   TargetAddress,
         //
         // Perform the direct VMCALL
         //
-        if (DirectVmcallSetHiddenBreakpointHook(KeGetCurrentProcessorNumberEx(NULL), &DirectVmcallOptions) == STATUS_SUCCESS)
+        if (DirectVmcallSetHiddenBreakpointHook(PlatformCpuGetCurrentProcessorNumber(), &DirectVmcallOptions) == STATUS_SUCCESS)
         {
             LogDebugInfo("Hidden breakpoint hook applied from VMX Root Mode");
 
@@ -1373,7 +1378,7 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
     //
     // Get number of processors
     //
-    ProcessorsCount = KeQueryActiveProcessorCount(0);
+    ProcessorsCount = PlatformCpuGetActiveProcessorCount();
 
     //
     // Translate the page from a physical address to virtual so we can read its memory.
@@ -2492,7 +2497,7 @@ EptHookUnHookSingleAddressDetoursAndMonitor(PEPT_HOOKED_PAGE_DETAIL             
         // Remove it in all the cores
         //
         TargetUnhookingDetails->CallerNeedsToRestoreEntryAndInvalidateEpt = FALSE;
-        KeGenericCallDpc(DpcRoutineRemoveHookAndInvalidateSingleEntryOnAllCores, TargetUnhookingDetails);
+        PlatformDpcGenericCall(DpcRoutineRemoveHookAndInvalidateSingleEntryOnAllCores, TargetUnhookingDetails);
     }
 
     //
@@ -2742,7 +2747,7 @@ EptHookUnHookSingleAddressHiddenBreakpoint(PEPT_HOOKED_PAGE_DETAIL             H
                     // Remove the hook entirely on all cores
                     //
                     TargetUnhookingDetails->CallerNeedsToRestoreEntryAndInvalidateEpt = FALSE;
-                    KeGenericCallDpc(DpcRoutineRemoveHookAndInvalidateSingleEntryOnAllCores, TargetUnhookingDetails);
+                    PlatformDpcGenericCall(DpcRoutineRemoveHookAndInvalidateSingleEntryOnAllCores, TargetUnhookingDetails);
                 }
 
                 //
@@ -2882,7 +2887,7 @@ EptHookPerformUnHookSingleAddress(UINT64                              VirtualAdd
     //
     if (ApplyDirectlyFromVmxRoot || ProcessId == DEBUGGER_EVENT_APPLY_TO_ALL_PROCESSES || ProcessId == 0)
     {
-        ProcessId = HANDLE_TO_UINT32(PsGetCurrentProcessId());
+        ProcessId = HANDLE_TO_UINT32(PlatformProcessGetCurrentProcessId());
     }
 
     //
@@ -3102,7 +3107,7 @@ EptHookUnHookAll()
     //
     // Remove it in all the cores
     //
-    KeGenericCallDpc(DpcRoutineRemoveHookAndInvalidateAllEntriesOnAllCores, 0x0);
+    PlatformDpcGenericCall(DpcRoutineRemoveHookAndInvalidateAllEntriesOnAllCores, 0x0);
 
     //
     // In the case of unhooking all pages, we remove the hooked
@@ -3174,7 +3179,7 @@ EptHook2GeneralDetourEventHandler(PGUEST_REGS Regs, PVOID CalledFrom)
     //
     // Create a temporary VCpu
     //
-    VIRTUAL_MACHINE_STATE * VCpu = &g_GuestState[KeGetCurrentProcessorNumberEx(NULL)];
+    VIRTUAL_MACHINE_STATE * VCpu = &g_GuestState[PlatformCpuGetCurrentProcessorNumber()];
 
     //
     // Set the register for the temporary VCpu

@@ -53,6 +53,9 @@ VOID
 ShowMemoryCommandDB(UCHAR * OutputBuffer, UINT32 Size, UINT64 Address, DEBUGGER_READ_MEMORY_TYPE MemoryType, UINT64 Length);
 
 VOID
+ShowMemoryCommandDW(UCHAR * OutputBuffer, UINT32 Size, UINT64 Address, DEBUGGER_READ_MEMORY_TYPE MemoryType, UINT64 Length);
+
+VOID
 ShowMemoryCommandDD(UCHAR * OutputBuffer, UINT32 Size, UINT64 Address, DEBUGGER_READ_MEMORY_TYPE MemoryType, UINT64 Length);
 
 VOID
@@ -60,6 +63,18 @@ ShowMemoryCommandDC(UCHAR * OutputBuffer, UINT32 Size, UINT64 Address, DEBUGGER_
 
 VOID
 ShowMemoryCommandDQ(UCHAR * OutputBuffer, UINT32 Size, UINT64 Address, DEBUGGER_READ_MEMORY_TYPE MemoryType, UINT64 Length);
+
+VOID
+ShowMemoryCommandDDS(UCHAR * OutputBuffer, UINT32 Size, UINT64 Address, DEBUGGER_READ_MEMORY_TYPE MemoryType, UINT64 Length);
+
+VOID
+ShowMemoryCommandDPS(UCHAR * OutputBuffer, UINT32 Size, UINT64 Address, DEBUGGER_READ_MEMORY_TYPE MemoryType, UINT64 Length);
+
+VOID
+ShowMemoryCommandDQS(UCHAR * OutputBuffer, UINT32 Size, UINT64 Address, DEBUGGER_READ_MEMORY_TYPE MemoryType, UINT64 Length);
+
+VOID
+ShowMemoryCommandDA(UCHAR * OutputBuffer, UINT32 Size, UINT64 Address, DEBUGGER_READ_MEMORY_TYPE MemoryType, UINT64 Length);
 
 VOID
 CommandPteShowResults(UINT64 TargetVa, PDEBUGGER_READ_PAGE_TABLE_ENTRIES_DETAILS PteRead);
@@ -119,15 +134,6 @@ HyperDbgGetImmediateValueOnEaxForSyscallNumber(
     UINT64  BuffLength,
     BOOLEAN Isx86_64);
 
-VOID
-HyperDbgShowMemoryOrDisassemble(DEBUGGER_SHOW_MEMORY_STYLE   Style,
-                                UINT64                       Address,
-                                DEBUGGER_READ_MEMORY_TYPE    MemoryType,
-                                DEBUGGER_READ_READING_TYPE   ReadingType,
-                                UINT32                       Pid,
-                                UINT32                       Size,
-                                PDEBUGGER_DT_COMMAND_OPTIONS DtDetails);
-
 BOOLEAN
 HyperDbgReadMemory(UINT64                              TargetAddress,
                    DEBUGGER_READ_MEMORY_TYPE           MemoryType,
@@ -138,6 +144,22 @@ HyperDbgReadMemory(UINT64                              TargetAddress,
                    DEBUGGER_READ_MEMORY_ADDRESS_MODE * AddressMode,
                    BYTE *                              TargetBufferToStore,
                    UINT32 *                            ReturnLength);
+
+VOID
+HyperDbgShowMemoryOrDisassemble(DEBUGGER_SHOW_MEMORY_STYLE   Style,
+                                UINT64                       Address,
+                                DEBUGGER_READ_MEMORY_TYPE    MemoryType,
+                                DEBUGGER_READ_READING_TYPE   ReadingType,
+                                UINT32                       Pid,
+                                UINT32                       Size,
+                                PDEBUGGER_DT_COMMAND_OPTIONS DtDetails);
+
+VOID
+HyperDbgShowMemoryLinkedList(UINT64                    TargetAddress,
+                             DEBUGGER_READ_MEMORY_TYPE MemoryType,
+                             UINT32                    Pid,
+                             UINT64                    Offset,
+                             UINT64                    MaxNodes);
 
 VOID
 InitializeCommandsDictionary();
@@ -292,6 +314,15 @@ typedef std::map<std::string, COMMAND_DETAIL> CommandType;
     DEBUGGER_COMMAND_ATTRIBUTE_ABSOLUTE_LOCAL
 
 #define DEBUGGER_COMMAND_FLUSH_ATTRIBUTES \
+    DEBUGGER_COMMAND_ATTRIBUTE_LOCAL_COMMAND_IN_DEBUGGER_MODE
+
+#define DEBUGGER_COMMAND_USER_CPUID_ATTRIBUTES \
+    DEBUGGER_COMMAND_ATTRIBUTE_LOCAL_COMMAND_IN_DEBUGGER_MODE
+
+#define DEBUGGER_COMMAND_USER_IN_ATTRIBUTES \
+    DEBUGGER_COMMAND_ATTRIBUTE_LOCAL_COMMAND_IN_DEBUGGER_MODE
+
+#define DEBUGGER_COMMAND_USER_OUT_ATTRIBUTES \
     DEBUGGER_COMMAND_ATTRIBUTE_LOCAL_COMMAND_IN_DEBUGGER_MODE
 
 #define DEBUGGER_COMMAND_UNLOAD_ATTRIBUTES NULL
@@ -636,6 +667,15 @@ CommandSettings(vector<CommandToken> CommandTokens, string Command);
 
 VOID
 CommandFlush(vector<CommandToken> CommandTokens, string Command);
+
+VOID
+CommandUserCpuid(vector<CommandToken> CommandTokens, string Command);
+
+VOID
+CommandUserIn(vector<CommandToken> CommandTokens, string Command);
+
+VOID
+CommandUserOut(vector<CommandToken> CommandTokens, string Command);
 
 VOID
 CommandPause(vector<CommandToken> CommandTokens, string Command);

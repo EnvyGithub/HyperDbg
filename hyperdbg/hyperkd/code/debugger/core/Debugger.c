@@ -55,7 +55,7 @@ DebuggerSetLastError(UINT32 LastError)
 BOOLEAN
 DebuggerInitializeScriptEngine()
 {
-    ULONG                       ProcessorsCount      = KeQueryActiveProcessorCount(0);
+    ULONG                       ProcessorsCount      = PlatformCpuGetActiveProcessorCount();
     PROCESSOR_DEBUGGING_STATE * CurrentDebuggerState = NULL;
 
     //
@@ -178,7 +178,6 @@ DebuggerInitializeVmmOperations()
     InitializeListHead(&g_Events->ControlRegisterModifiedEventsHead);
     InitializeListHead(&g_Events->XsetbvInstructionExecutionEventsHead);
 
-
     //
     // Initialize NMI broadcasting mechanism
     //
@@ -194,7 +193,7 @@ DebuggerInitializeVmmOperations()
     //
     VmFuncSetTriggerEventForCpuids(FALSE);
 
-        //
+    //
     // Pre-allocate pools for possible EPT hooks
     //
     ConfigureEptHookReservePreallocatedPoolsForEptHooks(MAXIMUM_NUMBER_OF_INITIAL_PREALLOCATED_EPT_HOOKS);
@@ -207,7 +206,6 @@ DebuggerInitializeVmmOperations()
         // BTW, won't fail the starting phase because of this
         //
     }
-
 
     //
     // Enabled Debugger VMX Events
@@ -226,7 +224,7 @@ DebuggerInitializeVmmOperations()
 BOOLEAN
 DebuggerInitialize()
 {
-    ULONG ProcessorsCount = KeQueryActiveProcessorCount(0);
+    ULONG ProcessorsCount = PlatformCpuGetActiveProcessorCount();
 
     //
     // Also allocate the debugging state
@@ -356,7 +354,7 @@ DebuggerUninitialize()
     ULONG                       ProcessorsCount;
     PROCESSOR_DEBUGGING_STATE * CurrentDebuggerState = NULL;
 
-    ProcessorsCount = KeQueryActiveProcessorCount(0);
+    ProcessorsCount = PlatformCpuGetActiveProcessorCount();
 
     //
     // Free the Pool manager
@@ -1173,12 +1171,7 @@ DebuggerTriggerEvents(VMM_EVENT_TYPE_ENUM                   EventType,
     //
     // Find the debugging state structure
     //
-    DbgState = &g_DbgState[KeGetCurrentProcessorNumberEx(NULL)];
-
-    //
-    // Set the registers for debug state
-    //
-    DbgState->Regs = Regs;
+    DbgState = &g_DbgState[PlatformCpuGetCurrentProcessorNumber()];
 
     //
     // Find the debugger events list base on the type of the event
@@ -1218,7 +1211,7 @@ DebuggerTriggerEvents(VMM_EVENT_TYPE_ENUM                   EventType,
         //
         // Check if this event is for this process or not
         //
-        if (CurrentEvent->ProcessId != DEBUGGER_EVENT_APPLY_TO_ALL_PROCESSES && CurrentEvent->ProcessId != HANDLE_TO_UINT32(PsGetCurrentProcessId()))
+        if (CurrentEvent->ProcessId != DEBUGGER_EVENT_APPLY_TO_ALL_PROCESSES && CurrentEvent->ProcessId != HANDLE_TO_UINT32(PlatformProcessGetCurrentProcessId()))
         {
             //
             // This event is not related to either our process or all processes
@@ -1539,7 +1532,7 @@ DebuggerTriggerEvents(VMM_EVENT_TYPE_ENUM                   EventType,
             //
             // Because the user might change the nonvolatile registers, we save fastcall nonvolatile registers
             //
-            if (AsmDebuggerConditionCodeHandler((UINT64)DbgState->Regs, (UINT64)Context, (UINT64)ConditionFunc) == 0)
+            if (AsmDebuggerConditionCodeHandler((UINT64)Regs, (UINT64)Context, (UINT64)ConditionFunc) == 0)
             {
                 //
                 // The condition function returns null, mean that the
@@ -1564,7 +1557,7 @@ DebuggerTriggerEvents(VMM_EVENT_TYPE_ENUM                   EventType,
         //
         // perform the actions
         //
-        DebuggerPerformActions(DbgState, CurrentEvent, &EventTriggerDetail);
+        DebuggerPerformActions(DbgState, CurrentEvent, &EventTriggerDetail, Regs);
     }
 
     //
@@ -1597,13 +1590,15 @@ DebuggerTriggerEvents(VMM_EVENT_TYPE_ENUM                   EventType,
  * @param DbgState The state of the debugger on the current core
  * @param Event Event Object
  * @param EventTriggerDetail Event trigger details
+ * @param Regs Registers
  *
  * @return VOID
  */
 VOID
 DebuggerPerformActions(PROCESSOR_DEBUGGING_STATE *        DbgState,
                        DEBUGGER_EVENT *                   Event,
-                       DEBUGGER_TRIGGERED_EVENT_DETAILS * EventTriggerDetail)
+                       DEBUGGER_TRIGGERED_EVENT_DETAILS * EventTriggerDetail,
+                       GUEST_REGS *                       Regs)
 {
     PLIST_ENTRY TempList = 0;
 
@@ -1623,19 +1618,19 @@ DebuggerPerformActions(PROCESSOR_DEBUGGING_STATE *        DbgState,
         {
         case BREAK_TO_DEBUGGER:
 
-            DebuggerPerformBreakToDebugger(DbgState, CurrentAction, EventTriggerDetail);
+            DebuggerPerformBreakToDebugger(DbgState, CurrentAction, EventTriggerDetail, Regs);
 
             break;
 
         case RUN_SCRIPT:
 
-            DebuggerPerformRunScript(DbgState, CurrentAction, NULL, EventTriggerDetail);
+            DebuggerPerformRunScript(DbgState, CurrentAction, NULL, EventTriggerDetail, Regs);
 
             break;
 
         case RUN_CUSTOM_CODE:
 
-            DebuggerPerformRunTheCustomCode(DbgState, CurrentAction, EventTriggerDetail);
+            DebuggerPerformRunTheCustomCode(DbgState, CurrentAction, EventTriggerDetail, Regs);
 
             break;
 
@@ -1656,13 +1651,16 @@ DebuggerPerformActions(PROCESSOR_DEBUGGING_STATE *        DbgState,
  * @param Action Action object
  * @param ScriptDetails Details of script
  * @param EventTriggerDetail Event trigger detail
+ * @param Regs registers
+ *
  * @return BOOLEAN
  */
 BOOLEAN
 DebuggerPerformRunScript(PROCESSOR_DEBUGGING_STATE *        DbgState,
                          DEBUGGER_EVENT_ACTION *            Action,
                          DEBUGGEE_SCRIPT_PACKET *           ScriptDetails,
-                         DEBUGGER_TRIGGERED_EVENT_DETAILS * EventTriggerDetail)
+                         DEBUGGER_TRIGGERED_EVENT_DETAILS * EventTriggerDetail,
+                         GUEST_REGS *                       Regs)
 {
     SYMBOL_BUFFER                   CodeBuffer             = {0};
     ACTION_BUFFER                   ActionBuffer           = {0};
@@ -1750,7 +1748,7 @@ DebuggerPerformRunScript(PROCESSOR_DEBUGGING_STATE *        DbgState,
         // If has error, show error message and abort.
         //
 
-        if (ScriptEngineExecute(DbgState->Regs,
+        if (ScriptEngineExecute(Regs,
                                 &ActionBuffer,
                                 &ScriptGeneralRegisters,
                                 &CodeBuffer,
@@ -1784,14 +1782,18 @@ DebuggerPerformRunScript(PROCESSOR_DEBUGGING_STATE *        DbgState,
  * @param DbgState The state of the debugger on the current core
  * @param Action Action object
  * @param EventTriggerDetail Event trigger detail
+ * @param Reg Registers
  *
  * @return VOID
  */
 VOID
 DebuggerPerformRunTheCustomCode(PROCESSOR_DEBUGGING_STATE *        DbgState,
                                 DEBUGGER_EVENT_ACTION *            Action,
-                                DEBUGGER_TRIGGERED_EVENT_DETAILS * EventTriggerDetail)
+                                DEBUGGER_TRIGGERED_EVENT_DETAILS * EventTriggerDetail,
+                                GUEST_REGS *                       Regs)
 {
+    UNREFERENCED_PARAMETER(DbgState);
+
     if (Action->CustomCodeBufferSize == 0)
     {
         //
@@ -1807,7 +1809,7 @@ DebuggerPerformRunTheCustomCode(PROCESSOR_DEBUGGING_STATE *        DbgState,
     // LogInfo("%X       Called from : %llx", Tag, Context);
     //
     //
-    // LogInfo("Process Id : %x , Rax : %llx , R8 : %llx , Context : 0x%llx ", PsGetCurrentProcessId(), Regs->rax, Regs->r8, Context);
+    // LogInfo("Process Id : %x , Rax : %llx , R8 : %llx , Context : 0x%llx ", PlatformProcessGetCurrentProcessId(), Regs->rax, Regs->r8, Context);
     // return;
     //
     // -----------------------------------------------------------------------------------------------------
@@ -1822,7 +1824,7 @@ DebuggerPerformRunTheCustomCode(PROCESSOR_DEBUGGING_STATE *        DbgState,
         // Because the user might change the nonvolatile registers, we save fastcall nonvolatile registers
         //
         AsmDebuggerCustomCodeHandler((UINT64)NULL,
-                                     (UINT64)DbgState->Regs,
+                                     (UINT64)Regs,
                                      (UINT64)EventTriggerDetail->Context,
                                      (UINT64)Action->CustomCodeBufferAddress);
     }
@@ -1832,7 +1834,7 @@ DebuggerPerformRunTheCustomCode(PROCESSOR_DEBUGGING_STATE *        DbgState,
         // Because the user might change the nonvolatile registers, we save fastcall nonvolatile registers
         //
         AsmDebuggerCustomCodeHandler((UINT64)Action->RequestedBuffer.RequstBufferAddress,
-                                     (UINT64)DbgState->Regs,
+                                     (UINT64)Regs,
                                      (UINT64)EventTriggerDetail->Context,
                                      (UINT64)Action->CustomCodeBufferAddress);
     }
@@ -1845,13 +1847,15 @@ DebuggerPerformRunTheCustomCode(PROCESSOR_DEBUGGING_STATE *        DbgState,
  * @param Tag Tag of event
  * @param Action Action object
  * @param EventTriggerDetail Event trigger detail
+ * @param Regs Registers
  *
  * @return VOID
  */
 VOID
 DebuggerPerformBreakToDebugger(PROCESSOR_DEBUGGING_STATE *        DbgState,
                                DEBUGGER_EVENT_ACTION *            Action,
-                               DEBUGGER_TRIGGERED_EVENT_DETAILS * EventTriggerDetail)
+                               DEBUGGER_TRIGGERED_EVENT_DETAILS * EventTriggerDetail,
+                               GUEST_REGS *                       Regs)
 {
     UNREFERENCED_PARAMETER(Action);
 
@@ -1874,9 +1878,31 @@ DebuggerPerformBreakToDebugger(PROCESSOR_DEBUGGING_STATE *        DbgState,
         //
         VmFuncVmxVmcall(DEBUGGER_VMCALL_VM_EXIT_HALT_SYSTEM_AS_A_RESULT_OF_TRIGGERING_EVENT,
                         (UINT64)EventTriggerDetail,
-                        (UINT64)DbgState->Regs,
+                        (UINT64)Regs,
                         (UINT64)NULL);
     }
+}
+
+/**
+ * @brief Manage breaking to the debugger action by core id
+ *
+ * @param CoreId
+ * @param Tag Tag of event
+ * @param Action Action object
+ * @param EventTriggerDetail Event trigger detail
+ * @param Regs Registers
+ *
+ * @return VOID
+ */
+VOID
+DebuggerPerformBreakToDebuggerByCoreId(UINT32                             CoreId,
+                                       DEBUGGER_EVENT_ACTION *            Action,
+                                       DEBUGGER_TRIGGERED_EVENT_DETAILS * EventTriggerDetail,
+                                       GUEST_REGS *                       Regs)
+{
+    PROCESSOR_DEBUGGING_STATE * DbgState = &g_DbgState[CoreId];
+
+    DebuggerPerformBreakToDebugger(DbgState, Action, EventTriggerDetail, Regs);
 }
 
 /**

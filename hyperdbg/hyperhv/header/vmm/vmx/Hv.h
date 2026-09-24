@@ -570,3 +570,12 @@ HvSetDebugReg7(UINT64 Value);
  */
 VOID
 HvHandleTrapFlag();
+
+/**
+ * @brief Handle the case of non-long mode resuming of RIP overflow
+ * @param ResumeRIP
+ *
+ * @return VOID
+ */
+VOID
+HvHandleNonLongModeResumingRipOverflow(UINT64 * ResumeRIP);

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * @file main.cpp
  * @author Sina Karvandi (sina@hyperdbg.org)
  * @brief perform tests
@@ -11,20 +11,20 @@
  */
 #include "pch.h"
 
-/**
- * @brief Main function of test process
- *
- * @param argc
- * @param argv
- * @return int
- */
+ /**
+  * @brief Main function of test process
+  *
+  * @param argc
+  * @param argv
+  * @return int
+  */
 int
-main(int argc, char * argv[])
+main(int argc, char* argv[])
 {
     if (argc != 2)
     {
         printf("you should not test functionalities directly, instead use 'test all' "
-               "command from HyperDbg...\n");
+            "command from HyperDbg...\n");
         return 1;
     }
 

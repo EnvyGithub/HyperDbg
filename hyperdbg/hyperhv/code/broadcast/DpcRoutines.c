@@ -37,7 +37,7 @@ DpcRoutineRunTaskOnSingleCore(UINT32 CoreNumber, PVOID Routine, PVOID DeferredCo
     PRKDPC Dpc;
     ULONG  ProcessorsCount;
 
-    ProcessorsCount = KeQueryActiveProcessorCount(0);
+    ProcessorsCount = PlatformCpuGetActiveProcessorCount();
 
     //
     // Check if the core number is not invalid
@@ -60,15 +60,15 @@ DpcRoutineRunTaskOnSingleCore(UINT32 CoreNumber, PVOID Routine, PVOID DeferredCo
     //
     // Creating a DPC that will run on the target process
     //
-    KeInitializeDpc(Dpc,                         // Dpc
-                    (PKDEFERRED_ROUTINE)Routine, // DeferredRoutine
-                    DeferredContext              // DeferredContext
+    PlatformDpcInitialize(Dpc,                         // Dpc
+                          (PKDEFERRED_ROUTINE)Routine, // DeferredRoutine
+                          DeferredContext              // DeferredContext
     );
 
     //
     // Set the target core
     //
-    KeSetTargetProcessorDpc(Dpc, (CCHAR)CoreNumber);
+    PlatformDpcSetTargetProcessor(Dpc, (CCHAR)CoreNumber);
 
     //
     // it's sure will be executed, but we want to free the above
@@ -98,7 +98,7 @@ DpcRoutineRunTaskOnSingleCore(UINT32 CoreNumber, PVOID Routine, PVOID DeferredCo
     //
     // Fire the DPC
     //
-    KeInsertQueueDpc(Dpc, NULL, NULL);
+    PlatformDpcInsertQueueDpc(Dpc, NULL, NULL);
 
     //
     // spin on lock to be release, immediately after we get the lock, we'll
@@ -135,7 +135,7 @@ DpcRoutinePerformVirtualization(KDPC * Dpc, PVOID DeferredContext, PVOID SystemA
     //
     // Allocates Vmx regions for all logical cores (Vmxon region and Vmcs region)
     //
-    CurrentCore = KeGetCurrentProcessorNumberEx(NULL);
+    CurrentCore = PlatformCpuGetCurrentProcessorNumber();
     g_GuestState[CurrentCore].LastVmxOperationSucceeded = VmxPerformVirtualizationOnSpecificCore();
 
     // ------------------------------------------------------------------------------
@@ -1488,7 +1488,7 @@ DpcRoutineInvalidateEptOnAllCores(KDPC * Dpc, PVOID DeferredContext, PVOID Syste
         // We have to invalidate all contexts
         //
         AsmVmxVmcall(VMCALL_INVEPT_SINGLE_CONTEXT,
-                     g_GuestState[KeGetCurrentProcessorNumberEx(NULL)].EptPointer.AsUInt,
+                     g_GuestState[PlatformCpuGetCurrentProcessorNumber()].EptPointer.AsUInt,
                      NULL64_ZERO,
                      NULL64_ZERO);
     }
@@ -1521,7 +1521,7 @@ DpcRoutineInitializeGuest(KDPC * Dpc, PVOID DeferredContext, PVOID SystemArgumen
     //
     AsmVmxSaveState();
 
-    CurrentCore = KeGetCurrentProcessorNumberEx(NULL);
+    CurrentCore = PlatformCpuGetCurrentProcessorNumber();
     g_GuestState[CurrentCore].LastVmxOperationSucceeded = g_GuestState[CurrentCore].HasLaunched;
 
     // ------------------------------------------------------------------------------
@@ -1551,7 +1551,7 @@ DpcRoutineTerminateGuest(KDPC * Dpc, PVOID DeferredContext, PVOID SystemArgument
     //
     // Terminate Vmx using vmcall
     //
-    CurrentCore = KeGetCurrentProcessorNumberEx(NULL);
+    CurrentCore = PlatformCpuGetCurrentProcessorNumber();
     Result      = VmxTerminate();
     g_GuestState[CurrentCore].LastVmxOperationSucceeded = Result;
 
