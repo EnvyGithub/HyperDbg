@@ -16,6 +16,53 @@
 #    define IMPORT_EXPORT_VMM __declspec(dllimport)
 #endif
 
+// [DOWNSTREAM] Private, opt-in inline-hook entry and guarded-origin tail.
+// Keep VMM_CALLBACKS unchanged: older VmFuncInitVmm callers have no size field.
+typedef enum _VMM_ATOMIC_INLINE_EVENT_KIND
+{
+    VmmAtomicInlineNone                 = 0,
+    VmmAtomicInlineEntryBreakpoint      = 1,
+    VmmAtomicInlineGuardedTailVmcall    = 2
+} VMM_ATOMIC_INLINE_EVENT_KIND;
+
+typedef struct _VMM_ATOMIC_INLINE_EVENT_DECISION
+{
+    UINT32          Size;
+    UINT32          Kind;
+    volatile LONG * DispatchActive;
+    UINT64          NextRip;
+    UINT64          PhysicalPage;
+} VMM_ATOMIC_INLINE_EVENT_DECISION, *PVMM_ATOMIC_INLINE_EVENT_DECISION;
+
+// Called in VMX-root before resuming a guest that hit an opted-in target/tail.
+// Return FALSE for unrelated RIPs. The borrowed counter remains owned by the
+// caller and must stay valid until the physical hook and all entries retire.
+typedef BOOLEAN (*VMM_ATOMIC_INLINE_EVENT_CALLBACK)(
+    UINT32 CoreId,
+    UINT64 GuestRip,
+    PVMM_ATOMIC_INLINE_EVENT_DECISION Decision);
+
+typedef enum _VMM_ATOMIC_INLINE_INSTALL_STATUS
+{
+    VmmAtomicInlineInstallCleanFailure  = 0,
+    VmmAtomicInlineInstallReady         = 1,
+    VmmAtomicInlineInstallIndeterminate = 2
+} VMM_ATOMIC_INLINE_INSTALL_STATUS;
+
+typedef enum _VMM_ATOMIC_INLINE_DETACH_STATUS
+{
+    VmmAtomicInlineDetachIndeterminate = 0,
+    VmmAtomicInlineDetachDetached      = 1,
+    VmmAtomicInlineDetachRetrySafe     = 2
+} VMM_ATOMIC_INLINE_DETACH_STATUS;
+
+IMPORT_EXPORT_VMM BOOLEAN
+VmFuncRegisterAtomicInlineEventCallback(VMM_ATOMIC_INLINE_EVENT_CALLBACK Callback);
+
+// Call only after checked VMM termination; this does not wait for VM exits.
+IMPORT_EXPORT_VMM BOOLEAN
+VmFuncUnregisterAtomicInlineEventCallback(VMM_ATOMIC_INLINE_EVENT_CALLBACK Callback);
+
 //////////////////////////////////////////////////
 //                 VM Functions 	    		//
 //////////////////////////////////////////////////
@@ -395,6 +442,25 @@ ConfigureEptHook2WithTrampoline(UINT32 CoreId,
                                 PVOID  HookFunction,
                                 UINT32 ProcessId,
                                 PVOID *OriginalFunction);
+
+// [DOWNSTREAM] The fake target starts with one-byte INT3. PlainOrigin is for
+// primary handlers holding their own rundown; GuardedOrigin is only for the
+// mux's origin-only path, whose tail VMCALL releases its admission reference.
+IMPORT_EXPORT_VMM VMM_ATOMIC_INLINE_INSTALL_STATUS
+ConfigureEptHook2Atomic(UINT32 CoreId,
+                        PVOID  TargetAddress,
+                        UINT32 ProcessId,
+                        PVOID *PlainOrigin,
+                        PVOID *GuardedOrigin,
+                        PVOID *GuardedTailRip,
+                        PVOID *ContinuationRip);
+
+// RetrySafe means every hook detail and trampoline is still owned and may be
+// retried; Indeterminate requires controlled VMM recovery, not blind retry.
+IMPORT_EXPORT_VMM VMM_ATOMIC_INLINE_DETACH_STATUS
+ConfigureEptHookUnHookAtomicPage(UINT64 Target,
+                                 UINT64 PhysicalPage,
+                                 UINT32 ProcessId);
 
 IMPORT_EXPORT_VMM BOOLEAN
 ConfigureEptHook2ExactCall(UINT32 CoreId,

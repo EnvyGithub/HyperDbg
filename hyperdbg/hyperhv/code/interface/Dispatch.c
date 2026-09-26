@@ -13,6 +13,199 @@
  */
 #include "pch.h"
 
+// [DOWNSTREAM] A separate opt-in callback preserves VmFuncInitVmm's existing
+// size-less callback-structure ABI. Its caller unregisters after checked VMXOFF.
+static UINT64 volatile g_AtomicInlineEventCallback;
+static volatile LONG g_AtomicInlineEventReady;
+
+typedef struct _ATOMIC_INLINE_BP_INTERCEPTION_RESULT
+{
+    volatile LONG FailedCores;
+} ATOMIC_INLINE_BP_INTERCEPTION_RESULT;
+
+static VOID
+DispatchEnableAtomicInlineBreakpointDpc(_In_ PKDPC Dpc,
+                                        _In_opt_ PVOID DeferredContext,
+                                        _In_opt_ PVOID SystemArgument1,
+                                        _In_opt_ PVOID SystemArgument2)
+{
+    ATOMIC_INLINE_BP_INTERCEPTION_RESULT * Result =
+        (ATOMIC_INLINE_BP_INTERCEPTION_RESULT *)DeferredContext;
+
+    UNREFERENCED_PARAMETER(Dpc);
+    if (AsmVmxVmcall(VMCALL_SET_EXCEPTION_BITMAP,
+                    EXCEPTION_VECTOR_BREAKPOINT, 0, 0) != STATUS_SUCCESS)
+    {
+        CpuInterlockedCompareExchange(&Result->FailedCores, 1, 0);
+    }
+    PlatformBroadcastSynchronizeEndOfRoutine(SystemArgument1,
+                                              SystemArgument2);
+}
+
+BOOLEAN
+DispatchAtomicInlineEventRegistered(VOID)
+{
+    return CpuInterlockedCompareExchange64(
+               (INT64 volatile *)&g_AtomicInlineEventCallback, 0, 0) != 0;
+}
+
+BOOLEAN
+DispatchAtomicInlineEventReady(VOID)
+{
+    return CpuInterlockedCompareExchange(&g_AtomicInlineEventReady,
+                                          FALSE, FALSE) != FALSE;
+}
+
+BOOLEAN
+DispatchRegisterAtomicInlineEventCallback(VMM_ATOMIC_INLINE_EVENT_CALLBACK Callback)
+{
+    ATOMIC_INLINE_BP_INTERCEPTION_RESULT Result = {0};
+
+    if (Callback == NULL || !g_VmxInitialized)
+    {
+        return FALSE;
+    }
+    if (CpuInterlockedCompareExchange64(
+            (INT64 volatile *)&g_AtomicInlineEventCallback,
+            (INT64)(ULONG_PTR)Callback,
+            0) != 0)
+    {
+        return FALSE;
+    }
+    PlatformDpcGenericCall(DispatchEnableAtomicInlineBreakpointDpc, &Result);
+    if (Result.FailedCores != 0)
+    {
+        CpuInterlockedCompareExchange64(
+            (INT64 volatile *)&g_AtomicInlineEventCallback,
+            0, (INT64)(ULONG_PTR)Callback);
+        return FALSE;
+    }
+    CpuInterlockedExchange(&g_AtomicInlineEventReady, TRUE);
+    return TRUE;
+}
+
+BOOLEAN
+DispatchUnregisterAtomicInlineEventCallback(VMM_ATOMIC_INLINE_EVENT_CALLBACK Callback)
+{
+    UINT64 Current;
+
+    if (Callback == NULL)
+    {
+        return FALSE;
+    }
+    Current = (UINT64)CpuInterlockedCompareExchange64(
+        (INT64 volatile *)&g_AtomicInlineEventCallback, 0, 0);
+    if (Current == 0)
+    {
+        return TRUE;
+    }
+    if (Current != (UINT64)(ULONG_PTR)Callback)
+    {
+        return FALSE;
+    }
+    CpuInterlockedExchange(&g_AtomicInlineEventReady, FALSE);
+    return (UINT64)CpuInterlockedCompareExchange64(
+               (INT64 volatile *)&g_AtomicInlineEventCallback,
+               0,
+               (INT64)Current) == Current;
+}
+
+static BOOLEAN
+DispatchSelectAtomicInlineEvent(_In_ VIRTUAL_MACHINE_STATE * VCpu,
+                                _In_ UINT64 GuestRip,
+                                _In_ UINT32 ExpectedKind,
+                                _Out_ VMM_ATOMIC_INLINE_EVENT_DECISION * Decision)
+{
+    VMM_ATOMIC_INLINE_EVENT_CALLBACK Callback =
+        (VMM_ATOMIC_INLINE_EVENT_CALLBACK)(ULONG_PTR)
+            CpuInterlockedCompareExchange64(
+                (INT64 volatile *)&g_AtomicInlineEventCallback, 0, 0);
+
+    if (Callback == NULL)
+    {
+        return FALSE;
+    }
+    RtlZeroMemory(Decision, sizeof(*Decision));
+    Decision->Size = sizeof(*Decision);
+    if (!Callback(VCpu->CoreId, GuestRip, Decision))
+    {
+        return FALSE;
+    }
+    if (Decision->Size != sizeof(*Decision) ||
+        Decision->Kind != ExpectedKind ||
+        Decision->DispatchActive == NULL || Decision->NextRip == 0)
+    {
+        LogError("Err, invalid atomic inline hook VM-exit decision");
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static VOID
+DispatchChangeAtomicInlineReference(_Inout_ volatile LONG * Counter,
+                                    _In_ LONG Delta)
+{
+    LONG OldValue;
+    do
+    {
+        OldValue = CpuInterlockedCompareExchange(Counter, 0, 0);
+    } while (CpuInterlockedCompareExchange(Counter, OldValue + Delta, OldValue) != OldValue);
+}
+
+BOOLEAN
+DispatchAtomicInlineEntryBreakpoint(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRip)
+{
+    VMM_ATOMIC_INLINE_EVENT_DECISION Decision;
+    PEPT_PML1_ENTRY CurrentEntry;
+
+    if (!DispatchSelectAtomicInlineEvent(
+            VCpu, GuestRip, VmmAtomicInlineEntryBreakpoint, &Decision))
+    {
+        return FALSE;
+    }
+
+    if (Decision.PhysicalPage == 0 ||
+        (Decision.PhysicalPage & (PAGE_SIZE - 1u)) != 0)
+    {
+        return FALSE;
+    }
+    CurrentEntry = EptGetPml1Entry(VCpu->EptPageTable,
+                                   (SIZE_T)Decision.PhysicalPage);
+    if (CurrentEntry == NULL || CurrentEntry->ReadAccess != 0 ||
+        CurrentEntry->WriteAccess != 0 || CurrentEntry->ExecuteAccess == 0 ||
+        CurrentEntry->PageFrameNumber == (Decision.PhysicalPage / PAGE_SIZE))
+    {
+        // A real 0xCC executed through the original mapping belongs to the
+        // regular breakpoint path, even when this target has an atomic owner.
+        return FALSE;
+    }
+
+    DispatchChangeAtomicInlineReference(Decision.DispatchActive, 1);
+    HvSetRip(Decision.NextRip);
+    HvSuppressRipIncrement(VCpu);
+    return TRUE;
+}
+
+static BOOLEAN
+DispatchAtomicInlineGuardedTailVmcall(VIRTUAL_MACHINE_STATE * VCpu)
+{
+    VMM_ATOMIC_INLINE_EVENT_DECISION Decision;
+
+    if (!DispatchSelectAtomicInlineEvent(
+            VCpu, VCpu->LastVmexitRip, VmmAtomicInlineGuardedTailVmcall,
+            &Decision))
+    {
+        return FALSE;
+    }
+
+    HvSetRip(Decision.NextRip);
+    HvSuppressRipIncrement(VCpu);
+    // The callback has returned. This is the last access to owner memory;
+    // teardown may clear it as soon as the count reaches zero.
+    DispatchChangeAtomicInlineReference(Decision.DispatchActive, -1);
+    return TRUE;
+}
+
 /**
  * @brief Handling debugger functions related to SYSRET events
  *
@@ -302,6 +495,11 @@ DispatchEventVmcall(VIRTUAL_MACHINE_STATE * VCpu)
 {
     VMM_CALLBACK_TRIGGERING_EVENT_STATUS_TYPE EventTriggerResult;
     BOOLEAN                                   PostEventTriggerReq = FALSE;
+
+    if (DispatchAtomicInlineGuardedTailVmcall(VCpu))
+    {
+        return;
+    }
 
     //
     // As the context to event trigger, we send NULL

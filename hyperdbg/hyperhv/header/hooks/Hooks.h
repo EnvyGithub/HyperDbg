@@ -24,8 +24,24 @@ typedef struct _HIDDEN_HOOKS_DETOUR_DETAILS
     LIST_ENTRY OtherHooksList;
     PVOID      HookedFunctionAddress;
     PVOID      ReturnAddress;
+    // [DOWNSTREAM] Only the opt-in atomic path owns a guarded trampoline.
+    BOOLEAN    IsAtomicInline;
+    PVOID      GuardedOrigin;
+    PVOID      GuardedTailRip;
+    PVOID      ContinuationRip;
 
 } HIDDEN_HOOKS_DETOUR_DETAILS, *PHIDDEN_HOOKS_DETOUR_DETAILS;
+
+// [DOWNSTREAM] Internal VMCALL payload; legacy EPTHOOK2 details keep their ABI.
+typedef struct _EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2_ATOMIC
+{
+    PVOID  TargetAddress;
+    PVOID *PlainOrigin;
+    PVOID *GuardedOrigin;
+    PVOID *GuardedTailRip;
+    PVOID *ContinuationRip;
+    volatile LONG PublicationMayBeIncomplete;
+} EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2_ATOMIC;
 
 //////////////////////////////////////////////////
 //				   Syscall Hook					//
@@ -177,6 +193,21 @@ EptHookInlineHookWithTrampoline(VIRTUAL_MACHINE_STATE * VCpu,
                                 PVOID                   HookFunction,
                                 UINT32                  ProcessId,
                                 PVOID *                 OriginalFunction);
+
+VMM_ATOMIC_INLINE_INSTALL_STATUS
+EptHookInlineHookAtomic(VIRTUAL_MACHINE_STATE * VCpu,
+                        PVOID                   TargetAddress,
+                        UINT32                  ProcessId,
+                        PVOID *                 PlainOrigin,
+                        PVOID *                 GuardedOrigin,
+                        PVOID *                 GuardedTailRip,
+                        PVOID *                 ContinuationRip);
+
+VMM_ATOMIC_INLINE_DETACH_STATUS
+EptHookUnHookAtomicPage(UINT64 Target,
+                        UINT64 PhysicalPage,
+                        UINT32 ProcessId);
+
 
 /**
  * @brief [DOWNSTREAM] Hook one exact five-byte call through a same-page relay

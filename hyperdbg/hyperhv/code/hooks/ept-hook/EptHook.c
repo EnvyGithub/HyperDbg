@@ -196,7 +196,8 @@ EptHookReservePreallocatedPoolsForEptHooks(UINT32 Count)
     //
     // Request pages to be allocated for Trampoline of Executable hooked pages
     //
-    PoolManagerCallbackRequestAllocation(MAX_EXEC_TRAMPOLINE_SIZE, Count, EXEC_TRAMPOLINE);
+    // [DOWNSTREAM] Atomic inline hooks need a plain and a guarded origin.
+    PoolManagerCallbackRequestAllocation(MAX_EXEC_TRAMPOLINE_SIZE, Count * 2u, EXEC_TRAMPOLINE);
 
     //
     // Request pages to be allocated for detour hooked pages details
@@ -644,7 +645,7 @@ EptHookPerformPageHook(VIRTUAL_MACHINE_STATE * VCpu,
 
     if (HookedEntry != NULL)
     {
-        if (HookedEntry->IsExactCallHook)
+        if (HookedEntry->IsExactCallHook || HookedEntry->IsAtomicInlineHookPage)
         {
             VmmCallbackSetLastError(
                 DEBUGGER_ERROR_EPT_MULTIPLE_HOOKS_IN_A_SINGLE_PAGE);
@@ -861,9 +862,7 @@ EptHookRestoreSingleHookToOriginalEntry(VIRTUAL_MACHINE_STATE *     VCpu,
         //
         // Invalidate EPT Cache
         //
-        EptInveptSingleContext(VCpu->EptPointer.AsUInt);
-
-        return TRUE;
+        return EptInveptSingleContext(VCpu->EptPointer.AsUInt) == 0;
     }
 
     //
@@ -1052,6 +1051,72 @@ EptHookApplyExactCallPatch(_Inout_ EPT_HOOKED_PAGE_DETAIL * HookedPage)
     return TRUE;
 }
 
+// A guarded origin releases admission at its tail VM-exit. Reject a copied
+// control transfer that could leave the trampoline without reaching that exit.
+static BOOLEAN
+EptHookAtomicInstructionReachesTail(_In_reads_bytes_(Length) const UCHAR * Bytes,
+                                    _In_ UINT32 Length)
+{
+    UINT32 Offset = 0;
+    UCHAR Op;
+
+    while (Offset < Length)
+    {
+        UCHAR Prefix = Bytes[Offset];
+        if ((Prefix >= 0x40 && Prefix <= 0x4F) || Prefix == 0x66 ||
+            Prefix == 0x67 || Prefix == 0xF0 || Prefix == 0xF2 ||
+            Prefix == 0xF3 || Prefix == 0x2E || Prefix == 0x36 ||
+            Prefix == 0x3E || Prefix == 0x26 || Prefix == 0x64 ||
+            Prefix == 0x65)
+        {
+            Offset++;
+            continue;
+        }
+        break;
+    }
+    if (Offset == Length)
+    {
+        return FALSE;
+    }
+    Op = Bytes[Offset];
+    if (Op == 0x9A || Op == 0xC2 || Op == 0xC3 || Op == 0xCA ||
+        Op == 0xCB || Op == 0xCC || Op == 0xCD || Op == 0xCE ||
+        Op == 0xCF || Op == 0xE8 || Op == 0xE9 || Op == 0xEA ||
+        Op == 0xEB || Op == 0xF1 || Op == 0xF4 ||
+        (Op >= 0x70 && Op <= 0x7F) || (Op >= 0xE0 && Op <= 0xE3))
+    {
+        return FALSE;
+    }
+    if (Op == 0xFF && Offset + 1 < Length)
+    {
+        UCHAR Reg = (Bytes[Offset + 1] >> 3) & 7u;
+        if (Reg == 2u)
+        {
+            // These are the only calls relocated by the trampoline builder.
+            // A normal return reaches the guarded tail. An exceptional or
+            // non-returning call retains admission and blocks retirement.
+            return (Length == 6 && Offset == 0 && Bytes[1] == 0x15) ||
+                   (Length == 7 && Offset == 1 && Bytes[0] == 0x48 &&
+                    Bytes[2] == 0x15);
+        }
+        if (Reg >= 3u && Reg <= 5u)
+        {
+            return FALSE;
+        }
+    }
+    if (Op == 0x0F && Offset + 1 < Length)
+    {
+        UCHAR Next = Bytes[Offset + 1];
+        if ((Next >= 0x80 && Next <= 0x8F) || Next == 0x01 ||
+            Next == 0x05 || Next == 0x07 || Next == 0x0B ||
+            Next == 0x34 || Next == 0x35)
+        {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
 /**
  * @brief [DOWNSTREAM] Copy stolen instructions into an executable trampoline
  *        and relocate common RIP-relative forms used by ntoskrnl/win32k wrappers.
@@ -1068,7 +1133,8 @@ EptHookCopyInstructionsToTrampoline(PCHAR    TrampolineBuffer,
                                     PCHAR    HookedInstructions,
                                     SIZE_T   TargetAddress,
                                     SIZE_T   SizeOfHookedInstructions,
-                                    SIZE_T * TrampolineSize)
+                                    SIZE_T * TrampolineSize,
+                                    BOOLEAN  Guarded)
 {
     SIZE_T ReadOffset;
     SIZE_T WriteOffset;
@@ -1085,6 +1151,11 @@ EptHookCopyInstructionsToTrampoline(PCHAR    TrampolineBuffer,
         InstructionLength = DisassemblerLengthDisassembleEngineInVmxRootOnTargetProcess(Instruction, FALSE);
 
         if (InstructionLength == 0 || ReadOffset + InstructionLength > SizeOfHookedInstructions)
+        {
+            return FALSE;
+        }
+        if (Guarded && !EptHookAtomicInstructionReachesTail(
+                           (const UCHAR *)Instruction, InstructionLength))
         {
             return FALSE;
         }
@@ -1193,13 +1264,19 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
                          PVOID                   TargetFunction,
                          PVOID                   TargetFunctionInSafeMemory,
                          PVOID                   HookFunction,
-                         PVOID *                 OriginalFunction)
+                         PVOID *                 OriginalFunction,
+                         EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2_ATOMIC * AtomicDetails,
+                         BOOLEAN                 ExistingPage)
 {
     PHIDDEN_HOOKS_DETOUR_DETAILS DetourHookDetails;
     SIZE_T                       SizeOfHookedInstructions;
     SIZE_T                       SizeOfTrampolineInstructions;
+    SIZE_T                       SizeOfGuardedInstructions = 0;
     SIZE_T                       OffsetIntoPage;
     CR3_TYPE                     Cr3OfCurrentProcess;
+    PCHAR                        GuardedTrampoline = NULL;
+    PCHAR                        PreviousTrampoline = Hook->Trampoline;
+    BOOLEAN                      OriginalRead;
     CHAR                         HookedInstructions[MAX_EXEC_TRAMPOLINE_SIZE] = {0};
 
     OffsetIntoPage = ADDRMASK_EPT_PML1_OFFSET((SIZE_T)TargetFunction);
@@ -1221,14 +1298,17 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
     // EPTHOOK2 only supports 64-bit kernel (32-bit LDE is not supported)
     //
     for (SizeOfHookedInstructions = 0;
-         SizeOfHookedInstructions < 19;
-         SizeOfHookedInstructions += DisassemblerLengthDisassembleEngineInVmxRootOnTargetProcess(
-             (PVOID)((UINT64)TargetFunctionInSafeMemory + SizeOfHookedInstructions),
-             FALSE))
+         SizeOfHookedInstructions < 19;)
     {
-        //
-        // Get the full size of instructions necessary to copy
-        //
+        UINT32 Length = DisassemblerLengthDisassembleEngineInVmxRootOnTargetProcess(
+            (PVOID)((UINT64)TargetFunctionInSafeMemory + SizeOfHookedInstructions),
+            FALSE);
+        if (Length == 0 ||
+            SizeOfHookedInstructions + Length > sizeof(HookedInstructions) - 14)
+        {
+            return FALSE;
+        }
+        SizeOfHookedInstructions += Length;
     }
 
     //
@@ -1242,6 +1322,7 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
 
     if (!Hook->Trampoline)
     {
+        Hook->Trampoline = PreviousTrampoline;
         LogError("Err, could not allocate trampoline function buffer");
         return FALSE;
     }
@@ -1255,21 +1336,37 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
     // The following line can't be used in user mode addresses
     // RtlCopyMemory(HookedInstructions, TargetFunction, SizeOfHookedInstructions);
     //
-    MemoryMapperReadMemorySafe((UINT64)TargetFunction, HookedInstructions, SizeOfHookedInstructions);
+    OriginalRead = MemoryMapperReadMemorySafe(
+        (UINT64)TargetFunction, HookedInstructions, SizeOfHookedInstructions);
 
     //
     // Restore to original process
     //
     SwitchToPreviousProcess(Cr3OfCurrentProcess);
 
+    if (AtomicDetails != NULL && !OriginalRead)
+    {
+        PoolManagerCallbackFreePool((UINT64)Hook->Trampoline);
+        Hook->Trampoline = PreviousTrampoline;
+        return FALSE;
+    }
+
+    if (AtomicDetails != NULL && (UCHAR)HookedInstructions[0] == 0xCC)
+    {
+        PoolManagerCallbackFreePool((UINT64)Hook->Trampoline);
+        Hook->Trampoline = PreviousTrampoline;
+        return FALSE;
+    }
+
     if (!EptHookCopyInstructionsToTrampoline(Hook->Trampoline,
                                              HookedInstructions,
                                              (SIZE_T)TargetFunction,
                                              SizeOfHookedInstructions,
-                                             &SizeOfTrampolineInstructions))
+                                             &SizeOfTrampolineInstructions,
+                                             FALSE))
     {
         PoolManagerCallbackFreePool((UINT64)Hook->Trampoline);
-        Hook->Trampoline = NULL;
+        Hook->Trampoline = PreviousTrampoline;
         LogError("Err, could not relocate trampoline instructions");
         return FALSE;
     }
@@ -1278,6 +1375,35 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
     // Add the absolute jump back to the original function
     //
     EptHookWriteAbsoluteJump2(&Hook->Trampoline[SizeOfTrampolineInstructions], (SIZE_T)TargetFunction + SizeOfHookedInstructions);
+
+    if (AtomicDetails != NULL)
+    {
+        GuardedTrampoline = (PCHAR)PoolManagerCallbackRequestPool(
+            EXEC_TRAMPOLINE, TRUE, MAX_EXEC_TRAMPOLINE_SIZE);
+        if (GuardedTrampoline == NULL)
+        {
+            PoolManagerCallbackFreePool((UINT64)Hook->Trampoline);
+            Hook->Trampoline = PreviousTrampoline;
+            return FALSE;
+        }
+        if (!EptHookCopyInstructionsToTrampoline(
+                GuardedTrampoline,
+                HookedInstructions,
+                (SIZE_T)TargetFunction,
+                SizeOfHookedInstructions,
+                &SizeOfGuardedInstructions,
+                TRUE) ||
+            SizeOfGuardedInstructions != SizeOfTrampolineInstructions)
+        {
+            PoolManagerCallbackFreePool((UINT64)GuardedTrampoline);
+            PoolManagerCallbackFreePool((UINT64)Hook->Trampoline);
+            Hook->Trampoline = PreviousTrampoline;
+            return FALSE;
+        }
+        GuardedTrampoline[SizeOfTrampolineInstructions]     = 0x0F;
+        GuardedTrampoline[SizeOfTrampolineInstructions + 1] = 0x01;
+        ((PUCHAR)GuardedTrampoline)[SizeOfTrampolineInstructions + 2] = 0xC1;
+    }
 
     //
     // LogInfo("Trampoline: 0x%llx", Hook->Trampoline);
@@ -1298,8 +1424,38 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
     // function then we probably see BSOD on other cores
     //
     DetourHookDetails                        = (HIDDEN_HOOKS_DETOUR_DETAILS *)PoolManagerCallbackRequestPool(DETOUR_HOOK_DETAILS, TRUE, sizeof(HIDDEN_HOOKS_DETOUR_DETAILS));
+    if (DetourHookDetails == NULL)
+    {
+        if (GuardedTrampoline != NULL)
+        {
+            PoolManagerCallbackFreePool((UINT64)GuardedTrampoline);
+        }
+        PoolManagerCallbackFreePool((UINT64)Hook->Trampoline);
+        Hook->Trampoline = PreviousTrampoline;
+        if (OriginalFunction != NULL)
+        {
+            *OriginalFunction = NULL;
+        }
+        return FALSE;
+    }
     DetourHookDetails->HookedFunctionAddress = TargetFunction;
     DetourHookDetails->ReturnAddress         = Hook->Trampoline;
+    DetourHookDetails->IsAtomicInline        = AtomicDetails != NULL;
+    DetourHookDetails->GuardedOrigin         = GuardedTrampoline;
+    DetourHookDetails->GuardedTailRip        = AtomicDetails != NULL
+                                                   ? &GuardedTrampoline[SizeOfTrampolineInstructions]
+                                                   : NULL;
+    DetourHookDetails->ContinuationRip       = AtomicDetails != NULL
+                                                   ? (PVOID)((ULONG_PTR)TargetFunction + SizeOfHookedInstructions)
+                                                   : NULL;
+
+    if (AtomicDetails != NULL)
+    {
+        *AtomicDetails->PlainOrigin = Hook->Trampoline;
+        *AtomicDetails->GuardedOrigin = GuardedTrampoline;
+        *AtomicDetails->GuardedTailRip = DetourHookDetails->GuardedTailRip;
+        *AtomicDetails->ContinuationRip = DetourHookDetails->ContinuationRip;
+    }
 
     //
     // Save the address of DetourHookDetails because we want to
@@ -1315,7 +1471,20 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
     //
     // Write the absolute jump to our shadow page memory to jump to our hook
     //
-    EptHookWriteAbsoluteJump(&Hook->FakePageContents[OffsetIntoPage], (SIZE_T)HookFunction);
+    if (AtomicDetails != NULL)
+    {
+        if (ExistingPage)
+        {
+            CpuInterlockedExchange(&AtomicDetails->PublicationMayBeIncomplete, TRUE);
+        }
+        // A single-byte patch cannot strand a guest between old prologue
+        // instructions, unlike the legacy 19-byte detour.
+        ((PUCHAR)Hook->FakePageContents)[OffsetIntoPage] = 0xCC;
+    }
+    else
+    {
+        EptHookWriteAbsoluteJump(&Hook->FakePageContents[OffsetIntoPage], (SIZE_T)HookFunction);
+    }
 
     return TRUE;
 }
@@ -1355,13 +1524,15 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
     BOOLEAN                 UnsetWrite    = FALSE;
     BOOLEAN                 EptHiddenHook = FALSE;
     BOOLEAN                 EptExactCall  = FALSE;
+    BOOLEAN                 AtomicHook    = FALSE;
     BOOLEAN                 ExecutionFakePage;
     BOOLEAN                 FakePageReadResult = TRUE;
 
     UnsetRead     = (PageHookMask & PAGE_ATTRIB_READ) ? TRUE : FALSE;
     UnsetWrite    = (PageHookMask & PAGE_ATTRIB_WRITE) ? TRUE : FALSE;
     UnsetExecute  = (PageHookMask & PAGE_ATTRIB_EXEC) ? TRUE : FALSE;
-    EptHiddenHook = (PageHookMask & PAGE_ATTRIB_EXEC_HIDDEN_HOOK) ? TRUE : FALSE;
+    AtomicHook    = (PageHookMask & PAGE_ATTRIB_EXEC_ATOMIC_HOOK) ? TRUE : FALSE;
+    EptHiddenHook = (PageHookMask & (PAGE_ATTRIB_EXEC_HIDDEN_HOOK | PAGE_ATTRIB_EXEC_ATOMIC_HOOK)) ? TRUE : FALSE;
     EptExactCall  = (PageHookMask & PAGE_ATTRIB_EXEC_EXACT_CALL) ? TRUE : FALSE;
     ExecutionFakePage = EptHiddenHook || EptExactCall;
 
@@ -1390,6 +1561,10 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
         TargetAddress =
             ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EXACT_CALL *)HookingDetails)
                 ->TargetAddress;
+    }
+    else if (AtomicHook)
+    {
+        TargetAddress = ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2_ATOMIC *)HookingDetails)->TargetAddress;
     }
     else if (EptHiddenHook)
     {
@@ -1454,6 +1629,11 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
 
         if (HookedEntry->PhysicalBaseAddress == PhysicalBaseAddress)
         {
+            if (HookedEntry->IsAtomicInlineHookPage != AtomicHook)
+            {
+                VmmCallbackSetLastError(DEBUGGER_ERROR_EPT_MULTIPLE_HOOKS_IN_A_SINGLE_PAGE);
+                return FALSE;
+            }
             if (EptHiddenHook &&
                 !HookedEntry->IsHiddenBreakpoint &&
                 !HookedEntry->IsExactCallHook &&
@@ -1461,7 +1641,11 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
             {
                 TargetAddressInSafeMemory = EptHookCalcBreakpointOffset(TargetAddress, HookedEntry);
 
-                if (((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)->HookFunction == NULL)
+                if (AtomicHook)
+                {
+                    HookFunction = NULL;
+                }
+                else if (((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)->HookFunction == NULL)
                 {
                     HookFunction = (PVOID)AsmGeneralDetourHook;
                 }
@@ -1475,7 +1659,9 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
                                               TargetAddress,
                                               (PVOID)TargetAddressInSafeMemory,
                                               HookFunction,
-                                              ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)->OriginalFunction))
+                                              AtomicHook ? NULL : ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)->OriginalFunction,
+                                              AtomicHook ? (EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2_ATOMIC *)HookingDetails : NULL,
+                                              TRUE))
                 {
                     VmmCallbackSetLastError(DEBUGGER_ERROR_COULD_NOT_BUILD_THE_EPT_HOOK);
                     return FALSE;
@@ -1589,6 +1775,7 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
 
     if (ExecutionFakePage)
     {
+        HookedPage->IsAtomicInlineHookPage = AtomicHook;
         //
         // Show that entry has hidden hooks for execution
         //
@@ -1632,11 +1819,30 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
         //
         SwitchToPreviousProcess(Cr3OfCurrentProcess);
 
-        if (EptExactCall && !FakePageReadResult)
+        if ((EptExactCall || AtomicHook) && !FakePageReadResult)
         {
             PoolManagerCallbackFreePool((UINT64)HookedPage);
             VmmCallbackSetLastError(DEBUGGER_ERROR_INVALID_ADDRESS);
             return FALSE;
+        }
+
+        if (AtomicHook)
+        {
+            // Prepare every core before publishing any executable INT3 page.
+            // A failed split is a clean install failure at this point.
+            for (SIZE_T i = 0; i < ProcessorsCount; i++)
+            {
+                if (!EptSplitLargePage(g_GuestState[i].EptPageTable,
+                                       TRUE, PhysicalBaseAddress) ||
+                    EptGetPml1Entry(g_GuestState[i].EptPageTable,
+                                    PhysicalBaseAddress) == NULL)
+                {
+                    PoolManagerCallbackFreePool((UINT64)HookedPage);
+                    VmmCallbackSetLastError(
+                        DEBUGGER_ERROR_EPT_FAILED_TO_GET_PML1_ENTRY_OF_TARGET_ADDRESS);
+                    return FALSE;
+                }
+            }
         }
 
         if (EptExactCall)
@@ -1657,8 +1863,12 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
             TargetAddressInSafeMemory =
                 EptHookCalcBreakpointOffset(TargetAddress, HookedPage);
 
-            if (((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)
-                    ->HookFunction == NULL)
+            if (AtomicHook)
+            {
+                HookFunction = NULL;
+            }
+            else if (((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)
+                         ->HookFunction == NULL)
             {
                 HookFunction = (PVOID)AsmGeneralDetourHook;
             }
@@ -1675,13 +1885,24 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
                     TargetAddress,
                     (PVOID)TargetAddressInSafeMemory,
                     HookFunction,
-                    ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)
-                        ->OriginalFunction))
+                    AtomicHook ? NULL : ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)
+                        ->OriginalFunction,
+                    AtomicHook ? (EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2_ATOMIC *)HookingDetails : NULL,
+                    FALSE))
             {
                 PoolManagerCallbackFreePool((UINT64)HookedPage);
                 VmmCallbackSetLastError(
                     DEBUGGER_ERROR_COULD_NOT_BUILD_THE_EPT_HOOK);
                 return FALSE;
+            }
+
+            if (AtomicHook)
+            {
+                // The subsequent EPT commit has no rollback-free failure path.
+                CpuInterlockedExchange(
+                    &((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2_ATOMIC *)HookingDetails)
+                         ->PublicationMayBeIncomplete,
+                    TRUE);
             }
         }
     }
@@ -1693,7 +1914,10 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
         //
         if (!EptSplitLargePage(g_GuestState[i].EptPageTable, TRUE, PhysicalBaseAddress))
         {
-            PoolManagerCallbackFreePool((UINT64)HookedPage);
+            if (!AtomicHook)
+            {
+                PoolManagerCallbackFreePool((UINT64)HookedPage);
+            }
 
             //
             // Here also other previous pools should be specified, but we forget it for now
@@ -1713,7 +1937,10 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
         //
         if (!TargetPage)
         {
-            PoolManagerCallbackFreePool((UINT64)HookedPage);
+            if (!AtomicHook)
+            {
+                PoolManagerCallbackFreePool((UINT64)HookedPage);
+            }
 
             //
             // Here also other previous pools should be specified, but we forget it for now
@@ -1821,6 +2048,20 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
  *
  * @return BOOLEAN Returns true if the hook was successful or false if there was an error
  */
+static volatile LONG g_EptDetourListInitializationLock;
+
+static VOID
+EptHookEnsureDetourListInitialized(VOID)
+{
+    SpinlockLock(&g_EptDetourListInitializationLock);
+    if (!g_IsEptHook2sDetourListInitialized)
+    {
+        InitializeListHead(&g_EptHook2sDetourListHead);
+        g_IsEptHook2sDetourListInitialized = TRUE;
+    }
+    SpinlockUnlock(&g_EptDetourListInitializationLock);
+}
+
 BOOLEAN
 EptHookPerformMemoryOrInlineHook(VIRTUAL_MACHINE_STATE *                        VCpu,
                                  EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *       EptHook2AddressDetails,
@@ -1875,15 +2116,7 @@ EptHookPerformMemoryOrInlineHook(VIRTUAL_MACHINE_STATE *                        
     {
         HookDetailsToVmcall = EptHook2AddressDetails;
 
-        //
-        // Initialize the list of ept hook detours if it's not already initialized
-        //
-        if (!g_IsEptHook2sDetourListInitialized)
-        {
-            g_IsEptHook2sDetourListInitialized = TRUE;
-
-            InitializeListHead(&g_EptHook2sDetourListHead);
-        }
+        EptHookEnsureDetourListInitialized();
 
         if (EptHiddenHook2)
         {
@@ -2048,6 +2281,112 @@ EptHookInlineHookWithTrampoline(VIRTUAL_MACHINE_STATE * VCpu,
                                             ProcessId,
                                             TRUE,
                                             FALSE);
+}
+
+typedef struct _EPT_ATOMIC_INVALIDATION_RESULT
+{
+    volatile LONG FailedCores;
+} EPT_ATOMIC_INVALIDATION_RESULT;
+
+typedef struct _EPT_ATOMIC_UNHOOK_RESULT
+{
+    UINT64 PhysicalAddress;
+    UINT64 OriginalEntry;
+    volatile LONG FailedCores;
+} EPT_ATOMIC_UNHOOK_RESULT;
+
+static VOID
+EptHookAtomicUnhookDpc(_In_ PKDPC Dpc,
+                       _In_opt_ PVOID DeferredContext,
+                       _In_opt_ PVOID SystemArgument1,
+                       _In_opt_ PVOID SystemArgument2)
+{
+    EPT_ATOMIC_UNHOOK_RESULT * Result =
+        (EPT_ATOMIC_UNHOOK_RESULT *)DeferredContext;
+
+    UNREFERENCED_PARAMETER(Dpc);
+    if (AsmVmxVmcall(VMCALL_UNHOOK_SINGLE_PAGE,
+                    Result->PhysicalAddress,
+                    Result->OriginalEntry,
+                    0) != STATUS_SUCCESS)
+    {
+        CpuInterlockedCompareExchange(&Result->FailedCores, 1, 0);
+    }
+    PlatformBroadcastSynchronizeEndOfRoutine(SystemArgument1,
+                                              SystemArgument2);
+}
+
+static VOID
+EptHookAtomicInvalidateDpc(_In_ PKDPC Dpc,
+                           _In_opt_ PVOID DeferredContext,
+                           _In_opt_ PVOID SystemArgument1,
+                           _In_opt_ PVOID SystemArgument2)
+{
+    EPT_ATOMIC_INVALIDATION_RESULT * Result =
+        (EPT_ATOMIC_INVALIDATION_RESULT *)DeferredContext;
+    UINT32 CoreId = PlatformCpuGetCurrentProcessorNumber();
+
+    UNREFERENCED_PARAMETER(Dpc);
+    if (AsmVmxVmcall(VMCALL_INVEPT_SINGLE_CONTEXT,
+                    g_GuestState[CoreId].EptPointer.AsUInt,
+                    0, 0) != STATUS_SUCCESS)
+    {
+        CpuInterlockedCompareExchange(&Result->FailedCores, 1, 0);
+    }
+    PlatformBroadcastSynchronizeEndOfRoutine(SystemArgument1,
+                                              SystemArgument2);
+}
+
+VMM_ATOMIC_INLINE_INSTALL_STATUS
+EptHookInlineHookAtomic(VIRTUAL_MACHINE_STATE * VCpu,
+                        PVOID                   TargetAddress,
+                        UINT32                  ProcessId,
+                        PVOID *                 PlainOrigin,
+                        PVOID *                 GuardedOrigin,
+                        PVOID *                 GuardedTailRip,
+                        PVOID *                 ContinuationRip)
+{
+    EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2_ATOMIC Detail = {0};
+    EPT_ATOMIC_INVALIDATION_RESULT Invalidation = {0};
+    NTSTATUS Status;
+
+    UNREFERENCED_PARAMETER(VCpu);
+
+    if (TargetAddress == NULL || PlainOrigin == NULL ||
+        GuardedOrigin == NULL || GuardedTailRip == NULL ||
+        ContinuationRip == NULL || VmxGetCurrentExecutionMode() ||
+        !VmxGetCurrentLaunchState() ||
+        !DispatchAtomicInlineEventReady())
+    {
+        return VmmAtomicInlineInstallCleanFailure;
+    }
+    *PlainOrigin = NULL;
+    *GuardedOrigin = NULL;
+    *GuardedTailRip = NULL;
+    *ContinuationRip = NULL;
+
+    EptHookEnsureDetourListInitialized();
+
+    Detail.TargetAddress = TargetAddress;
+    Detail.PlainOrigin = PlainOrigin;
+    Detail.GuardedOrigin = GuardedOrigin;
+    Detail.GuardedTailRip = GuardedTailRip;
+    Detail.ContinuationRip = ContinuationRip;
+    Status = AsmVmxVmcall(VMCALL_CHANGE_PAGE_ATTRIB,
+                          (UINT64)(ULONG_PTR)&Detail,
+                          PAGE_ATTRIB_EXEC_ATOMIC_HOOK,
+                          LayoutGetCr3ByProcessId(ProcessId).Flags);
+    if (Status != STATUS_SUCCESS)
+    {
+        return Detail.PublicationMayBeIncomplete
+                   ? VmmAtomicInlineInstallIndeterminate
+                   : VmmAtomicInlineInstallCleanFailure;
+    }
+
+    PlatformDpcGenericCall(EptHookAtomicInvalidateDpc, &Invalidation);
+    return Invalidation.FailedCores == 0
+               ? VmmAtomicInlineInstallReady
+               : VmmAtomicInlineInstallIndeterminate;
 }
 
 /**
@@ -2416,6 +2755,16 @@ EptHookRemoveEntriesAndFreePoolFromEptHook2sDetourListByPage(UINT64 Address)
         if (PAGE_ALIGN(CurrentHookedDetails->HookedFunctionAddress) == PageAddress)
         {
             RemoveEntryList(&CurrentHookedDetails->OtherHooksList);
+            if (CurrentHookedDetails->IsAtomicInline)
+            {
+                if (!PoolManagerCallbackFreePool(
+                        (UINT64)CurrentHookedDetails->ReturnAddress) ||
+                    !PoolManagerCallbackFreePool(
+                        (UINT64)CurrentHookedDetails->GuardedOrigin))
+                {
+                    LogError("Err, atomic inline trampoline pool entry was not found");
+                }
+            }
             if (!PoolManagerCallbackFreePool((UINT64)CurrentHookedDetails))
             {
                 LogError("Err, something goes wrong, the pool not found in the list of previously allocated pools by pool manager");
@@ -2427,6 +2776,120 @@ EptHookRemoveEntriesAndFreePoolFromEptHook2sDetourListByPage(UINT64 Address)
     }
 
     return RemovedAny;
+}
+
+static BOOLEAN
+EptHookRetireAtomicDetoursByPage(_In_ UINT64 Target)
+{
+    BOOLEAN Found = FALSE;
+    BOOLEAN Released = TRUE;
+    PLIST_ENTRY Link;
+
+    if (!g_IsEptHook2sDetourListInitialized)
+    {
+        return FALSE;
+    }
+    Link = g_EptHook2sDetourListHead.Flink;
+
+    while (Link != &g_EptHook2sDetourListHead)
+    {
+        PLIST_ENTRY Next = Link->Flink;
+        PHIDDEN_HOOKS_DETOUR_DETAILS Detail =
+            CONTAINING_RECORD(Link, HIDDEN_HOOKS_DETOUR_DETAILS, OtherHooksList);
+        if (PAGE_ALIGN(Detail->HookedFunctionAddress) ==
+            PAGE_ALIGN((PVOID)(ULONG_PTR)Target))
+        {
+            Found = TRUE;
+            if (!Detail->IsAtomicInline)
+            {
+                return FALSE;
+            }
+            RemoveEntryList(Link);
+            if (!PoolManagerCallbackFreePool((UINT64)Detail->ReturnAddress))
+            {
+                Released = FALSE;
+            }
+            if (!PoolManagerCallbackFreePool((UINT64)Detail->GuardedOrigin))
+            {
+                Released = FALSE;
+            }
+            if (!PoolManagerCallbackFreePool((UINT64)Detail))
+            {
+                Released = FALSE;
+            }
+        }
+        Link = Next;
+    }
+    return Found && Released;
+}
+
+VMM_ATOMIC_INLINE_DETACH_STATUS
+EptHookUnHookAtomicPage(UINT64 Target,
+                        UINT64 PhysicalPage,
+                        UINT32 ProcessId)
+{
+    PEPT_HOOKED_PAGE_DETAIL HookedEntry = NULL;
+    EPT_ATOMIC_UNHOOK_RESULT Result = {0};
+    PLIST_ENTRY Link;
+    SIZE_T ActualPhysicalPage;
+
+    if (Target == 0 || PhysicalPage == 0 ||
+        (PhysicalPage & (PAGE_SIZE - 1u)) != 0 ||
+        VmxGetCurrentExecutionMode() || g_EptState == NULL)
+    {
+        return VmmAtomicInlineDetachIndeterminate;
+    }
+    ActualPhysicalPage = (SIZE_T)PAGE_ALIGN(
+        VirtualAddressToPhysicalAddressByProcessId((PVOID)(ULONG_PTR)Target,
+                                                   ProcessId));
+    if (ActualPhysicalPage != PhysicalPage)
+    {
+        return VmmAtomicInlineDetachIndeterminate;
+    }
+    Link = g_EptState->HookedPagesList.Flink;
+    while (Link != &g_EptState->HookedPagesList)
+    {
+        PEPT_HOOKED_PAGE_DETAIL Candidate =
+            CONTAINING_RECORD(Link, EPT_HOOKED_PAGE_DETAIL, PageHookList);
+        if (Candidate->PhysicalBaseAddress == PhysicalPage)
+        {
+            if (!Candidate->IsAtomicInlineHookPage ||
+                PAGE_ALIGN((PVOID)(ULONG_PTR)Target) !=
+                    PAGE_ALIGN((PVOID)(ULONG_PTR)Candidate->VirtualAddress))
+            {
+                return VmmAtomicInlineDetachIndeterminate;
+            }
+            HookedEntry = Candidate;
+            break;
+        }
+        Link = Link->Flink;
+    }
+    if (HookedEntry == NULL)
+    {
+        return VmmAtomicInlineDetachIndeterminate;
+    }
+
+    Result.PhysicalAddress = PhysicalPage;
+    Result.OriginalEntry = HookedEntry->OriginalEntry.AsUInt;
+    PlatformDpcGenericCall(EptHookAtomicUnhookDpc, &Result);
+    if (Result.FailedCores != 0)
+    {
+        // No EPT hook entry, detour detail, or trampoline has been removed.
+        // Reapplying OriginalEntry and INVEPT on every core is safe to retry.
+        return VmmAtomicInlineDetachRetrySafe;
+    }
+
+    // A failed pool retirement after this point is no longer retry-safe.
+    if (!EptHookRetireAtomicDetoursByPage(Target))
+    {
+        return VmmAtomicInlineDetachIndeterminate;
+    }
+    RemoveEntryList(&HookedEntry->PageHookList);
+    if (!PoolManagerCallbackFreePool((UINT64)HookedEntry))
+    {
+        return VmmAtomicInlineDetachIndeterminate;
+    }
+    return VmmAtomicInlineDetachDetached;
 }
 
 /**
@@ -2477,6 +2940,12 @@ EptHookUnHookSingleAddressDetoursAndMonitor(PEPT_HOOKED_PAGE_DETAIL             
                                             BOOLEAN                             ApplyDirectlyFromVmxRoot,
                                             EPT_SINGLE_HOOK_UNHOOKING_DETAILS * TargetUnhookingDetails)
 {
+    if (HookedEntry->IsAtomicInlineHookPage)
+    {
+        // Atomic pages have a three-state detach contract. Legacy BOOLEAN
+        // callers must not collapse a retry-safe failure into a completed hook.
+        return FALSE;
+    }
     //
     // Set the unhooking details
     //
@@ -2769,7 +3238,8 @@ EptHookUnHookSingleAddressHiddenBreakpoint(PEPT_HOOKED_PAGE_DETAIL             H
                 // exception bitmaps on vm-exits for breakpoint, for this purpose, we have
                 // to visit all the entries to see if there is any entries
                 //
-                if (EptHookGetCountOfEpthooks(FALSE) == 0)
+                if (EptHookGetCountOfEpthooks(FALSE) == 0 &&
+                    !DispatchAtomicInlineEventRegistered())
                 {
                     //
                     // If applied directly from VMX-root mode, it's the responsibility of the

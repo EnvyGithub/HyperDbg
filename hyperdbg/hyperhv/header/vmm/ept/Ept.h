@@ -24,6 +24,7 @@
 #define PAGE_ATTRIB_EXEC             0x8
 #define PAGE_ATTRIB_EXEC_HIDDEN_HOOK 0x10
 #define PAGE_ATTRIB_EXEC_EXACT_CALL  0x20
+#define PAGE_ATTRIB_EXEC_ATOMIC_HOOK 0x40
 
 /**
  * @brief Integer 2MB
@@ -315,3 +316,7 @@ EptSetPML1AndInvalidateTLB(_Inout_ VIRTUAL_MACHINE_STATE *      VCpu,
  */
 BOOLEAN
 EptCheckAndHandleBreakpoint(VIRTUAL_MACHINE_STATE * VCpu);
+
+BOOLEAN
+EptCheckAndHandleAtomicInlineBreakpoint(VIRTUAL_MACHINE_STATE * VCpu,
+                                        UINT64                  GuestRip);

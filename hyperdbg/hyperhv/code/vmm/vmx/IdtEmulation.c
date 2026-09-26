@@ -358,6 +358,11 @@ IdtEmulationHandleExceptionAndNmi(_Inout_ VIRTUAL_MACHINE_STATE *   VCpu,
 
             VmxVmread64P(VMCS_GUEST_RIP, &GuestRip);
 
+            if (EptCheckAndHandleAtomicInlineBreakpoint(VCpu, GuestRip))
+            {
+                break;
+            }
+
             MemoryMapperReadMemorySafe(GuestRip, &TargetMem, sizeof(BYTE));
 
             if (!EptCheckAndHandleBreakpoint(VCpu) || TargetMem == 0xcc)

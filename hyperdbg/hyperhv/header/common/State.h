@@ -255,6 +255,9 @@ typedef struct _EPT_HOOKED_PAGE_DETAIL
      */
     BOOLEAN IsExactCallHook;
 
+    // [DOWNSTREAM] Atomic entries cannot share a page with legacy hook kinds.
+    BOOLEAN IsAtomicInlineHookPage;
+
     /**
      * @brief [DOWNSTREAM] Exact-call offsets and destination used to rebuild the fake page
      */

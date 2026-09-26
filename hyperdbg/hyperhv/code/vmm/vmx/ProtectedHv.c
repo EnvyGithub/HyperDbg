@@ -53,7 +53,8 @@ ProtectedHvChangeExceptionBitmapWithIntegrityCheck(VIRTUAL_MACHINE_STATE * VCpu,
     //
     // Check for possible EPT Hooks (Hidden Breakpoints)
     //
-    if (EptHookGetCountOfEpthooks(FALSE) != 0)
+    if (EptHookGetCountOfEpthooks(FALSE) != 0 ||
+        DispatchAtomicInlineEventRegistered())
     {
         CurrentMask |= 1 << EXCEPTION_VECTOR_BREAKPOINT;
     }

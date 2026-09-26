@@ -1340,6 +1340,16 @@ EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
     return IsHandledByEptHook;
 }
 
+// [DOWNSTREAM] Atomic inline entries use one-byte INT3 only as a VM-exit
+// rendezvous. They must transfer before the regular hidden-BP path restores
+// the original page and arms MTF for guest instruction replay.
+BOOLEAN
+EptCheckAndHandleAtomicInlineBreakpoint(VIRTUAL_MACHINE_STATE * VCpu,
+                                        UINT64                  GuestRip)
+{
+    return DispatchAtomicInlineEntryBreakpoint(VCpu, GuestRip);
+}
+
 /**
  * @brief Check if the breakpoint vm-exit relates to EPT hook or not
  *

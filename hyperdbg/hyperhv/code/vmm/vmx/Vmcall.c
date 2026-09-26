@@ -185,8 +185,9 @@ VmxVmcallHandler(VIRTUAL_MACHINE_STATE * VCpu,
     }
     case VMCALL_INVEPT_SINGLE_CONTEXT:
     {
-        EptInveptSingleContext(OptionalParam1);
-        VmcallStatus = STATUS_SUCCESS;
+        VmcallStatus = EptInveptSingleContext(OptionalParam1) == 0
+                           ? STATUS_SUCCESS
+                           : STATUS_UNSUCCESSFUL;
         break;
     }
     case VMCALL_INVEPT_ALL_CONTEXTS:
@@ -249,7 +250,11 @@ VmxVmcallHandler(VIRTUAL_MACHINE_STATE * VCpu,
     case VMCALL_SET_EXCEPTION_BITMAP:
     {
         HvSetExceptionBitmap(VCpu, (UINT32)OptionalParam1);
-        VmcallStatus = STATUS_SUCCESS;
+        VmcallStatus = (OptionalParam1 < 32u &&
+                        (HvReadExceptionBitmap() &
+                         (1u << (UINT32)OptionalParam1)) != 0)
+                           ? STATUS_SUCCESS
+                           : STATUS_UNSUCCESSFUL;
         break;
     }
     case VMCALL_ENABLE_MOV_TO_DEBUG_REGS_EXITING:

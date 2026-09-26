@@ -867,6 +867,18 @@ VmFuncSetTriggerEventForVmcalls(BOOLEAN Set)
     g_TriggerEventForVmcalls = Set;
 }
 
+BOOLEAN
+VmFuncRegisterAtomicInlineEventCallback(VMM_ATOMIC_INLINE_EVENT_CALLBACK Callback)
+{
+    return DispatchRegisterAtomicInlineEventCallback(Callback);
+}
+
+BOOLEAN
+VmFuncUnregisterAtomicInlineEventCallback(VMM_ATOMIC_INLINE_EVENT_CALLBACK Callback)
+{
+    return DispatchUnregisterAtomicInlineEventCallback(Callback);
+}
+
 /**
  * @brief Set triggering events for CPUIDs
  *

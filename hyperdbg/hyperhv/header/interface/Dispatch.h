@@ -34,6 +34,23 @@ DispatchEventTsc(VIRTUAL_MACHINE_STATE * VCpu, BOOLEAN IsRdtscp);
 VOID
 DispatchEventVmcall(VIRTUAL_MACHINE_STATE * VCpu);
 
+// [DOWNSTREAM] The callback is independent of the size-frozen VMM_CALLBACKS.
+BOOLEAN
+DispatchRegisterAtomicInlineEventCallback(VMM_ATOMIC_INLINE_EVENT_CALLBACK Callback);
+
+BOOLEAN
+DispatchUnregisterAtomicInlineEventCallback(VMM_ATOMIC_INLINE_EVENT_CALLBACK Callback);
+
+BOOLEAN
+DispatchAtomicInlineEventRegistered(VOID);
+
+BOOLEAN
+DispatchAtomicInlineEventReady(VOID);
+
+// Called only for a VMM-owned 0xCC target, before hidden-BP replay.
+BOOLEAN
+DispatchAtomicInlineEntryBreakpoint(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRip);
+
 VOID
 DispatchEventMode(VIRTUAL_MACHINE_STATE * VCpu, DEBUGGER_EVENT_MODE_TYPE TargetMode);
 

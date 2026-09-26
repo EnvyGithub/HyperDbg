@@ -331,6 +331,32 @@ ConfigureEptHook2WithTrampoline(UINT32 CoreId,
                                            OriginalFunction);
 }
 
+VMM_ATOMIC_INLINE_INSTALL_STATUS
+ConfigureEptHook2Atomic(UINT32 CoreId,
+                        PVOID  TargetAddress,
+                        UINT32 ProcessId,
+                        PVOID *PlainOrigin,
+                        PVOID *GuardedOrigin,
+                        PVOID *GuardedTailRip,
+                        PVOID *ContinuationRip)
+{
+    return EptHookInlineHookAtomic(&g_GuestState[CoreId],
+                                   TargetAddress,
+                                   ProcessId,
+                                   PlainOrigin,
+                                   GuardedOrigin,
+                                   GuardedTailRip,
+                                   ContinuationRip);
+}
+
+VMM_ATOMIC_INLINE_DETACH_STATUS
+ConfigureEptHookUnHookAtomicPage(UINT64 Target,
+                                 UINT64 PhysicalPage,
+                                 UINT32 ProcessId)
+{
+    return EptHookUnHookAtomicPage(Target, PhysicalPage, ProcessId);
+}
+
 /**
  * @brief [DOWNSTREAM] Apply a five-byte call through a same-page relay
  */
