@@ -351,10 +351,9 @@ ConfigureEptHook2Atomic(UINT32 CoreId,
 
 VMM_ATOMIC_INLINE_DETACH_STATUS
 ConfigureEptHookUnHookAtomicPage(UINT64 Target,
-                                 UINT64 PhysicalPage,
-                                 UINT32 ProcessId)
+                                 UINT64 PhysicalPage)
 {
-    return EptHookUnHookAtomicPage(Target, PhysicalPage, ProcessId);
+    return EptHookUnHookAtomicPage(Target, PhysicalPage);
 }
 
 /**

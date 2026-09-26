@@ -2825,13 +2825,11 @@ EptHookRetireAtomicDetoursByPage(_In_ UINT64 Target)
 
 VMM_ATOMIC_INLINE_DETACH_STATUS
 EptHookUnHookAtomicPage(UINT64 Target,
-                        UINT64 PhysicalPage,
-                        UINT32 ProcessId)
+                        UINT64 PhysicalPage)
 {
     PEPT_HOOKED_PAGE_DETAIL HookedEntry = NULL;
     EPT_ATOMIC_UNHOOK_RESULT Result = {0};
     PLIST_ENTRY Link;
-    SIZE_T ActualPhysicalPage;
 
     if (Target == 0 || PhysicalPage == 0 ||
         (PhysicalPage & (PAGE_SIZE - 1u)) != 0 ||
@@ -2839,13 +2837,9 @@ EptHookUnHookAtomicPage(UINT64 Target,
     {
         return VmmAtomicInlineDetachIndeterminate;
     }
-    ActualPhysicalPage = (SIZE_T)PAGE_ALIGN(
-        VirtualAddressToPhysicalAddressByProcessId((PVOID)(ULONG_PTR)Target,
-                                                   ProcessId));
-    if (ActualPhysicalPage != PhysicalPage)
-    {
-        return VmmAtomicInlineDetachIndeterminate;
-    }
+    // The installed physical page remains the hook identity after the
+    // installing process exits; retranslating Target through its PID would
+    // reject a still-owned page before the checked per-core restore.
     Link = g_EptState->HookedPagesList.Flink;
     while (Link != &g_EptState->HookedPagesList)
     {

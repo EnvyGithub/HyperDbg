@@ -455,12 +455,12 @@ ConfigureEptHook2Atomic(UINT32 CoreId,
                         PVOID *GuardedTailRip,
                         PVOID *ContinuationRip);
 
-// RetrySafe means every hook detail and trampoline is still owned and may be
-// retried; Indeterminate requires controlled VMM recovery, not blind retry.
+// PhysicalPage is the stored install identity even if the installing process
+// has exited. RetrySafe means every hook detail and trampoline is still owned
+// and may be retried; Indeterminate requires controlled VMM recovery.
 IMPORT_EXPORT_VMM VMM_ATOMIC_INLINE_DETACH_STATUS
 ConfigureEptHookUnHookAtomicPage(UINT64 Target,
-                                 UINT64 PhysicalPage,
-                                 UINT32 ProcessId);
+                                 UINT64 PhysicalPage);
 
 IMPORT_EXPORT_VMM BOOLEAN
 ConfigureEptHook2ExactCall(UINT32 CoreId,

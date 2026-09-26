@@ -205,8 +205,7 @@ EptHookInlineHookAtomic(VIRTUAL_MACHINE_STATE * VCpu,
 
 VMM_ATOMIC_INLINE_DETACH_STATUS
 EptHookUnHookAtomicPage(UINT64 Target,
-                        UINT64 PhysicalPage,
-                        UINT32 ProcessId);
+                        UINT64 PhysicalPage);
 
 
 /**
