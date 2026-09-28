@@ -1,3 +1,6 @@
+> **Fork / provenance note**  
+> This is a personal research fork of the upstream [HyperDbg/HyperDbg](https://github.com/HyperDbg/HyperDbg) project. Upstream authorship and publication credit remain with the original project and contributors. For the purpose of this fork, branch guidance, and how to distinguish upstream work from downstream experiments, see [FORK_NOTES.md](FORK_NOTES.md).
+
 <p align="left">
 <a href="https://hyperdbg.org"><img src="https://raw.githubusercontent.com/HyperDbg/graphics/master/Badges/Link-Website-orange.svg" alt="Website"></a>
 <a href="https://docs.hyperdbg.org"><img src="https://raw.githubusercontent.com/HyperDbg/graphics/master/Badges/Link-Docs-yellow.svg" alt="Documentation"></a>
