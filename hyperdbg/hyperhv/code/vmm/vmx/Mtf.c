@@ -62,6 +62,9 @@ MtfHandleVmexit(VIRTUAL_MACHINE_STATE * VCpu)
         // Set it to NULL
         //
         VCpu->MtfEptHookRestorePoint = NULL;
+        VCpu->MtfEptHookViolation = EPT_HOOKED_LAST_VIOLATION_NONE;
+        VCpu->MtfEptHookPostEventAllowed = FALSE;
+        RtlZeroMemory(&VCpu->MtfEptHookContext, sizeof(VCpu->MtfEptHookContext));
 
         //
         // Check for re-enabling external interrupts

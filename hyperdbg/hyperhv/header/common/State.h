@@ -62,6 +62,7 @@ typedef enum _NMI_BROADCAST_ACTION_TYPE
  */
 typedef enum _EPT_HOOKED_LAST_VIOLATION
 {
+    EPT_HOOKED_LAST_VIOLATION_NONE  = 0,
     EPT_HOOKED_LAST_VIOLATION_READ  = 1,
     EPT_HOOKED_LAST_VIOLATION_WRITE = 2,
     EPT_HOOKED_LAST_VIOLATION_EXEC  = 3
@@ -271,24 +272,6 @@ typedef struct _EPT_HOOKED_PAGE_DETAIL
     BOOLEAN IsMmioShadowing;
 
     /**
-     * @brief Temporary context for the post event monitors
-     * It shows the context of the last address that triggered the hook
-     * Note: Only used for read/write trigger events
-     */
-    EPT_HOOKS_CONTEXT LastContextState;
-
-    /**
-     * @brief This field shows whether the hook should call the post event trigger
-     * after restoring the state or not
-     */
-    BOOLEAN IsPostEventTriggerAllowed;
-
-    /**
-     * @brief This field shows the last violation happened to this EPT hook
-     */
-    EPT_HOOKED_LAST_VIOLATION LastViolation;
-
-    /**
      * @brief Address of hooked pages (multiple breakpoints on a single page)
      * this is only used in hidden breakpoints (not hidden detours)
      */
@@ -368,6 +351,10 @@ typedef struct _VIRTUAL_MACHINE_STATE
     NMI_BROADCASTING_STATE  NmiBroadcastingState;                                   // Shows the state of NMI broadcasting
     VM_EXIT_TRANSPARENCY    TransparencyState;                                      // The state of the debugger in transparent-mode
     PEPT_HOOKED_PAGE_DETAIL MtfEptHookRestorePoint;                                 // It shows the detail of the hooked paged that should be restore in MTF vm-exit
+    // One-instruction replay belongs to this vCPU, not to the shared hooked page.
+    EPT_HOOKS_CONTEXT         MtfEptHookContext;
+    EPT_HOOKED_LAST_VIOLATION MtfEptHookViolation;
+    BOOLEAN                   MtfEptHookPostEventAllowed;
     UINT8                   LastExceptionOccurredInHost;                            // The vector of last exception occurred in host
     UINT64                  HostIdt;                                                // host Interrupt Descriptor Table (actual type is SEGMENT_DESCRIPTOR_INTERRUPT_GATE_64*)
     UINT64                  HostGdt;                                                // host Global Descriptor Table (actual type is SEGMENT_DESCRIPTOR_32* or SEGMENT_DESCRIPTOR_64*)

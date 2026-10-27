@@ -1014,22 +1014,30 @@ EptHandlePageHookExit(VIRTUAL_MACHINE_STATE *              VCpu,
             // happens on 0x123b4600, so we perform the necessary checks here
             //
 
+            VCpu->MtfEptHookViolation = EPT_HOOKED_LAST_VIOLATION_NONE;
+            VCpu->MtfEptHookPostEventAllowed = FALSE;
+            RtlZeroMemory(&VCpu->MtfEptHookContext, sizeof(VCpu->MtfEptHookContext));
+
             if (GuestPhysicalAddr >= HookedEntry->StartOfTargetPhysicalAddress && GuestPhysicalAddr <= HookedEntry->EndOfTargetPhysicalAddress)
             {
                 ResultOfHandlingHook = EptHookHandleHookedPage(VCpu,
                                                                HookedEntry,
                                                                ViolationQualification,
                                                                GuestPhysicalAddr,
-                                                               &HookedEntry->LastContextState,
+                                                               &VCpu->MtfEptHookContext,
                                                                &IgnoreReadOrWriteOrExec,
                                                                &IsExecViolation);
             }
             else
             {
                 //
-                // Here we assume the hook is handled as the hook needs to be
-                // restored (just not within the range)
+                // No event is emitted outside the selected range. A write still
+                // needs fake-page reflection after the instruction completes.
                 //
+                if (!ViolationQualification.EptWriteable && ViolationQualification.WriteAccess)
+                {
+                    VCpu->MtfEptHookViolation = EPT_HOOKED_LAST_VIOLATION_WRITE;
+                }
                 ResultOfHandlingHook = TRUE;
             }
 
@@ -1272,7 +1280,9 @@ EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
             {
                 if (HookedEntry->BreakpointAddresses[i] == GuestRip)
                 {
-                    HookedEntry->LastViolation = EPT_HOOKED_LAST_VIOLATION_EXEC;
+                    VCpu->MtfEptHookViolation = EPT_HOOKED_LAST_VIOLATION_EXEC;
+                    VCpu->MtfEptHookPostEventAllowed = FALSE;
+                    RtlZeroMemory(&VCpu->MtfEptHookContext, sizeof(VCpu->MtfEptHookContext));
 
                     //
                     // We found an address that matches the details, let's trigger the event
