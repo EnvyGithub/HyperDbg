@@ -1264,7 +1264,6 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
                          PVOID                   TargetFunction,
                          PVOID                   TargetFunctionInSafeMemory,
                          PVOID                   HookFunction,
-                         PVOID *                 OriginalFunction,
                          EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2_ATOMIC * AtomicDetails,
                          BOOLEAN                 ExistingPage)
 {
@@ -1411,14 +1410,6 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
     //
 
     //
-    // [DOWNSTREAM] Let the hook function call the original function.
-    //
-    if (OriginalFunction != NULL)
-    {
-        *OriginalFunction = Hook->Trampoline;
-    }
-
-    //
     // Create the structure to return for the debugger, we do it here because it's the first
     // function that changes the original function and if our structure is no ready after this
     // function then we probably see BSOD on other cores
@@ -1432,10 +1423,6 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
         }
         PoolManagerCallbackFreePool((UINT64)Hook->Trampoline);
         Hook->Trampoline = PreviousTrampoline;
-        if (OriginalFunction != NULL)
-        {
-            *OriginalFunction = NULL;
-        }
         return FALSE;
     }
     DetourHookDetails->HookedFunctionAddress = TargetFunction;
@@ -1659,7 +1646,6 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
                                               TargetAddress,
                                               (PVOID)TargetAddressInSafeMemory,
                                               HookFunction,
-                                              AtomicHook ? NULL : ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)->OriginalFunction,
                                               AtomicHook ? (EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2_ATOMIC *)HookingDetails : NULL,
                                               TRUE))
                 {
@@ -1885,8 +1871,6 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
                     TargetAddress,
                     (PVOID)TargetAddressInSafeMemory,
                     HookFunction,
-                    AtomicHook ? NULL : ((EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 *)HookingDetails)
-                        ->OriginalFunction,
                     AtomicHook ? (EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2_ATOMIC *)HookingDetails : NULL,
                     FALSE))
             {
@@ -2232,32 +2216,6 @@ EptHookInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
                   PVOID                   HookFunction,
                   UINT32                  ProcessId)
 {
-    return EptHookInlineHookWithTrampoline(VCpu,
-                                           TargetAddress,
-                                           HookFunction,
-                                           ProcessId,
-                                           NULL);
-}
-
-/**
- * @brief [DOWNSTREAM] This function applies EPT hook 2 (inline) to the target EPT table and exposes its trampoline
- * @details this function should be called from VMX non-root mode
- *
- * @param VCpu The virtual processor's state
- * @param TargetAddress The address of function or memory address to be hooked
- * @param HookFunction The function that will be called when hook triggered
- * @param ProcessId The process id to translate based on that process's cr3
- * @param OriginalFunction Receives the trampoline address when the hook is built
- *
- * @return BOOLEAN Returns true if the hook was successful or false if there was an error
- */
-BOOLEAN
-EptHookInlineHookWithTrampoline(VIRTUAL_MACHINE_STATE * VCpu,
-                                PVOID                   TargetAddress,
-                                PVOID                   HookFunction,
-                                UINT32                  ProcessId,
-                                PVOID *                 OriginalFunction)
-{
     EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2 HookingDetail = {0};
 
     //
@@ -2273,7 +2231,6 @@ EptHookInlineHookWithTrampoline(VIRTUAL_MACHINE_STATE * VCpu,
     //
     HookingDetail.TargetAddress    = TargetAddress;
     HookingDetail.HookFunction     = HookFunction;
-    HookingDetail.OriginalFunction = OriginalFunction;
 
     return EptHookPerformMemoryOrInlineHook(VCpu,
                                             &HookingDetail,

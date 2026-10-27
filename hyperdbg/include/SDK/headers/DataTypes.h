@@ -473,7 +473,6 @@ typedef struct _EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2
 {
     PVOID TargetAddress;
     PVOID HookFunction;
-    PVOID *OriginalFunction; // [DOWNSTREAM] Optional trampoline output for hook callers
 
 } EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2, *PEPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2;
 

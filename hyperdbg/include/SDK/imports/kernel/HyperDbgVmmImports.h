@@ -436,13 +436,6 @@ ConfigureEptHook2(UINT32 CoreId,
                   PVOID  HookFunction,
                   UINT32 ProcessId);
 
-IMPORT_EXPORT_VMM BOOLEAN
-ConfigureEptHook2WithTrampoline(UINT32 CoreId,
-                                PVOID  TargetAddress,
-                                PVOID  HookFunction,
-                                UINT32 ProcessId,
-                                PVOID *OriginalFunction);
-
 // [DOWNSTREAM] The fake target starts with one-byte INT3. PlainOrigin is for
 // primary handlers holding their own rundown; GuardedOrigin is only for the
 // mux's origin-only path, whose tail VMCALL releases its admission reference.

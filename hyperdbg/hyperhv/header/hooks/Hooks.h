@@ -176,24 +176,6 @@ EptHookInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
                   PVOID                   HookFunction,
                   UINT32                  ProcessId);
 
-/**
- * @brief [DOWNSTREAM] Hook in VMX non-root mode (hidden detours) and expose its trampoline
- *
- * @param VCpu
- * @param TargetAddress
- * @param HookFunction
- * @param ProcessId
- * @param OriginalFunction Receives the trampoline address when the hook is built
- *
- * @return BOOLEAN
- */
-BOOLEAN
-EptHookInlineHookWithTrampoline(VIRTUAL_MACHINE_STATE * VCpu,
-                                PVOID                   TargetAddress,
-                                PVOID                   HookFunction,
-                                UINT32                  ProcessId,
-                                PVOID *                 OriginalFunction);
-
 VMM_ATOMIC_INLINE_INSTALL_STATUS
 EptHookInlineHookAtomic(VIRTUAL_MACHINE_STATE * VCpu,
                         PVOID                   TargetAddress,
