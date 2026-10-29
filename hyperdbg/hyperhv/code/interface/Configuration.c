@@ -243,6 +243,18 @@ ConfigureEptHookReservePreallocatedPoolsForEptHooks(UINT32 Count)
     EptHookReservePreallocatedPoolsForEptHooks(Count);
 }
 
+BOOLEAN
+ConfigureEptHookReservePreallocatedPoolsChecked(UINT32 Count)
+{
+    return EptHookReservePreallocatedPoolsForEptHooksChecked(Count);
+}
+
+BOOLEAN
+ConfigureEptHookAllocateExtraHookingPagesChecked(UINT32 Count)
+{
+    return EptHookAllocateExtraHookingPagesChecked(Count);
+}
+
 /**
  * @brief This function invokes a VMCALL to set the hook and broadcast the exiting for
  * the breakpoints on exception bitmap

@@ -534,6 +534,14 @@ ConfigureEptHookAllocateExtraHookingPagesForMemoryMonitorsAndExecEptHooks(UINT32
 IMPORT_EXPORT_VMM VOID
 ConfigureEptHookReservePreallocatedPoolsForEptHooks(UINT32 Count);
 
+// [DOWNSTREAM] Checked siblings preserve legacy VOID exports. FALSE means at
+// least one queue request failed; callers still flush requests already queued.
+IMPORT_EXPORT_VMM BOOLEAN
+ConfigureEptHookReservePreallocatedPoolsChecked(UINT32 Count);
+
+IMPORT_EXPORT_VMM BOOLEAN
+ConfigureEptHookAllocateExtraHookingPagesChecked(UINT32 Count);
+
 IMPORT_EXPORT_VMM BOOLEAN
 ConfigureExecTrapAddProcessToWatchingList(UINT32 ProcessId);
 

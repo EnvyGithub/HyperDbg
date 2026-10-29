@@ -411,6 +411,12 @@ EptHookAllocateExtraHookingPagesForMemoryMonitorsAndExecEptHooks(UINT32 Count);
 VOID
 EptHookReservePreallocatedPoolsForEptHooks(UINT32 Count);
 
+BOOLEAN
+EptHookReservePreallocatedPoolsForEptHooksChecked(UINT32 Count);
+
+BOOLEAN
+EptHookAllocateExtraHookingPagesChecked(UINT32 Count);
+
 /**
  * @brief Change PML EPT state for execution (execute)
  * @detail should be called from VMX-root

@@ -12,6 +12,7 @@
  *
  */
 #include "pch.h"
+#include "../../../header/hooks/EptPoolReservation.h"
 
 #define EPT_EXACT_CALL_TARGET_SIZE 5u
 #define EPT_EXACT_CALL_RELAY_SIZE  14u
@@ -172,37 +173,32 @@ EptHookRefreshExecutionFakePage(_Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry)
  *
  * @return VOID
  */
+static int
+EptEnqueuePoolReservation(void *Context, size_t Size, EPT_POOL_COUNT Count, EPT_POOL_COUNT Intention)
+{
+    UNREFERENCED_PARAMETER(Context);
+    return PoolManagerCallbackRequestAllocation(Size, Count,
+        (POOL_ALLOCATION_INTENTION)Intention) ? 1 : 0;
+}
+
+BOOLEAN
+EptHookReservePreallocatedPoolsForEptHooksChecked(UINT32 Count)
+{
+    const ULONG ProcessorsCount = PlatformCpuGetActiveProcessorCount();
+    const EPT_POOL_RESERVATION_REQUEST Requests[] = {
+        {sizeof(VMM_EPT_DYNAMIC_SPLIT), Count * ProcessorsCount, SPLIT_2MB_PAGING_TO_4KB_PAGE},
+        {sizeof(EPT_HOOKED_PAGE_DETAIL), Count, TRACKING_HOOKED_PAGES},
+        {MAX_EXEC_TRAMPOLINE_SIZE, Count * 2u, EXEC_TRAMPOLINE},
+        {sizeof(HIDDEN_HOOKS_DETOUR_DETAILS), Count, DETOUR_HOOK_DETAILS}
+    };
+    return EptQueuePoolReservationBatch(Requests, RTL_NUMBER_OF(Requests),
+                                        EptEnqueuePoolReservation, NULL) ? TRUE : FALSE;
+}
+
 VOID
 EptHookReservePreallocatedPoolsForEptHooks(UINT32 Count)
 {
-    ULONG ProcessorsCount;
-
-    //
-    // Get number of processors
-    //
-    ProcessorsCount = PlatformCpuGetActiveProcessorCount();
-
-    //
-    // Request pages to be allocated for converting 2MB to 4KB pages
-    // Each core needs its own splitting page-tables
-    //
-    PoolManagerCallbackRequestAllocation(sizeof(VMM_EPT_DYNAMIC_SPLIT), Count * ProcessorsCount, SPLIT_2MB_PAGING_TO_4KB_PAGE);
-
-    //
-    // Request pages to be allocated for paged hook details
-    //
-    PoolManagerCallbackRequestAllocation(sizeof(EPT_HOOKED_PAGE_DETAIL), Count, TRACKING_HOOKED_PAGES);
-
-    //
-    // Request pages to be allocated for Trampoline of Executable hooked pages
-    //
-    // [DOWNSTREAM] Atomic inline hooks need a plain and a guarded origin.
-    PoolManagerCallbackRequestAllocation(MAX_EXEC_TRAMPOLINE_SIZE, Count * 2u, EXEC_TRAMPOLINE);
-
-    //
-    // Request pages to be allocated for detour hooked pages details
-    //
-    PoolManagerCallbackRequestAllocation(sizeof(HIDDEN_HOOKS_DETOUR_DETAILS), Count, DETOUR_HOOK_DETAILS);
+    (VOID)EptHookReservePreallocatedPoolsForEptHooksChecked(Count);
 }
 
 /**
@@ -213,30 +209,22 @@ EptHookReservePreallocatedPoolsForEptHooks(UINT32 Count)
  *
  * @return VOID
  */
+BOOLEAN
+EptHookAllocateExtraHookingPagesChecked(UINT32 Count)
+{
+    const ULONG ProcessorsCount = PlatformCpuGetActiveProcessorCount();
+    const EPT_POOL_RESERVATION_REQUEST Requests[] = {
+        {sizeof(VMM_EPT_DYNAMIC_SPLIT), Count * ProcessorsCount, SPLIT_2MB_PAGING_TO_4KB_PAGE},
+        {sizeof(EPT_HOOKED_PAGE_DETAIL), Count, TRACKING_HOOKED_PAGES}
+    };
+    return EptQueuePoolReservationBatch(Requests, RTL_NUMBER_OF(Requests),
+                                        EptEnqueuePoolReservation, NULL) ? TRUE : FALSE;
+}
+
 VOID
 EptHookAllocateExtraHookingPagesForMemoryMonitorsAndExecEptHooks(UINT32 Count)
 {
-    ULONG ProcessorsCount;
-
-    //
-    // Get number of processors
-    //
-    ProcessorsCount = PlatformCpuGetActiveProcessorCount();
-
-    //
-    // Request pages to be allocated for converting 2MB to 4KB pages
-    // Each core needs its own splitting page-tables
-    //
-    PoolManagerCallbackRequestAllocation(sizeof(VMM_EPT_DYNAMIC_SPLIT),
-                                         Count * ProcessorsCount,
-                                         SPLIT_2MB_PAGING_TO_4KB_PAGE);
-
-    //
-    // Request pages to be allocated for paged hook details
-    //
-    PoolManagerCallbackRequestAllocation(sizeof(EPT_HOOKED_PAGE_DETAIL),
-                                         Count,
-                                         TRACKING_HOOKED_PAGES);
+    (VOID)EptHookAllocateExtraHookingPagesChecked(Count);
 }
 
 /**
