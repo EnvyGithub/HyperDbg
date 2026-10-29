@@ -311,16 +311,14 @@ ConfigureEptHook2Atomic(UINT32 CoreId,
                         UINT32 ProcessId,
                         PVOID *PlainOrigin,
                         PVOID *GuardedOrigin,
-                        PVOID *GuardedTailRip,
-                        PVOID *ContinuationRip)
+                        PVOID  GuardedTailTarget)
 {
     return EptHookInlineHookAtomic(&g_GuestState[CoreId],
                                    TargetAddress,
                                    ProcessId,
                                    PlainOrigin,
                                    GuardedOrigin,
-                                   GuardedTailRip,
-                                   ContinuationRip);
+                                   GuardedTailTarget);
 }
 
 VMM_ATOMIC_INLINE_DETACH_STATUS

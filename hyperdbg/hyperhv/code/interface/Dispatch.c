@@ -276,26 +276,6 @@ DispatchRetiredRelayBreakpoint(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRip)
     return TRUE;
 }
 
-static BOOLEAN
-DispatchAtomicInlineGuardedTailVmcall(VIRTUAL_MACHINE_STATE * VCpu)
-{
-    VMM_ATOMIC_INLINE_EVENT_DECISION Decision;
-
-    if (!DispatchSelectAtomicInlineEvent(
-            VCpu, VCpu->LastVmexitRip, VmmAtomicInlineGuardedTailVmcall,
-            &Decision))
-    {
-        return FALSE;
-    }
-
-    HvSetRip(Decision.NextRip);
-    HvSuppressRipIncrement(VCpu);
-    // The callback has returned. This is the last access to owner memory;
-    // teardown may clear it as soon as the count reaches zero.
-    DispatchChangeAtomicInlineReference(Decision.DispatchActive, -1);
-    return TRUE;
-}
-
 /**
  * @brief Handling debugger functions related to SYSRET events
  *
@@ -585,11 +565,6 @@ DispatchEventVmcall(VIRTUAL_MACHINE_STATE * VCpu)
 {
     VMM_CALLBACK_TRIGGERING_EVENT_STATUS_TYPE EventTriggerResult;
     BOOLEAN                                   PostEventTriggerReq = FALSE;
-
-    if (DispatchAtomicInlineGuardedTailVmcall(VCpu))
-    {
-        return;
-    }
 
     //
     // As the context to event trigger, we send NULL

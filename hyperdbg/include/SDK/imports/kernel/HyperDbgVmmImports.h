@@ -16,13 +16,15 @@
 #    define IMPORT_EXPORT_VMM __declspec(dllimport)
 #endif
 
-// [DOWNSTREAM] Private, opt-in inline-hook entry and guarded-origin tail.
+// [DOWNSTREAM] Private, opt-in inline-hook entry and retired-relay completion.
 // Keep VMM_CALLBACKS unchanged: older VmFuncInitVmm callers have no size field.
 typedef enum _VMM_ATOMIC_INLINE_EVENT_KIND
 {
     VmmAtomicInlineNone                   = 0,
     VmmAtomicInlineEntryBreakpoint        = 1,
-    VmmAtomicInlineGuardedTailVmcall      = 2,
+    // Reserved: the guarded-origin tail VMCALL was replaced by a permanent
+    // guest tail stub (ADR 0086). Do not reuse this value.
+    VmmAtomicInlineReservedGuardedTail    = 2,
     // [DOWNSTREAM] A thread preempted inside a retired same-page relay resumes
     // on the restored original page's 0xCC and faults #BP. The owner completes
     // the transfer instead of injecting it; see ADR 0085.
@@ -44,7 +46,8 @@ typedef struct _VMM_ATOMIC_INLINE_EVENT_DECISION
     INT64           GuestRspAdjustment;
 } VMM_ATOMIC_INLINE_EVENT_DECISION, *PVMM_ATOMIC_INLINE_EVENT_DECISION;
 
-// Called in VMX-root before resuming a guest that hit an opted-in target/tail.
+// Called in VMX-root before resuming a guest that hit an opted-in entry or a
+// retired relay.
 // Return FALSE for unrelated RIPs. The borrowed counter remains owned by the
 // caller and must stay valid until the physical hook and all entries retire.
 typedef BOOLEAN (*VMM_ATOMIC_INLINE_EVENT_CALLBACK)(
@@ -447,16 +450,17 @@ ConfigureEptHook2(UINT32 CoreId,
                   UINT32 ProcessId);
 
 // [DOWNSTREAM] The fake target starts with one-byte INT3. PlainOrigin is for
-// primary handlers holding their own rundown; GuardedOrigin is only for the
-// mux's origin-only path, whose tail VMCALL releases its admission reference.
+// primary handlers holding their own rundown; GuardedOrigin is for an entry
+// that still holds the VM-exit admission. Its tail pushes the continuation and
+// jumps to GuardedTailTarget, which the caller keeps executable forever and
+// which releases that admission before ret (ADR 0086).
 IMPORT_EXPORT_VMM VMM_ATOMIC_INLINE_INSTALL_STATUS
 ConfigureEptHook2Atomic(UINT32 CoreId,
                         PVOID  TargetAddress,
                         UINT32 ProcessId,
                         PVOID *PlainOrigin,
                         PVOID *GuardedOrigin,
-                        PVOID *GuardedTailRip,
-                        PVOID *ContinuationRip);
+                        PVOID  GuardedTailTarget);
 
 // PhysicalPage is the stored install identity even if the installing process
 // has exited. RetrySafe means every hook detail and trampoline is still owned

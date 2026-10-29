@@ -1057,8 +1057,8 @@ EptHookApplyExactCallPatch(_Inout_ EPT_HOOKED_PAGE_DETAIL * HookedPage)
     return TRUE;
 }
 
-// A guarded origin releases admission at its tail VM-exit. Reject a copied
-// control transfer that could leave the trampoline without reaching that exit.
+// A guarded origin releases admission in its permanent tail stub. Reject a
+// copied control transfer that could leave the trampoline without reaching it.
 static BOOLEAN
 EptHookAtomicInstructionReachesTail(_In_reads_bytes_(Length) const UCHAR * Bytes,
                                     _In_ UINT32 Length)
@@ -1144,6 +1144,8 @@ EptHookCopyInstructionsToTrampoline(PCHAR    TrampolineBuffer,
 {
     SIZE_T ReadOffset;
     SIZE_T WriteOffset;
+    SIZE_T TailSize = Guarded ? EPT_HOOK_ATOMIC_GUARDED_TAIL_SIZE
+                              : EPT_HOOK_ABSOLUTE_JUMP2_SIZE;
 
     ReadOffset  = 0;
     WriteOffset = 0;
@@ -1184,7 +1186,7 @@ EptHookCopyInstructionsToTrampoline(PCHAR    TrampolineBuffer,
             INT32  RipDisplacement;
             UINT64 AbsoluteAddress;
 
-            if (WriteOffset + 13 + 14 > MAX_EXEC_TRAMPOLINE_SIZE)
+            if (WriteOffset + 13 + TailSize > MAX_EXEC_TRAMPOLINE_SIZE)
             {
                 return FALSE;
             }
@@ -1219,7 +1221,7 @@ EptHookCopyInstructionsToTrampoline(PCHAR    TrampolineBuffer,
             UINT64 AbsoluteAddress;
             UINT32 DisplacementOffset;
 
-            if (WriteOffset + 13 + 14 > MAX_EXEC_TRAMPOLINE_SIZE)
+            if (WriteOffset + 13 + TailSize > MAX_EXEC_TRAMPOLINE_SIZE)
             {
                 return FALSE;
             }
@@ -1238,7 +1240,7 @@ EptHookCopyInstructionsToTrampoline(PCHAR    TrampolineBuffer,
         }
         else
         {
-            if (WriteOffset + InstructionLength + 14 > MAX_EXEC_TRAMPOLINE_SIZE)
+            if (WriteOffset + InstructionLength + TailSize > MAX_EXEC_TRAMPOLINE_SIZE)
             {
                 return FALSE;
             }
@@ -1405,9 +1407,16 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
             Hook->Trampoline = PreviousTrampoline;
             return FALSE;
         }
-        GuardedTrampoline[SizeOfTrampolineInstructions]     = 0x0F;
-        GuardedTrampoline[SizeOfTrampolineInstructions + 1] = 0x01;
-        ((PUCHAR)GuardedTrampoline)[SizeOfTrampolineInstructions + 2] = 0xC1;
+        // Push the continuation while this trampoline is still admitted, then
+        // enter the caller's permanent stub; its ret consumes that address
+        // after the release. Nothing here executes after the reference drops.
+        EptHookWriteAbsoluteJump2(
+            &GuardedTrampoline[SizeOfTrampolineInstructions],
+            (SIZE_T)TargetFunction + SizeOfHookedInstructions);
+        EptHookWriteAbsoluteJump2(
+            &GuardedTrampoline[SizeOfTrampolineInstructions +
+                               EPT_HOOK_ABSOLUTE_JUMP2_SIZE - 1],
+            (SIZE_T)AtomicDetails->GuardedTailTarget);
     }
 
     //
@@ -1435,19 +1444,11 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
     DetourHookDetails->ReturnAddress         = Hook->Trampoline;
     DetourHookDetails->IsAtomicInline        = AtomicDetails != NULL;
     DetourHookDetails->GuardedOrigin         = GuardedTrampoline;
-    DetourHookDetails->GuardedTailRip        = AtomicDetails != NULL
-                                                   ? &GuardedTrampoline[SizeOfTrampolineInstructions]
-                                                   : NULL;
-    DetourHookDetails->ContinuationRip       = AtomicDetails != NULL
-                                                   ? (PVOID)((ULONG_PTR)TargetFunction + SizeOfHookedInstructions)
-                                                   : NULL;
 
     if (AtomicDetails != NULL)
     {
         *AtomicDetails->PlainOrigin = Hook->Trampoline;
         *AtomicDetails->GuardedOrigin = GuardedTrampoline;
-        *AtomicDetails->GuardedTailRip = DetourHookDetails->GuardedTailRip;
-        *AtomicDetails->ContinuationRip = DetourHookDetails->ContinuationRip;
     }
 
     //
@@ -2306,8 +2307,7 @@ EptHookInlineHookAtomic(VIRTUAL_MACHINE_STATE * VCpu,
                         UINT32                  ProcessId,
                         PVOID *                 PlainOrigin,
                         PVOID *                 GuardedOrigin,
-                        PVOID *                 GuardedTailRip,
-                        PVOID *                 ContinuationRip)
+                        PVOID                   GuardedTailTarget)
 {
     EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2_ATOMIC Detail = {0};
     EPT_ATOMIC_INVALIDATION_RESULT Invalidation = {0};
@@ -2316,8 +2316,8 @@ EptHookInlineHookAtomic(VIRTUAL_MACHINE_STATE * VCpu,
     UNREFERENCED_PARAMETER(VCpu);
 
     if (TargetAddress == NULL || PlainOrigin == NULL ||
-        GuardedOrigin == NULL || GuardedTailRip == NULL ||
-        ContinuationRip == NULL || VmxGetCurrentExecutionMode() ||
+        GuardedOrigin == NULL || GuardedTailTarget == NULL ||
+        VmxGetCurrentExecutionMode() ||
         !VmxGetCurrentLaunchState() ||
         !DispatchAtomicInlineEventReady())
     {
@@ -2325,16 +2325,13 @@ EptHookInlineHookAtomic(VIRTUAL_MACHINE_STATE * VCpu,
     }
     *PlainOrigin = NULL;
     *GuardedOrigin = NULL;
-    *GuardedTailRip = NULL;
-    *ContinuationRip = NULL;
 
     EptHookEnsureDetourListInitialized();
 
     Detail.TargetAddress = TargetAddress;
     Detail.PlainOrigin = PlainOrigin;
     Detail.GuardedOrigin = GuardedOrigin;
-    Detail.GuardedTailRip = GuardedTailRip;
-    Detail.ContinuationRip = ContinuationRip;
+    Detail.GuardedTailTarget = GuardedTailTarget;
     Status = AsmVmxVmcall(VMCALL_CHANGE_PAGE_ATTRIB,
                           (UINT64)(ULONG_PTR)&Detail,
                           PAGE_ATTRIB_EXEC_ATOMIC_HOOK,

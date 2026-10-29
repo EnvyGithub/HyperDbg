@@ -27,8 +27,6 @@ typedef struct _HIDDEN_HOOKS_DETOUR_DETAILS
     // [DOWNSTREAM] Only the opt-in atomic path owns a guarded trampoline.
     BOOLEAN    IsAtomicInline;
     PVOID      GuardedOrigin;
-    PVOID      GuardedTailRip;
-    PVOID      ContinuationRip;
 
 } HIDDEN_HOOKS_DETOUR_DETAILS, *PHIDDEN_HOOKS_DETOUR_DETAILS;
 
@@ -38,8 +36,7 @@ typedef struct _EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2_ATOMIC
     PVOID  TargetAddress;
     PVOID *PlainOrigin;
     PVOID *GuardedOrigin;
-    PVOID *GuardedTailRip;
-    PVOID *ContinuationRip;
+    PVOID  GuardedTailTarget;
     volatile LONG PublicationMayBeIncomplete;
 } EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2_ATOMIC;
 
@@ -109,6 +106,17 @@ PVOID(*ExAllocatePoolWithTagOrig)
  *
  */
 #define MAX_EXEC_TRAMPOLINE_SIZE 100
+
+/**
+ * @brief [DOWNSTREAM] Trampoline tail lengths written after copied instructions
+ *
+ * A plain trampoline ends with one EptHookWriteAbsoluteJump2. A guarded origin
+ * first pushes the continuation, then enters the caller's permanent tail stub
+ * through a second absolute jump (ADR 0086).
+ */
+#define EPT_HOOK_ABSOLUTE_JUMP2_SIZE  14
+#define EPT_HOOK_ATOMIC_GUARDED_TAIL_SIZE \
+    ((EPT_HOOK_ABSOLUTE_JUMP2_SIZE - 1) + EPT_HOOK_ABSOLUTE_JUMP2_SIZE)
 
 // ----------------------------------------------------------------------
 
@@ -182,8 +190,7 @@ EptHookInlineHookAtomic(VIRTUAL_MACHINE_STATE * VCpu,
                         UINT32                  ProcessId,
                         PVOID *                 PlainOrigin,
                         PVOID *                 GuardedOrigin,
-                        PVOID *                 GuardedTailRip,
-                        PVOID *                 ContinuationRip);
+                        PVOID                   GuardedTailTarget);
 
 VMM_ATOMIC_INLINE_DETACH_STATUS
 EptHookUnHookAtomicPage(UINT64 Target,
