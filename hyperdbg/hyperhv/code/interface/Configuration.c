@@ -333,6 +333,30 @@ ConfigureEptHook2Atomic(UINT32 CoreId,
                                    GuardedTailTarget);
 }
 
+BOOLEAN
+ConfigureEptHookQuerySplitDemandV1(PVOID TargetAddress, UINT32 ProcessId,
+                                  VMM_EPT_SPLIT_DEMAND_V1 *Demand)
+{
+    return EptHookQuerySplitDemandV1(TargetAddress, ProcessId, Demand);
+}
+
+BOOLEAN
+ConfigureEptHookReserveDemandChecked(UINT32 HookCount, UINT32 SplitCount)
+{
+    return EptHookReserveDemandChecked(HookCount, SplitCount);
+}
+
+VMM_ATOMIC_INLINE_INSTALL_STATUS
+ConfigureEptHook2AtomicDemandV1(UINT32 CoreId, PVOID TargetAddress,
+                               UINT32 ProcessId, PVOID *PlainOrigin,
+                               PVOID *GuardedOrigin, PVOID GuardedTailTarget,
+                               const VMM_EPT_SPLIT_DEMAND_V1 *Demand)
+{
+    if (Demand == NULL) { return VmmAtomicInlineInstallCleanFailure; }
+    return EptHookInlineHookAtomicDemand(&g_GuestState[CoreId], TargetAddress,
+        ProcessId, PlainOrigin, GuardedOrigin, GuardedTailTarget, Demand);
+}
+
 VMM_ATOMIC_INLINE_DETACH_STATUS
 ConfigureEptHookUnHookAtomicPage(UINT64 Target,
                                  UINT64 PhysicalPage)

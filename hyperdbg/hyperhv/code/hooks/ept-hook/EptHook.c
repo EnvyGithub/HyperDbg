@@ -182,11 +182,10 @@ EptEnqueuePoolReservation(void *Context, size_t Size, EPT_POOL_COUNT Count, EPT_
 }
 
 BOOLEAN
-EptHookReservePreallocatedPoolsForEptHooksChecked(UINT32 Count)
+EptHookReserveDemandChecked(UINT32 Count, UINT32 SplitCount)
 {
-    const ULONG ProcessorsCount = PlatformCpuGetActiveProcessorCount();
     const EPT_POOL_RESERVATION_REQUEST Requests[] = {
-        {sizeof(VMM_EPT_DYNAMIC_SPLIT), Count * ProcessorsCount, SPLIT_2MB_PAGING_TO_4KB_PAGE},
+        {sizeof(VMM_EPT_DYNAMIC_SPLIT), SplitCount, SPLIT_2MB_PAGING_TO_4KB_PAGE},
         {sizeof(EPT_HOOKED_PAGE_DETAIL), Count, TRACKING_HOOKED_PAGES},
         {MAX_EXEC_TRAMPOLINE_SIZE, Count * 2u, EXEC_TRAMPOLINE},
         {sizeof(HIDDEN_HOOKS_DETOUR_DETAILS), Count, DETOUR_HOOK_DETAILS}
@@ -195,10 +194,67 @@ EptHookReservePreallocatedPoolsForEptHooksChecked(UINT32 Count)
                                         EptEnqueuePoolReservation, NULL) ? TRUE : FALSE;
 }
 
+BOOLEAN
+EptHookReservePreallocatedPoolsForEptHooksChecked(UINT32 Count)
+{
+    return EptHookReserveDemandChecked(Count,
+        Count * PlatformCpuGetActiveProcessorCount());
+}
+
 VOID
 EptHookReservePreallocatedPoolsForEptHooks(UINT32 Count)
 {
     (VOID)EptHookReservePreallocatedPoolsForEptHooksChecked(Count);
+}
+
+static int
+EptReadLargePageSnapshot(void *Context, EPT_POOL_COUNT Core,
+                         EPT_POOL_ADDRESS PhysicalPage, int *LargePage)
+{
+    PEPT_PML2_ENTRY Entry;
+    EPT_PML2_ENTRY Snapshot;
+    UNREFERENCED_PARAMETER(Context);
+    if (g_GuestState[Core].EptPageTable == NULL) { return 0; }
+    Entry = EptGetPml2Entry(g_GuestState[Core].EptPageTable, PhysicalPage);
+    if (Entry == NULL) { return 0; }
+    Snapshot.AsUInt = (UINT64)CpuInterlockedCompareExchange64(
+        (INT64 volatile *)&Entry->AsUInt, 0, 0);
+    *LargePage = Snapshot.LargePage != 0;
+    return 1;
+}
+
+BOOLEAN
+EptHookQuerySplitDemandV1(PVOID TargetAddress, UINT32 ProcessId,
+                          VMM_EPT_SPLIT_DEMAND_V1 *Demand)
+{
+    UINT64 PhysicalPage;
+    UINT32 Required;
+    ULONG ProcessorsCount;
+    if (Demand == NULL || Demand->Size != sizeof(*Demand) ||
+        Demand->Version != 1 || TargetAddress == NULL ||
+        VmxGetCurrentExecutionMode() || !VmxGetCurrentLaunchState() ||
+        g_GuestState == NULL || g_EptState == NULL ||
+        g_ModeBasedExecutionControlState || g_ExecTrapInitialized)
+    {
+        return FALSE;
+    }
+    // MBEC setup mutates PML2 permission bitfields from guest context. It is
+    // not part of this opt-in monitor contract; reject that mode instead of
+    // claiming that a snapshot serializes those independent writers.
+    PhysicalPage = VirtualAddressToPhysicalAddressByProcessCr3(
+        PAGE_ALIGN(TargetAddress), LayoutGetCr3ByProcessId(ProcessId));
+    if (PhysicalPage == 0 || PhysicalPage >= SIZE_512_GB) { return FALSE; }
+    ProcessorsCount = PlatformCpuGetActiveProcessorCount();
+    if (!EptCountRequiredSplits(PhysicalPage, ProcessorsCount,
+                               EptReadLargePageSnapshot, NULL, &Required))
+    {
+        return FALSE;
+    }
+    Demand->PhysicalPage = PhysicalPage;
+    Demand->EptInstance = (UINT64)(ULONG_PTR)g_EptState;
+    Demand->ProcessorCount = ProcessorsCount;
+    Demand->RequiredSplits = Required;
+    return TRUE;
 }
 
 /**
@@ -1599,6 +1655,21 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
         return FALSE;
     }
 
+    if (AtomicHook)
+    {
+        const EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2_ATOMIC *AtomicDetails =
+            (const EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2_ATOMIC *)HookingDetails;
+        if (AtomicDetails->ValidateDemand &&
+            !EptDemandIdentityMatches(AtomicDetails->Demand.PhysicalPage,
+                PhysicalBaseAddress, AtomicDetails->Demand.ProcessorCount,
+                ProcessorsCount, AtomicDetails->Demand.EptInstance,
+                (UINT64)(ULONG_PTR)g_EptState))
+        {
+            VmmCallbackSetLastError(DEBUGGER_ERROR_INVALID_ADDRESS);
+            return FALSE;
+        }
+    }
+
     //
     // try to see if we can find the address
     //
@@ -2290,12 +2361,11 @@ EptHookAtomicInvalidateDpc(_In_ PKDPC Dpc,
 }
 
 VMM_ATOMIC_INLINE_INSTALL_STATUS
-EptHookInlineHookAtomic(VIRTUAL_MACHINE_STATE * VCpu,
-                        PVOID                   TargetAddress,
-                        UINT32                  ProcessId,
-                        PVOID *                 PlainOrigin,
-                        PVOID *                 GuardedOrigin,
-                        PVOID                   GuardedTailTarget)
+EptHookInlineHookAtomicDemand(VIRTUAL_MACHINE_STATE * VCpu,
+                              PVOID TargetAddress, UINT32 ProcessId,
+                              PVOID *PlainOrigin, PVOID *GuardedOrigin,
+                              PVOID GuardedTailTarget,
+                              const VMM_EPT_SPLIT_DEMAND_V1 *Demand)
 {
     EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2_ATOMIC Detail = {0};
     EPT_ATOMIC_INVALIDATION_RESULT Invalidation = {0};
@@ -2320,6 +2390,17 @@ EptHookInlineHookAtomic(VIRTUAL_MACHINE_STATE * VCpu,
     Detail.PlainOrigin = PlainOrigin;
     Detail.GuardedOrigin = GuardedOrigin;
     Detail.GuardedTailTarget = GuardedTailTarget;
+    if (Demand != NULL)
+    {
+        if (Demand->Size != sizeof(*Demand) || Demand->Version != 1 ||
+            Demand->RequiredSplits > Demand->ProcessorCount ||
+            g_ModeBasedExecutionControlState || g_ExecTrapInitialized)
+        {
+            return VmmAtomicInlineInstallCleanFailure;
+        }
+        Detail.ValidateDemand = TRUE;
+        Detail.Demand = *Demand;
+    }
     Status = AsmVmxVmcall(VMCALL_CHANGE_PAGE_ATTRIB,
                           (UINT64)(ULONG_PTR)&Detail,
                           PAGE_ATTRIB_EXEC_ATOMIC_HOOK,
@@ -2335,6 +2416,15 @@ EptHookInlineHookAtomic(VIRTUAL_MACHINE_STATE * VCpu,
     return Invalidation.FailedCores == 0
                ? VmmAtomicInlineInstallReady
                : VmmAtomicInlineInstallIndeterminate;
+}
+
+VMM_ATOMIC_INLINE_INSTALL_STATUS
+EptHookInlineHookAtomic(VIRTUAL_MACHINE_STATE *VCpu, PVOID TargetAddress,
+                        UINT32 ProcessId, PVOID *PlainOrigin,
+                        PVOID *GuardedOrigin, PVOID GuardedTailTarget)
+{
+    return EptHookInlineHookAtomicDemand(VCpu, TargetAddress, ProcessId,
+        PlainOrigin, GuardedOrigin, GuardedTailTarget, NULL);
 }
 
 /**

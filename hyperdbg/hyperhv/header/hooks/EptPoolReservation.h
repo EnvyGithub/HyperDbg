@@ -4,9 +4,54 @@
 #include <stddef.h>
 #include <stdint.h>
 typedef uint32_t EPT_POOL_COUNT;
+typedef uint64_t EPT_POOL_ADDRESS;
 #else
 typedef UINT32 EPT_POOL_COUNT;
+typedef UINT64 EPT_POOL_ADDRESS;
 #endif
+
+typedef int (*EPT_READ_LARGE_PAGE_EFFECT)(void *Context,
+                                          EPT_POOL_COUNT Core,
+                                          EPT_POOL_ADDRESS PhysicalPage,
+                                          int *LargePage);
+
+static __inline int
+EptCountRequiredSplits(EPT_POOL_ADDRESS PhysicalPage,
+                       EPT_POOL_COUNT ProcessorCount,
+                       EPT_READ_LARGE_PAGE_EFFECT Read,
+                       void *Context,
+                       EPT_POOL_COUNT *Required)
+{
+    EPT_POOL_COUNT Core;
+    if (Read == NULL || Required == NULL || ProcessorCount == 0)
+    {
+        return 0;
+    }
+    *Required = 0;
+    for (Core = 0; Core < ProcessorCount; Core++)
+    {
+        int LargePage;
+        if (!Read(Context, Core, PhysicalPage, &LargePage))
+        {
+            return 0;
+        }
+        if (LargePage) { ++*Required; }
+    }
+    return 1;
+}
+
+static __inline int
+EptDemandIdentityMatches(EPT_POOL_ADDRESS ExpectedPage,
+                         EPT_POOL_ADDRESS ActualPage,
+                         EPT_POOL_COUNT ExpectedProcessors,
+                         EPT_POOL_COUNT ActualProcessors,
+                         EPT_POOL_ADDRESS ExpectedInstance,
+                         EPT_POOL_ADDRESS ActualInstance)
+{
+    return ExpectedPage != 0 && ExpectedPage == ActualPage &&
+           ExpectedProcessors != 0 && ExpectedProcessors == ActualProcessors &&
+           ExpectedInstance != 0 && ExpectedInstance == ActualInstance;
+}
 
 /* The queue effects are shared by the VMM reserve wrappers and local tests.
  * Each callback is attempted even if a previous request could not be queued. */

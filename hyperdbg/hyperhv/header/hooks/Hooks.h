@@ -38,6 +38,8 @@ typedef struct _EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2_ATOMIC
     PVOID *GuardedOrigin;
     PVOID  GuardedTailTarget;
     volatile LONG PublicationMayBeIncomplete;
+    BOOLEAN ValidateDemand;
+    VMM_EPT_SPLIT_DEMAND_V1 Demand;
 } EPT_HOOKS_ADDRESS_DETAILS_FOR_EPTHOOK2_ATOMIC;
 
 //////////////////////////////////////////////////
@@ -413,6 +415,19 @@ EptHookReservePreallocatedPoolsForEptHooks(UINT32 Count);
 
 BOOLEAN
 EptHookReservePreallocatedPoolsForEptHooksChecked(UINT32 Count);
+
+BOOLEAN
+EptHookReserveDemandChecked(UINT32 Count, UINT32 SplitCount);
+
+BOOLEAN
+EptHookQuerySplitDemandV1(PVOID TargetAddress, UINT32 ProcessId,
+                          VMM_EPT_SPLIT_DEMAND_V1 *Demand);
+
+VMM_ATOMIC_INLINE_INSTALL_STATUS
+EptHookInlineHookAtomicDemand(VIRTUAL_MACHINE_STATE *VCpu,
+    PVOID TargetAddress, UINT32 ProcessId, PVOID *PlainOrigin,
+    PVOID *GuardedOrigin, PVOID GuardedTailTarget,
+    const VMM_EPT_SPLIT_DEMAND_V1 *Demand);
 
 BOOLEAN
 EptHookAllocateExtraHookingPagesChecked(UINT32 Count);

@@ -462,6 +462,32 @@ ConfigureEptHook2Atomic(UINT32 CoreId,
                         PVOID *GuardedOrigin,
                         PVOID  GuardedTailTarget);
 
+// [DOWNSTREAM] Demand query for the existing atomic inline path. The caller
+// holds its VMM lifecycle owner from query through installation; no zero-demand
+// result may be reused across a VMM rebuild.
+typedef struct _VMM_EPT_SPLIT_DEMAND_V1
+{
+    UINT32 Size;
+    UINT32 Version;
+    UINT64 PhysicalPage;
+    UINT64 EptInstance;
+    UINT32 ProcessorCount;
+    UINT32 RequiredSplits;
+} VMM_EPT_SPLIT_DEMAND_V1;
+
+IMPORT_EXPORT_VMM BOOLEAN
+ConfigureEptHookQuerySplitDemandV1(PVOID TargetAddress, UINT32 ProcessId,
+                                  VMM_EPT_SPLIT_DEMAND_V1 *Demand);
+
+IMPORT_EXPORT_VMM BOOLEAN
+ConfigureEptHookReserveDemandChecked(UINT32 HookCount, UINT32 SplitCount);
+
+IMPORT_EXPORT_VMM VMM_ATOMIC_INLINE_INSTALL_STATUS
+ConfigureEptHook2AtomicDemandV1(UINT32 CoreId, PVOID TargetAddress,
+                               UINT32 ProcessId, PVOID *PlainOrigin,
+                               PVOID *GuardedOrigin, PVOID GuardedTailTarget,
+                               const VMM_EPT_SPLIT_DEMAND_V1 *Demand);
+
 // PhysicalPage is the stored install identity even if the installing process
 // has exited. RetrySafe means every hook detail and trampoline is still owned
 // and may be retried; Indeterminate requires controlled VMM recovery.
