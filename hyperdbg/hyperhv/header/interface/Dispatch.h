@@ -51,6 +51,11 @@ DispatchAtomicInlineEventReady(VOID);
 BOOLEAN
 DispatchAtomicInlineEntryBreakpoint(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRip);
 
+// Called for a #BP whose RIP is a retired same-page relay offset: completes the
+// stranded transfer to the hooked site instead of injecting #BP. See ADR 0085.
+BOOLEAN
+DispatchRetiredRelayBreakpoint(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRip);
+
 VOID
 DispatchEventMode(VIRTUAL_MACHINE_STATE * VCpu, DEBUGGER_EVENT_MODE_TYPE TargetMode);
 

@@ -1251,6 +1251,18 @@ HvSetRip(UINT64 Rip)
 }
 
 /**
+ * @brief Set guest's RSP
+ * @param Rsp
+ *
+ * @return VOID
+ */
+VOID
+HvSetRsp(UINT64 Rsp)
+{
+    VmxVmwrite64(VMCS_GUEST_RSP, Rsp);
+}
+
+/**
  * @brief Read guest's interruptibility state
  *
  * @return UINT64

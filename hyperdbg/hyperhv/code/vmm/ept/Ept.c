@@ -1360,6 +1360,18 @@ EptCheckAndHandleAtomicInlineBreakpoint(VIRTUAL_MACHINE_STATE * VCpu,
     return DispatchAtomicInlineEntryBreakpoint(VCpu, GuestRip);
 }
 
+// [DOWNSTREAM] A thread preempted inside a retired same-page relay resumes on
+// the restored original page's 0xCC and faults #BP. Complete the stranded
+// transfer to the hooked site rather than injecting the breakpoint. Checked
+// after the atomic inline entry (live, fake-page mapping) and before the
+// regular breakpoint path. See ADR 0085.
+BOOLEAN
+EptCheckAndHandleRetiredRelayBreakpoint(VIRTUAL_MACHINE_STATE * VCpu,
+                                        UINT64                  GuestRip)
+{
+    return DispatchRetiredRelayBreakpoint(VCpu, GuestRip);
+}
+
 /**
  * @brief Check if the breakpoint vm-exit relates to EPT hook or not
  *

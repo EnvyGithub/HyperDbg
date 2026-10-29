@@ -320,3 +320,7 @@ EptCheckAndHandleBreakpoint(VIRTUAL_MACHINE_STATE * VCpu);
 BOOLEAN
 EptCheckAndHandleAtomicInlineBreakpoint(VIRTUAL_MACHINE_STATE * VCpu,
                                         UINT64                  GuestRip);
+
+BOOLEAN
+EptCheckAndHandleRetiredRelayBreakpoint(VIRTUAL_MACHINE_STATE * VCpu,
+                                        UINT64                  GuestRip);

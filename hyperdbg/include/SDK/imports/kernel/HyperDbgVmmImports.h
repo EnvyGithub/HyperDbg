@@ -20,9 +20,13 @@
 // Keep VMM_CALLBACKS unchanged: older VmFuncInitVmm callers have no size field.
 typedef enum _VMM_ATOMIC_INLINE_EVENT_KIND
 {
-    VmmAtomicInlineNone                 = 0,
-    VmmAtomicInlineEntryBreakpoint      = 1,
-    VmmAtomicInlineGuardedTailVmcall    = 2
+    VmmAtomicInlineNone                   = 0,
+    VmmAtomicInlineEntryBreakpoint        = 1,
+    VmmAtomicInlineGuardedTailVmcall      = 2,
+    // [DOWNSTREAM] A thread preempted inside a retired same-page relay resumes
+    // on the restored original page's 0xCC and faults #BP. The owner completes
+    // the transfer instead of injecting it; see ADR 0085.
+    VmmAtomicInlineRetiredRelayBreakpoint = 3
 } VMM_ATOMIC_INLINE_EVENT_KIND;
 
 typedef struct _VMM_ATOMIC_INLINE_EVENT_DECISION
@@ -32,6 +36,12 @@ typedef struct _VMM_ATOMIC_INLINE_EVENT_DECISION
     volatile LONG * DispatchActive;
     UINT64          NextRip;
     UINT64          PhysicalPage;
+    // [DOWNSTREAM] Only for VmmAtomicInlineRetiredRelayBreakpoint: signed delta
+    // applied to guest RSP to rewind the stack to the pre-entry caller RSP
+    // before resuming at NextRip (the hooked site's restored first instruction).
+    // Size-gated; zero for the other kinds. DispatchActive is unused (NULL) for
+    // this kind because the completion holds no owner reference.
+    INT64           GuestRspAdjustment;
 } VMM_ATOMIC_INLINE_EVENT_DECISION, *PVMM_ATOMIC_INLINE_EVENT_DECISION;
 
 // Called in VMX-root before resuming a guest that hit an opted-in target/tail.

@@ -363,6 +363,14 @@ IdtEmulationHandleExceptionAndNmi(_Inout_ VIRTUAL_MACHINE_STATE *   VCpu,
                 break;
             }
 
+            // [DOWNSTREAM] A thread stranded inside a retired same-page relay
+            // faults #BP on the restored original page; complete the transfer
+            // rather than injecting the breakpoint into Windows. See ADR 0085.
+            if (EptCheckAndHandleRetiredRelayBreakpoint(VCpu, GuestRip))
+            {
+                break;
+            }
+
             MemoryMapperReadMemorySafe(GuestRip, &TargetMem, sizeof(BYTE));
 
             if (!EptCheckAndHandleBreakpoint(VCpu) || TargetMem == 0xcc)

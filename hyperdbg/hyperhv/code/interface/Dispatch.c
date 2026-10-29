@@ -131,9 +131,20 @@ DispatchSelectAtomicInlineEvent(_In_ VIRTUAL_MACHINE_STATE * VCpu,
     {
         return FALSE;
     }
-    if (Decision->Size != sizeof(*Decision) ||
-        Decision->Kind != ExpectedKind ||
-        Decision->DispatchActive == NULL || Decision->NextRip == 0)
+    if (Decision->Size != sizeof(*Decision))
+    {
+        LogError("Err, invalid atomic inline hook VM-exit decision");
+        return FALSE;
+    }
+    // [DOWNSTREAM] The owner resolves every kind through one callback. A valid
+    // decision for a different kind (e.g. a retired relay checked by the entry
+    // path first) is not an error here — it belongs to another selector. Only
+    // a kind match that is still malformed is an error.
+    if (Decision->Kind != ExpectedKind)
+    {
+        return FALSE;
+    }
+    if (Decision->DispatchActive == NULL || Decision->NextRip == 0)
     {
         LogError("Err, invalid atomic inline hook VM-exit decision");
         return FALSE;
@@ -181,6 +192,85 @@ DispatchAtomicInlineEntryBreakpoint(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
     }
 
     DispatchChangeAtomicInlineReference(Decision.DispatchActive, 1);
+    HvSetRip(Decision.NextRip);
+    HvSuppressRipIncrement(VCpu);
+    return TRUE;
+}
+
+// [DOWNSTREAM] Select a retired same-page relay completion for a #BP RIP.
+// Unlike DispatchSelectAtomicInlineEvent this does not require DispatchActive:
+// the completion is a stateless stack rewind, it borrows no owner reference.
+// See ADR 0085.
+static BOOLEAN
+DispatchSelectRetiredRelayEvent(_In_ VIRTUAL_MACHINE_STATE * VCpu,
+                                _In_ UINT64 GuestRip,
+                                _Out_ VMM_ATOMIC_INLINE_EVENT_DECISION * Decision)
+{
+    VMM_ATOMIC_INLINE_EVENT_CALLBACK Callback =
+        (VMM_ATOMIC_INLINE_EVENT_CALLBACK)(ULONG_PTR)
+            CpuInterlockedCompareExchange64(
+                (INT64 volatile *)&g_AtomicInlineEventCallback, 0, 0);
+
+    if (Callback == NULL)
+    {
+        return FALSE;
+    }
+    RtlZeroMemory(Decision, sizeof(*Decision));
+    Decision->Size = sizeof(*Decision);
+    if (!Callback(VCpu->CoreId, GuestRip, Decision))
+    {
+        return FALSE;
+    }
+    if (Decision->Size != sizeof(*Decision))
+    {
+        LogError("Err, invalid retired relay completion decision");
+        return FALSE;
+    }
+    // A valid decision for another kind belongs to a different selector; not an
+    // error here (the owner resolves every kind through one callback).
+    if (Decision->Kind != VmmAtomicInlineRetiredRelayBreakpoint)
+    {
+        return FALSE;
+    }
+    if (Decision->NextRip == 0 ||
+        Decision->PhysicalPage == 0 ||
+        (Decision->PhysicalPage & (PAGE_SIZE - 1u)) != 0)
+    {
+        LogError("Err, invalid retired relay completion decision");
+        return FALSE;
+    }
+    return TRUE;
+}
+
+// [DOWNSTREAM] Complete a thread stranded inside a retired same-page relay.
+// The relay's EPT fake page was already restored to the original page on
+// detach, so the relay offset now holds 0xCC and faulted #BP. The owner reports
+// the pre-entry caller RSP delta and the hooked site (whose original first
+// instruction is restored); we rewind RSP and resume there so the thread runs
+// as if it had never been hooked. See ADR 0085.
+BOOLEAN
+DispatchRetiredRelayBreakpoint(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRip)
+{
+    VMM_ATOMIC_INLINE_EVENT_DECISION Decision;
+    PEPT_PML1_ENTRY                  CurrentEntry;
+
+    if (!DispatchSelectRetiredRelayEvent(VCpu, GuestRip, &Decision))
+    {
+        return FALSE;
+    }
+
+    CurrentEntry = EptGetPml1Entry(VCpu->EptPageTable,
+                                   (SIZE_T)Decision.PhysicalPage);
+    if (CurrentEntry == NULL ||
+        CurrentEntry->PageFrameNumber != (Decision.PhysicalPage / PAGE_SIZE))
+    {
+        // The relay page is not mapped to its original frame on this core, so
+        // the hook has not retired here and this is not a stranded-relay #BP.
+        // Let the regular breakpoint path own it.
+        return FALSE;
+    }
+
+    HvSetRsp((UINT64)((INT64)VCpu->Regs->rsp + Decision.GuestRspAdjustment));
     HvSetRip(Decision.NextRip);
     HvSuppressRipIncrement(VCpu);
     return TRUE;
