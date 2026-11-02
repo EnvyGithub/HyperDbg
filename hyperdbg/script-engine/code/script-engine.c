@@ -1363,13 +1363,7 @@ ScriptEngineParse(char * str)
     {
         Error               = SCRIPT_ENGINE_ERROR_SYNTAX;
         ErrorMessage        = HandleError(&Error, ScriptSource);
-        CodeBuffer->Message = ErrorMessage;
-
-        RemoveTokenList(Stack);
-        RemoveTokenList(MatchedStack);
-        RemoveToken(&CurrentIn);
-        UninitializeTypeContext();
-        return (PVOID)CodeBuffer;
+        goto Cleanup;
     }
 
     //
@@ -1598,6 +1592,7 @@ ScriptEngineParse(char * str)
         Symbol        = CodeBuffer->Head + 1;
         Symbol->Value = CurrentUserDefinedFunction->MaxTempNumber + CurrentUserDefinedFunction->LocalVariableNumber;
     }
+Cleanup:
     CodeBuffer->Message = ErrorMessage;
 
     if (Stack)
