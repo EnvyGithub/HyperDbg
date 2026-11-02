@@ -12,6 +12,7 @@
  *
  */
 #include "pch.h"
+#include "../../../header/hooks/HiddenBreakpointIdentity.h"
 #include "../../../header/hooks/EptPoolReservation.h"
 
 #define EPT_EXACT_CALL_TARGET_SIZE 5u
@@ -158,7 +159,12 @@ EptHookRefreshExecutionFakePage(_Inout_ EPT_HOOKED_PAGE_DETAIL * HookedEntry)
             }
 
             TargetAddressInFakePageContent = EptHookCalcBreakpointOffset((PVOID)HookedEntry->BreakpointAddresses[i], HookedEntry);
-            HookedEntry->PreviousBytesOnBreakpointAddresses[i] = *(CHAR *)TargetAddressInFakePageContent;
+            HookedEntry->PreviousBytesOnBreakpointAddresses[i] = (CHAR)EptHiddenBreakpointPreviousByte(
+                HookedEntry->BreakpointAddresses,
+                (const EPT_BP_BYTE *)HookedEntry->PreviousBytesOnBreakpointAddresses,
+                i,
+                HookedEntry->BreakpointAddresses[i],
+                *(BYTE *)TargetAddressInFakePageContent);
             *(BYTE *)TargetAddressInFakePageContent             = 0xcc;
         }
     }
@@ -579,7 +585,12 @@ EptHookUpdateHookPage(_In_ PVOID                       TargetAddress,
     //
     // Read the original byte
     //
-    OriginalByte = *(BYTE *)TargetAddressInFakePageContent;
+    OriginalByte = EptHiddenBreakpointPreviousByte(
+        HookedEntry->BreakpointAddresses,
+        (const EPT_BP_BYTE *)HookedEntry->PreviousBytesOnBreakpointAddresses,
+        HookedEntry->CountOfBreakpoints,
+        (UINT64)TargetAddress,
+        *(BYTE *)TargetAddressInFakePageContent);
 
     //
     // Add target address to the list of breakpoints
@@ -3201,7 +3212,6 @@ EptHookUnHookSingleAddressHiddenBreakpoint(PEPT_HOOKED_PAGE_DETAIL             H
                                            EPT_SINGLE_HOOK_UNHOOKING_DETAILS * TargetUnhookingDetails)
 {
     UINT64 TargetAddressInFakePageContent;
-    UINT32 CountOfEntriesWithSameAddr = 0;
 
     //
     // By default, the caller doesn't need to remove #BPs interceptions if directly
@@ -3210,11 +3220,8 @@ EptHookUnHookSingleAddressHiddenBreakpoint(PEPT_HOOKED_PAGE_DETAIL             H
     TargetUnhookingDetails->RemoveBreakpointInterception = FALSE;
 
     //
-    // It's a hidden breakpoint (we have to search through an array of addresses)
-    // We count it from top to down because if there are two ept hooks at the
-    // same address, then the last one has an invalid PreviousByte and this
-    // is the HookedEntry that should be remove (not the first one as it has the
-    // correct PreviousByte)
+    // Each VA entry is one reference. Entries at the same physical offset
+    // share a valid original byte, so either removal order is supported.
     //
     for (SIZE_T i = 0; i < HookedEntry->CountOfBreakpoints; i++)
     {
@@ -3306,19 +3313,12 @@ EptHookUnHookSingleAddressHiddenBreakpoint(PEPT_HOOKED_PAGE_DETAIL             H
                 TargetAddressInFakePageContent = EptHookCalcBreakpointOffset((PVOID)VirtualAddress, HookedEntry);
 
                 //
-                // We'll check if there is another hooked address with the same virtual address
-                // in the array, then we'll ignore setting the previous bit as previous bit might
-                // be modified for the previous command
+                // Another VA or process may still own this physical offset.
+                // Restore the original byte only after its final reference.
                 //
-                for (SIZE_T j = 0; j < HookedEntry->CountOfBreakpoints; j++)
-                {
-                    if (HookedEntry->BreakpointAddresses[j] == VirtualAddress)
-                    {
-                        CountOfEntriesWithSameAddr++;
-                    }
-                }
-
-                if (CountOfEntriesWithSameAddr == 1)
+                if (!EptHiddenBreakpointHasOtherOffset(HookedEntry->BreakpointAddresses,
+                                                       HookedEntry->CountOfBreakpoints,
+                                                       i))
                 {
                     //
                     // Set the previous value
@@ -3419,6 +3419,12 @@ EptHookPerformUnHookSingleAddress(UINT64                              VirtualAdd
         //
         if (CurrEntity->IsHiddenBreakpoint)
         {
+            // [DOWNSTREAM] VA alone can name a breakpoint in another process.
+            // Explicit PA also permits retiring a binding after its VA changed.
+            if (!EptHiddenBreakpointSamePage(CurrEntity->PhysicalBaseAddress, PhysicalAddress))
+            {
+                continue;
+            }
             //
             // It's a hidden breakpoint
             //

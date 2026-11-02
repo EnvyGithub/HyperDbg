@@ -12,6 +12,7 @@
  *
  */
 #include "pch.h"
+#include "../../../header/hooks/HiddenBreakpointIdentity.h"
 
 /**
  * @brief Check whether EPT features are present or not
@@ -1253,12 +1254,31 @@ EptSetPML1AndInvalidateTLB(VIRTUAL_MACHINE_STATE * VCpu,
  *
  * @return BOOLEAN
  */
+static int
+EptReadHiddenBreakpointPagingEntry(void * Context, EPT_BP_ADDRESS Address, EPT_BP_ADDRESS * Entry)
+{
+    UNREFERENCED_PARAMETER(Context);
+    return MemoryMapperReadMemorySafeByPhysicalAddress(Address, (UINT64)Entry, sizeof(*Entry));
+}
+
 BOOLEAN
 EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRip)
 {
-    PVOID       TargetPage;
+    PEPT_PML1_ENTRY TargetPage;
     PLIST_ENTRY TempList;
-    BOOLEAN     IsHandledByEptHook = FALSE;
+    UINT64 GuestCr3 = 0;
+    UINT64 GuestCr4 = 0;
+    UINT64 PhysicalRip = 0;
+
+    // [DOWNSTREAM] Resolve the executing address space, not the host CR3 or a
+    // process inferred from the VA. Five-level guests are not supported here.
+    VmxVmread64P(VMCS_GUEST_CR3, &GuestCr3);
+    VmxVmread64P(VMCS_GUEST_CR4, &GuestCr4);
+    if (!EptHiddenBreakpointTranslate(GuestCr3, GuestRip, (GuestCr4 & (1ull << 12)) != 0,
+                                       EptReadHiddenBreakpointPagingEntry, NULL, &PhysicalRip))
+    {
+        return FALSE;
+    }
 
     //
     // ***** Check breakpoint for !epthook *****
@@ -1274,11 +1294,19 @@ EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
         TempList                            = TempList->Flink;
         PEPT_HOOKED_PAGE_DETAIL HookedEntry = CONTAINING_RECORD(TempList, EPT_HOOKED_PAGE_DETAIL, PageHookList);
 
-        if (HookedEntry->IsExecutionHook)
+        if (HookedEntry->IsExecutionHook && HookedEntry->IsHiddenBreakpoint &&
+            EptHiddenBreakpointSamePage(HookedEntry->PhysicalBaseAddress, PhysicalRip))
         {
+            TargetPage = EptGetPml1Entry(VCpu->EptPageTable, HookedEntry->PhysicalBaseAddress);
+            if (TargetPage == NULL || !TargetPage->ExecuteAccess ||
+                TargetPage->PageFrameNumber != HookedEntry->PhysicalBaseAddressOfFakePageContents)
+            {
+                // A real INT3 through the original mapping remains a native exception.
+                return FALSE;
+            }
             for (SIZE_T i = 0; i < HookedEntry->CountOfBreakpoints; i++)
             {
-                if (HookedEntry->BreakpointAddresses[i] == GuestRip)
+                if (EptHiddenBreakpointSameOffset(HookedEntry->BreakpointAddresses[i], GuestRip))
                 {
                     VCpu->MtfEptHookViolation = EPT_HOOKED_LAST_VIOLATION_EXEC;
                     VCpu->MtfEptHookPostEventAllowed = FALSE;
@@ -1336,18 +1364,14 @@ EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
                     //
                     // Indicate that we handled the ept violation
                     //
-                    IsHandledByEptHook = TRUE;
-
-                    //
-                    // Get out of the loop
-                    //
-                    break;
+                    // One physical owner handles this hit, including VA aliases.
+                    return TRUE;
                 }
             }
         }
     }
 
-    return IsHandledByEptHook;
+    return FALSE;
 }
 
 // [DOWNSTREAM] Atomic inline entries use one-byte INT3 only as a VM-exit
