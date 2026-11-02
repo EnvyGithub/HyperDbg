@@ -437,6 +437,13 @@ ConfigureExecTrapApplyMbecConfiguratinFromKernelSide(UINT32 CoreId);
 IMPORT_EXPORT_VMM BOOLEAN
 ConfigureInitializeExecTrapOnAllProcessors();
 
+// [DOWNSTREAM] 外部用户内存写入：PASSIVE_LEVEL 下取得共享门，在同一线程完成
+// 物理页核对与写入后释放。阻止 non-root hook 发布/撤销及 VMM 销毁；调用者须保证
+// 产品不并行使用 *FromVmxRoot 配置入口。PhysicalPage 查询仅在持有此门时有效。
+IMPORT_EXPORT_VMM BOOLEAN ConfigureEptAcquirePageWriteGuardV1(VOID);
+IMPORT_EXPORT_VMM VOID ConfigureEptReleasePageWriteGuardV1(VOID);
+IMPORT_EXPORT_VMM BOOLEAN ConfigureEptPhysicalPageHasHookV1(UINT64 PhysicalPage);
+
 IMPORT_EXPORT_VMM BOOLEAN
 ConfigureEptHook(PVOID TargetAddress, UINT32 ProcessId);
 

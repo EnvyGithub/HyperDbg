@@ -807,7 +807,13 @@ VmFuncDisableExternalInterruptsAndInterruptWindow(UINT32 CoreId)
 BOOLEAN
 VmFuncInitVmm(VMM_CALLBACKS * VmmCallbacks)
 {
-    return HvInitVmm(VmmCallbacks);
+    BOOLEAN Result;
+    EptControlAcquireExclusive();
+    EptControlSetWriteReady(FALSE);
+    Result = HvInitVmm(VmmCallbacks);
+    EptControlSetWriteReady(Result);
+    EptControlReleaseExclusive();
+    return Result;
 }
 
 /**
@@ -818,7 +824,10 @@ VmFuncInitVmm(VMM_CALLBACKS * VmmCallbacks)
 VOID
 VmFuncUninitVmm()
 {
+    EptControlAcquireExclusive();
+    EptControlSetWriteReady(FALSE);
     (VOID)VmxPerformTermination();
+    EptControlReleaseExclusive();
 }
 
 /**
@@ -830,7 +839,12 @@ VmFuncUninitVmm()
 BOOLEAN
 VmFuncUninitVmmChecked()
 {
-    return VmxPerformTermination();
+    BOOLEAN Result;
+    EptControlAcquireExclusive();
+    EptControlSetWriteReady(FALSE);
+    Result = VmxPerformTermination();
+    EptControlReleaseExclusive();
+    return Result;
 }
 
 /**

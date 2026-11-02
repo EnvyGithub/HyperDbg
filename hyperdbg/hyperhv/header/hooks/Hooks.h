@@ -11,6 +11,11 @@
  */
 #pragma once
 
+// [DOWNSTREAM] 调用者在 VMX non-root、IRQL <= APC_LEVEL；SetWriteReady 需要持排他锁。
+VOID EptControlAcquireExclusive(VOID);
+VOID EptControlReleaseExclusive(VOID);
+VOID EptControlSetWriteReady(BOOLEAN Ready);
+
 //////////////////////////////////////////////////
 //				   Structures					//
 //////////////////////////////////////////////////

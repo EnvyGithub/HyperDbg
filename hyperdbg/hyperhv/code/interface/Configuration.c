@@ -12,6 +12,58 @@
  */
 #include "pch.h"
 
+// [DOWNSTREAM] VMX non-root 配置与外部物理页写入共用的准入。
+// 热路径只改变已有页的临时 EPT 权限，不取得这个控制路径锁。
+static EX_PUSH_LOCK g_EptControlLock;
+static BOOLEAN g_EptControlWriteReady;
+
+VOID EptControlAcquireExclusive(VOID)
+{
+    KeEnterCriticalRegion();
+    ExAcquirePushLockExclusive(&g_EptControlLock);
+}
+
+VOID EptControlReleaseExclusive(VOID)
+{
+    ExReleasePushLockExclusive(&g_EptControlLock);
+    KeLeaveCriticalRegion();
+}
+
+VOID EptControlSetWriteReady(BOOLEAN Ready)
+{
+    g_EptControlWriteReady = Ready;
+}
+
+BOOLEAN ConfigureEptAcquirePageWriteGuardV1(VOID)
+{
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) return FALSE;
+    KeEnterCriticalRegion();
+    ExAcquirePushLockShared(&g_EptControlLock);
+    if (!g_EptControlWriteReady || g_EptState == NULL || g_GuestState == NULL)
+    {
+        ConfigureEptReleasePageWriteGuardV1();
+        return FALSE;
+    }
+    return TRUE;
+}
+
+VOID ConfigureEptReleasePageWriteGuardV1(VOID)
+{
+    ExReleasePushLockShared(&g_EptControlLock);
+    KeLeaveCriticalRegion();
+}
+
+BOOLEAN ConfigureEptPhysicalPageHasHookV1(UINT64 PhysicalPage)
+{
+    if (PhysicalPage == 0 || (PhysicalPage & (PAGE_SIZE - 1)) != 0 || g_EptState == NULL)
+        return TRUE;
+    LIST_FOR_EACH_LINK(g_EptState->HookedPagesList, EPT_HOOKED_PAGE_DETAIL, PageHookList, Entry)
+    {
+        if (Entry->PhysicalBaseAddress == PhysicalPage) return TRUE;
+    }
+    return FALSE;
+}
+
 /**
  * @brief routines for debugging threads (enable mov-to-cr3 exiting)
  *
@@ -158,7 +210,11 @@ ConfigureDisableEferSyscallEventsOnAllProcessors()
 BOOLEAN
 ConfigureEptHookUnHookAllByHookingTag(UINT64 HookingTag)
 {
-    return EptHookUnHookAllByHookingTag(HookingTag);
+    BOOLEAN Result;
+    EptControlAcquireExclusive();
+    Result = EptHookUnHookAllByHookingTag(HookingTag);
+    EptControlReleaseExclusive();
+    return Result;
 }
 
 /**
@@ -191,7 +247,11 @@ ConfigureEptHookUnHookSingleAddress(UINT64 VirtualAddress,
                                     UINT64 PhysAddress,
                                     UINT32 ProcessId)
 {
-    return EptHookUnHookSingleAddress(VirtualAddress, PhysAddress, ProcessId);
+    BOOLEAN Result;
+    EptControlAcquireExclusive();
+    Result = EptHookUnHookSingleAddress(VirtualAddress, PhysAddress, ProcessId);
+    EptControlReleaseExclusive();
+    return Result;
 }
 
 /**
@@ -274,7 +334,11 @@ ConfigureEptHookAllocateExtraHookingPagesChecked(UINT32 Count)
 BOOLEAN
 ConfigureEptHook(PVOID TargetAddress, UINT32 ProcessId)
 {
-    return EptHook(TargetAddress, ProcessId);
+    BOOLEAN Result;
+    EptControlAcquireExclusive();
+    Result = EptHook(TargetAddress, ProcessId);
+    EptControlReleaseExclusive();
+    return Result;
 }
 
 /**
@@ -311,10 +375,14 @@ ConfigureEptHook2(UINT32 CoreId,
                   PVOID  HookFunction,
                   UINT32 ProcessId)
 {
-    return EptHookInlineHook(&g_GuestState[CoreId],
+    BOOLEAN Result;
+    EptControlAcquireExclusive();
+    Result = EptHookInlineHook(&g_GuestState[CoreId],
                              TargetAddress,
                              HookFunction,
                              ProcessId);
+    EptControlReleaseExclusive();
+    return Result;
 }
 
 VMM_ATOMIC_INLINE_INSTALL_STATUS
@@ -325,12 +393,17 @@ ConfigureEptHook2Atomic(UINT32 CoreId,
                         PVOID *GuardedOrigin,
                         PVOID  GuardedTailTarget)
 {
-    return EptHookInlineHookAtomic(&g_GuestState[CoreId],
+    VMM_ATOMIC_INLINE_INSTALL_STATUS Result;
+    EptControlAcquireExclusive();
+    Result = EptHookInlineHookAtomic(&g_GuestState[CoreId],
                                    TargetAddress,
                                    ProcessId,
                                    PlainOrigin,
                                    GuardedOrigin,
                                    GuardedTailTarget);
+    if (Result == VmmAtomicInlineInstallIndeterminate) EptControlSetWriteReady(FALSE);
+    EptControlReleaseExclusive();
+    return Result;
 }
 
 BOOLEAN
@@ -352,16 +425,26 @@ ConfigureEptHook2AtomicDemandV1(UINT32 CoreId, PVOID TargetAddress,
                                PVOID *GuardedOrigin, PVOID GuardedTailTarget,
                                const VMM_EPT_SPLIT_DEMAND_V1 *Demand)
 {
+    VMM_ATOMIC_INLINE_INSTALL_STATUS Result;
     if (Demand == NULL) { return VmmAtomicInlineInstallCleanFailure; }
-    return EptHookInlineHookAtomicDemand(&g_GuestState[CoreId], TargetAddress,
+    EptControlAcquireExclusive();
+    Result = EptHookInlineHookAtomicDemand(&g_GuestState[CoreId], TargetAddress,
         ProcessId, PlainOrigin, GuardedOrigin, GuardedTailTarget, Demand);
+    if (Result == VmmAtomicInlineInstallIndeterminate) EptControlSetWriteReady(FALSE);
+    EptControlReleaseExclusive();
+    return Result;
 }
 
 VMM_ATOMIC_INLINE_DETACH_STATUS
 ConfigureEptHookUnHookAtomicPage(UINT64 Target,
                                  UINT64 PhysicalPage)
 {
-    return EptHookUnHookAtomicPage(Target, PhysicalPage);
+    VMM_ATOMIC_INLINE_DETACH_STATUS Result;
+    EptControlAcquireExclusive();
+    Result = EptHookUnHookAtomicPage(Target, PhysicalPage);
+    if (Result == VmmAtomicInlineDetachIndeterminate) EptControlSetWriteReady(FALSE);
+    EptControlReleaseExclusive();
+    return Result;
 }
 
 /**
@@ -374,11 +457,15 @@ ConfigureEptHook2ExactCall(UINT32 CoreId,
                            PVOID  HookFunction,
                            UINT32 ProcessId)
 {
-    return EptHookExactCall(&g_GuestState[CoreId],
+    BOOLEAN Result;
+    EptControlAcquireExclusive();
+    Result = EptHookExactCall(&g_GuestState[CoreId],
                             TargetAddress,
                             SamePageRelayAddress,
                             HookFunction,
                             ProcessId);
+    EptControlReleaseExclusive();
+    return Result;
 }
 
 /**
@@ -390,10 +477,14 @@ ConfigureEptHookUnHookExactCall(PVOID  TargetAddress,
                                 PVOID  HookFunction,
                                 UINT32 ProcessId)
 {
-    return EptHookUnHookExactCall(TargetAddress,
+    BOOLEAN Result;
+    EptControlAcquireExclusive();
+    Result = EptHookUnHookExactCall(TargetAddress,
                                   SamePageRelayAddress,
                                   HookFunction,
                                   ProcessId);
+    EptControlReleaseExclusive();
+    return Result;
 }
 
 /**
@@ -412,9 +503,13 @@ ConfigureEptHookMonitor(UINT32                                         CoreId,
                         EPT_HOOKS_ADDRESS_DETAILS_FOR_MEMORY_MONITOR * HookingDetails,
                         UINT32                                         ProcessId)
 {
-    return EptHookMonitorHook(&g_GuestState[CoreId],
+    BOOLEAN Result;
+    EptControlAcquireExclusive();
+    Result = EptHookMonitorHook(&g_GuestState[CoreId],
                               HookingDetails,
                               ProcessId);
+    EptControlReleaseExclusive();
+    return Result;
 }
 
 /**
