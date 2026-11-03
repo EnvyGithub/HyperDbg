@@ -9,6 +9,7 @@
  *
  */
 #include "pch.h"
+#include "LoaderVmmOwnership.inc"
 
 /**
  * @brief Initialize the hyper trace module
@@ -160,6 +161,7 @@ BOOLEAN
 LoaderInitVmm(PDEBUGGER_INIT_VMM_PACKET InitVmmPacket)
 {
     VMM_CALLBACKS VmmCallbacks = {0};
+    if(g_VmmResourcesOwned){InitVmmPacket->KernelStatus=(UINT32)STATUS_DEVICE_BUSY;return FALSE;}
 
     //
     // Check if KD is not already initialized, if so we cannot initialize VMM
@@ -228,6 +230,7 @@ LoaderInitVmm(PDEBUGGER_INIT_VMM_PACKET InitVmmPacket)
     //
     // Initialize VMX
     //
+    DrvSetVmmResourcesOwned(TRUE);
     if (VmFuncInitVmm(&VmmCallbacks))
     {
         LogDebugInfo("HyperDbg's hypervisor loaded successfully");
@@ -237,6 +240,7 @@ LoaderInitVmm(PDEBUGGER_INIT_VMM_PACKET InitVmmPacket)
         //
         if (!DebuggerInitializeVmmOperations())
         {
+            InitVmmPacket->KernelStatus=(UINT32)(LoaderReleaseVmmOwnership()?STATUS_UNSUCCESSFUL:STATUS_DEVICE_BUSY);
             return FALSE;
         }
 
@@ -250,6 +254,7 @@ LoaderInitVmm(PDEBUGGER_INIT_VMM_PACKET InitVmmPacket)
     else
     {
         LogError("Err, HyperDbg's hypervisor was not loaded");
+        InitVmmPacket->KernelStatus=(UINT32)(LoaderReleaseVmmOwnership()?STATUS_UNSUCCESSFUL:STATUS_DEVICE_BUSY);
     }
 
     return FALSE;
@@ -359,10 +364,12 @@ LoaderUninitHyperTrace()
 VOID
 LoaderUninitVmm()
 {
+    BOOLEAN WasInitialized=g_VmmInitialized;
+    g_VmmInitialized=FALSE;
     //
     // Mark VMM as uninitialized before uninitializing it to avoid any potential reentrancy issues during the uninitialization process
     //
-    g_VmmInitialized = FALSE;
+    // checked 停机失败保留 ownership 和回调资源，但不继续开放运行态 IOCTL。
 
     //
     // Uninitialize the HyperTrace (if it was initialized)
@@ -381,12 +388,12 @@ LoaderUninitVmm()
     //
     // First remove all VMM related state from the debugger
     //
-    DebuggerUninitializeVmmOperations();
+    if(WasInitialized)DebuggerUninitializeVmmOperations();
 
     //
     // Terminate VMM and its sub-mechanisms
     //
-    VmFuncUninitVmm();
+    (VOID)LoaderReleaseVmmOwnership();
 }
 
 /**
@@ -397,6 +404,7 @@ LoaderUninitVmm()
 VOID
 LoaderUninitKd()
 {
+    if(g_VmmResourcesOwned)return;
     //
     // Mark KD as uninitialized before uninitializing it to avoid any potential reentrancy issues during the uninitialization process
     //
@@ -420,6 +428,7 @@ LoaderUninitVmmAndDebugger()
     // Uninitialize the VMM first because it relies on the debugger for some
     //
     LoaderUninitVmm();
+    if(g_VmmResourcesOwned)return;
 
     //
     // Uninitialize the debugger

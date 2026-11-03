@@ -1015,6 +1015,9 @@ EptHandlePageHookExit(VIRTUAL_MACHINE_STATE *              VCpu,
             // happens on 0x123b4600, so we perform the necessary checks here
             //
 
+            if (EptCoherenceViolation(VCpu, HookedEntry, ViolationQualification))
+            { IsHandled = TRUE; break; }
+
             VCpu->MtfEptHookViolation = EPT_HOOKED_LAST_VIOLATION_NONE;
             VCpu->MtfEptHookPostEventAllowed = FALSE;
             RtlZeroMemory(&VCpu->MtfEptHookContext, sizeof(VCpu->MtfEptHookContext));
@@ -1059,10 +1062,9 @@ EptHandlePageHookExit(VIRTUAL_MACHINE_STATE *              VCpu,
                     //
                     // Restore to its original entry for one instruction
                     //
-                    EptSetPML1AndInvalidateTLB(VCpu,
-                                               TargetPage,
-                                               HookedEntry->OriginalEntry,
-                                               InveptSingleContext);
+                    EPT_PML1_ENTRY ReplayEntry = HookedEntry->OriginalEntry;
+                    if (HookedEntry->IsHiddenBreakpoint) ReplayEntry.WriteAccess = 0;
+                    EptSetPML1AndInvalidateTLB(VCpu, TargetPage, ReplayEntry, InveptSingleContext);
 
                     //
                     // Next we have to save the current hooked entry to restore on the next instruction's vm-exit
@@ -1297,6 +1299,13 @@ EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
         if (HookedEntry->IsExecutionHook && HookedEntry->IsHiddenBreakpoint &&
             EptHiddenBreakpointSamePage(HookedEntry->PhysicalBaseAddress, PhysicalRip))
         {
+            if(HookedEntry->CoherenceFault)
+            {
+                VMX_EXIT_QUALIFICATION_EPT_VIOLATION Retry={0};
+                (VOID)EptCoherenceViolation(VCpu,HookedEntry,Retry);return TRUE;
+            }
+            if (EptCoherenceBreakpointRetry(HookedEntry))
+            { HvSuppressRipIncrement(VCpu); return TRUE; }
             TargetPage = EptGetPml1Entry(VCpu->EptPageTable, HookedEntry->PhysicalBaseAddress);
             if (TargetPage == NULL || !TargetPage->ExecuteAccess ||
                 TargetPage->PageFrameNumber != HookedEntry->PhysicalBaseAddressOfFakePageContents)
@@ -1323,8 +1332,16 @@ EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
                     // [DOWNSTREAM] VA 可在其他 CPU 上重映射。保存本次已识别的 GPA，
                     // 供外部观察器路由使用；#BP 的 VMCS_GUEST_PHYSICAL_ADDRESS 不作依据。
                     VCpu->CurrentHiddenBreakpointPhysicalAddress = PhysicalRip;
+                    VCpu->CurrentHiddenBreakpointRetry = FALSE;
                     DispatchEventHiddenHookExecCc(VCpu, (PVOID)GuestRip);
                     VCpu->CurrentHiddenBreakpointPhysicalAddress = 0;
+                    if (VCpu->CurrentHiddenBreakpointRetry)
+                    {
+                        // mailbox/所有权视图忙时重新触发同一 fake CC；不执行原指令，
+                        // 也不让已开始的 observer 在这里重新运行。
+                        HvSuppressRipIncrement(VCpu);
+                        return TRUE;
+                    }
 
                     //
                     // Pointer to the page entry in the page table
@@ -1334,10 +1351,9 @@ EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
                     //
                     // Restore to its original entry for one instruction
                     //
-                    EptSetPML1AndInvalidateTLB(VCpu,
-                                               TargetPage,
-                                               HookedEntry->OriginalEntry,
-                                               InveptSingleContext);
+                    EPT_PML1_ENTRY ReplayEntry = HookedEntry->OriginalEntry;
+                    if (HookedEntry->IsHiddenBreakpoint) ReplayEntry.WriteAccess = 0;
+                    EptSetPML1AndInvalidateTLB(VCpu, TargetPage, ReplayEntry, InveptSingleContext);
 
                     //
                     // Next we have to save the current hooked entry to restore on the next instruction's vm-exit

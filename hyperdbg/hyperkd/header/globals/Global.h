@@ -33,6 +33,8 @@ BOOLEAN g_KdInitialized;
  *
  */
 BOOLEAN g_VmmInitialized;
+// 与运行就绪分开：失败初始化仍可能持有 VMM 和回调资源。
+BOOLEAN g_VmmResourcesOwned;
 
 /**
  * @brief Shows whether the hypertrace module is initialized or not

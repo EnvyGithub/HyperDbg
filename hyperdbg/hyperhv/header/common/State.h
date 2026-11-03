@@ -250,6 +250,9 @@ typedef struct _EPT_HOOKED_PAGE_DETAIL
      * a hidden breakpoint command (not a monitor or hidden detours)
      */
     BOOLEAN IsHiddenBreakpoint;
+    volatile LONG CoherenceFault;
+    UINT64 CoherenceFaultEpoch;
+    UINT64 CoherenceRemovalPending;
 
     /**
      * @brief [DOWNSTREAM] This execution fake page contains an exact-call target and relay
@@ -331,6 +334,10 @@ typedef struct _VIRTUAL_MACHINE_STATE
     UINT64           LastVmexitRip;                                                 // RIP in the current VM-exit
     // [DOWNSTREAM] 仅隐藏 CC 同步回调期间有效，来自已确认的 fake-page 命中。
     UINT64           CurrentHiddenBreakpointPhysicalAddress;
+    BOOLEAN          CurrentHiddenBreakpointRetry;
+    volatile LONG    HiddenCoherenceKick;
+    volatile LONG    NmiIpiPending;
+    UINT32 NmiApicId;
     UINT64           VmxonRegionPhysicalAddress;                                    // Vmxon region physical address
     UINT64           VmxonRegionVirtualAddress;                                     // VMXON region virtual address
     UINT64           VmcsRegionPhysicalAddress;                                     // VMCS region physical address

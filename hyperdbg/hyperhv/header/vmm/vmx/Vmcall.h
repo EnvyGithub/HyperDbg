@@ -437,3 +437,5 @@ NTSTATUS
 VmcallTest(_In_ UINT64 Param1,
            _In_ UINT64 Param2,
            _In_ UINT64 Param3);
+
+#define VMCALL_HIDDEN_COHERENCE_APPLY 0x0000003b

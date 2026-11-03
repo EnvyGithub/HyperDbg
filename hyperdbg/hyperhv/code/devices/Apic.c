@@ -402,7 +402,7 @@ ApicInitialize()
     {
         g_CompatibilityCheck.IsX2Apic = TRUE;
 
-        return FALSE;
+        return TRUE;
     }
     else
     {
@@ -411,6 +411,7 @@ ApicInitialize()
 
         if (!g_ApicBase)
         {
+            if(g_IoApicBase){PlatformMemUnmapIoSpace(g_IoApicBase,0x1000);g_IoApicBase=NULL;}
             return FALSE;
         }
 
@@ -434,6 +435,7 @@ ApicUninitialize()
     if (g_ApicBase)
     {
         PlatformMemUnmapIoSpace(g_ApicBase, 0x1000);
+        g_ApicBase=NULL;
     }
 
     //
@@ -442,6 +444,7 @@ ApicUninitialize()
     if (g_IoApicBase)
     {
         PlatformMemUnmapIoSpace(g_IoApicBase, 0x1000);
+        g_IoApicBase=NULL;
     }
 }
 
@@ -464,5 +467,21 @@ ApicSelfIpi(UINT32 Vector)
     else
     {
         XApicIcrWrite(APIC_DEST_SELF | APIC_DEST_PHYSICAL | APIC_DM_FIXED | Vector, 0);
+    }
+}
+
+// [DOWNSTREAM] 定向发送；不能把 OS 的 CPU 索引当作 APIC ID。
+UINT32 ApicReadLocalId(VOID)
+{
+    return g_CompatibilityCheck.IsX2Apic ? (UINT32)X2ApicRead(APIC_ID) :
+        (*(volatile UINT32 *)((uintptr_t)g_ApicBase + 0x20) >> 24);
+}
+VOID ApicTriggerDirectedNmi(UINT32 ApicId)
+{
+    if(g_CompatibilityCheck.IsX2Apic)X2ApicIcrWrite((4u<<8)|(1u<<14),ApicId);
+    else
+    {
+        while(*(volatile UINT32 *)((uintptr_t)g_ApicBase+ICROffset)&(1u<<12))YieldProcessor();
+        XApicIcrWrite((4u<<8)|(1u<<14),ApicId<<24);
     }
 }

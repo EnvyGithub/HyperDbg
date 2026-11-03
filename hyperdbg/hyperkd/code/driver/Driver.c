@@ -13,6 +13,14 @@
  */
 #include "pch.h"
 
+static PDRIVER_OBJECT g_VmmOwnerDriverObject;
+VOID DrvSetVmmResourcesOwned(BOOLEAN Owned)
+{
+    g_VmmResourcesOwned=Owned;
+    if(g_VmmOwnerDriverObject)g_VmmOwnerDriverObject->DriverUnload=Owned?NULL:DrvUnload;
+}
+
+
 /**
  * @brief Main Driver Entry in the case of driver load
  *
@@ -67,6 +75,7 @@ DriverEntry(
         DriverObject->MajorFunction[IRP_MJ_WRITE]          = DrvWrite;
         DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = DrvDispatchIoControl;
 
+        g_VmmOwnerDriverObject=DriverObject;
         DriverObject->DriverUnload = DrvUnload;
         IoCreateSymbolicLink(&DosDeviceName, &DriverName);
     }

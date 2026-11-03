@@ -806,54 +806,8 @@ VmFuncDisableExternalInterruptsAndInterruptWindow(UINT32 CoreId)
     HvDisableExternalInterruptsAndInterruptWindow(&g_GuestState[CoreId]);
 }
 
-/**
- * @brief Initializes hypervisor
- * @param VmmCallbacks
- *
- * @return BOOLEAN Shows whether the initialization was successful or not
- */
-BOOLEAN
-VmFuncInitVmm(VMM_CALLBACKS * VmmCallbacks)
-{
-    BOOLEAN Result;
-    EptControlAcquireExclusive();
-    EptControlSetWriteReady(FALSE);
-    Result = HvInitVmm(VmmCallbacks);
-    EptControlSetWriteReady(Result);
-    EptControlReleaseExclusive();
-    return Result;
-}
-
-/**
- * @brief Uninitialize Terminate Vmx on all logical cores
- *
- * @return VOID
- */
-VOID
-VmFuncUninitVmm()
-{
-    EptControlAcquireExclusive();
-    EptControlSetWriteReady(FALSE);
-    (VOID)VmxPerformTermination();
-    EptControlReleaseExclusive();
-}
-
-/**
- * @brief Uninitialize VMX on all logical cores and report teardown status
- *
- * @return BOOLEAN TRUE only after all cores left VMX operation and shared
- * resources were released
- */
-BOOLEAN
-VmFuncUninitVmmChecked()
-{
-    BOOLEAN Result;
-    EptControlAcquireExclusive();
-    EptControlSetWriteReady(FALSE);
-    Result = VmxPerformTermination();
-    EptControlReleaseExclusive();
-    return Result;
-}
+// VMM 与 NMI transport 共同拥有 checked 生命周期。
+#include "VmmLifecycle.inc"
 
 /**
  * @brief Get the current VMX operation state
@@ -1215,4 +1169,11 @@ VmFuncSmmPerformSmiOperation(SMI_OPERATION_PACKETS * SmiOperationRequest,
                              BOOLEAN                 ApplyFromVmxRootMode)
 {
     return SmmPerformSmiOperation(SmiOperationRequest, ApplyFromVmxRootMode);
+}
+
+VOID VmFuncRetryHiddenBreakpoint()
+{
+    if (g_GuestState == NULL || !VmxGetCurrentExecutionMode()) return;
+    VIRTUAL_MACHINE_STATE *VCpu = &g_GuestState[PlatformCpuGetCurrentProcessorNumber()];
+    if (VCpu->CurrentHiddenBreakpointPhysicalAddress != 0) VCpu->CurrentHiddenBreakpointRetry = TRUE;
 }

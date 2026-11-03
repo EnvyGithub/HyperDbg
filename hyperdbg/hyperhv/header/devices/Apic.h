@@ -223,3 +223,6 @@ ApicSelfIpi(UINT32 Vector);
 
 VOID
 ApicTriggerGenericNmi();
+
+UINT32 ApicReadLocalId(VOID);
+VOID ApicTriggerDirectedNmi(UINT32 ApicId);

@@ -11,6 +11,18 @@
  */
 #include "pch.h"
 
+static VOID VmxBroadcastCaptureApic(PKDPC Dpc,PVOID Context,PVOID A,PVOID B)
+{
+    UNREFERENCED_PARAMETER(Dpc);UNREFERENCED_PARAMETER(Context);
+    g_GuestState[PlatformCpuGetCurrentProcessorNumber()].NmiApicId=ApicReadLocalId();
+    PlatformBroadcastSynchronizeEndOfRoutine(A,B);
+}
+VOID VmxBroadcastKickCpu(VIRTUAL_MACHINE_STATE *Cpu)
+{
+    if(CpuInterlockedCompareExchange(&Cpu->NmiIpiPending,1,0)==0)ApicTriggerDirectedNmi(Cpu->NmiApicId);
+}
+
+
 /**
  * @brief Initialize the VMX Broadcast mechanism
  *
@@ -19,6 +31,7 @@
 VOID
 VmxBroadcastInitialize()
 {
+    if(g_NmiBroadcastingInitialized)return;
     //
     // *** Initialize NMI broadcasting mechanism ***
     //
@@ -26,7 +39,8 @@ VmxBroadcastInitialize()
     //
     // Initialize APIC
     //
-    ApicInitialize();
+    if(!ApicInitialize())return;
+    PlatformDpcGenericCall(VmxBroadcastCaptureApic,NULL);
 
 #if USE_DEFAULT_OS_IDT_AS_HOST_IDT == TRUE
 
@@ -56,6 +70,19 @@ VmxBroadcastInitialize()
 VOID
 VmxBroadcastUninitialize()
 {
+    if(!g_NmiBroadcastingInitialized)return;
+    // 控制面已停止新 coherence 事务。未消费的 IPI 不能留到 VMXOFF 或释放 GuestState 之后。
+    BOOLEAN Pending=FALSE;
+    for(UINT32 Attempt=0;Attempt<65536;Attempt++)
+    {
+        Pending=FALSE;
+        for(UINT32 i=0;i<PlatformCpuGetActiveProcessorCount();i++)
+            if(CpuInterlockedCompareExchange(&g_GuestState[i].NmiIpiPending,0,0)!=0){Pending=TRUE;break;}
+        if(!Pending)break;
+        YieldProcessor();
+    }
+    if(Pending)return;
+
     //
     // *** Uninitialize NMI broadcasting mechanism ***
     //
@@ -164,13 +191,14 @@ VmxBroadcastNmi(VIRTUAL_MACHINE_STATE * VCpu, NMI_BROADCAST_ACTION_TYPE VmxBroad
             SpinlockInterlockedCompareExchange((volatile LONG *)&g_GuestState[i].NmiBroadcastingState.NmiBroadcastAction,
                                                VmxBroadcastAction,
                                                NMI_BROADCAST_ACTION_NONE);
+            VmxBroadcastKickCpu(&g_GuestState[i]);
         }
     }
 
     //
     // Broadcast NMI through APIC (xAPIC or x2APIC)
     //
-    ApicTriggerGenericNmi();
+    // 每个目标核最多一个未消费的内部 NMI；coherence 与既有广播共用握手。
 
     return TRUE;
 }
@@ -187,7 +215,8 @@ BOOLEAN
 VmxBroadcastNmiHandler(VIRTUAL_MACHINE_STATE * VCpu, BOOLEAN IsOnVmxNmiHandler)
 {
     NMI_BROADCAST_ACTION_TYPE BroadcastAction;
-    BOOLEAN                   IsHandled = FALSE;
+    BOOLEAN                   IsHandled = CpuInterlockedExchange(&VCpu->NmiIpiPending, 0) != 0;
+    (VOID)CpuInterlockedExchange(&VCpu->HiddenCoherenceKick, 0);
 
     //
     // Check if NMI relates to us or not
@@ -197,7 +226,6 @@ VmxBroadcastNmiHandler(VIRTUAL_MACHINE_STATE * VCpu, BOOLEAN IsOnVmxNmiHandler)
 
     if (BroadcastAction == NMI_BROADCAST_ACTION_NONE)
     {
-        IsHandled = FALSE;
         goto ReturnIsHandled;
     }
 

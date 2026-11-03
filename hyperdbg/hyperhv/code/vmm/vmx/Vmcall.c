@@ -275,6 +275,9 @@ VmxVmcallHandler(VIRTUAL_MACHINE_STATE * VCpu,
         VmcallStatus = STATUS_SUCCESS;
         break;
     }
+    case VMCALL_HIDDEN_COHERENCE_APPLY:
+        VmcallStatus = EptCoherenceApply(VCpu) ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
+        break;
     case VMCALL_SET_HIDDEN_CC_BREAKPOINT:
     {
         BOOLEAN  HookResult = FALSE;

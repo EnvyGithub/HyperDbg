@@ -57,3 +57,5 @@ DrvDispatchVmmIoControl(PIRP Irp, PIO_STACK_LOCATION IrpStack, BOOLEAN * DoNotCh
 
 NTSTATUS
 DrvDispatchHyperTraceIoControl(PIRP Irp, PIO_STACK_LOCATION IrpStack, BOOLEAN * DoNotChangeInformation);
+
+VOID DrvSetVmmResourcesOwned(BOOLEAN Owned);

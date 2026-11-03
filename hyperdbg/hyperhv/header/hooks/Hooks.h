@@ -12,7 +12,7 @@
 #pragma once
 
 // [DOWNSTREAM] 调用者在 VMX non-root、IRQL <= APC_LEVEL；SetWriteReady 需要持排他锁。
-VOID EptControlAcquireExclusive(VOID);
+BOOLEAN EptControlAcquireExclusive(VOID);
 VOID EptControlReleaseExclusive(VOID);
 VOID EptControlSetWriteReady(BOOLEAN Ready);
 
@@ -493,3 +493,17 @@ EptHookModifyPageWriteState(VIRTUAL_MACHINE_STATE * VCpu,
  */
 VOID
 EptHookHandleMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu);
+
+BOOLEAN EptCoherenceControlEnter(VOID);
+VOID EptCoherenceControlLeave(VOID);
+BOOLEAN EptCoherenceApply(VIRTUAL_MACHINE_STATE *Cpu);
+VOID EptCoherenceSafePoint(VIRTUAL_MACHINE_STATE *Cpu);
+BOOLEAN EptCoherenceViolation(VIRTUAL_MACHINE_STATE *Cpu, EPT_HOOKED_PAGE_DETAIL *Page, VMX_EXIT_QUALIFICATION_EPT_VIOLATION Qualification);
+BOOLEAN EptCoherenceFinishMtf(VIRTUAL_MACHINE_STATE *Cpu);
+BOOLEAN EptCoherenceBreakpointRetry(EPT_HOOKED_PAGE_DETAIL *Page);
+NTSTATUS EptCoherenceWrite(UINT64 Cr3,UINT64 Cr4,UINT64 Va,UINT64 Pa,const VOID *Buffer,UINT32 Size,PUINT32 Bytes,PBOOLEAN Unknown);
+
+VOID EptCoherenceOnExit(VIRTUAL_MACHINE_STATE *Cpu);
+NTSTATUS EptCoherenceBeginWrite(UINT64 Cr3,UINT64 Cr4,UINT64 Va,UINT64 Size,UINT64 *Token);
+NTSTATUS EptCoherenceEndWrite(UINT64 Token,PBOOLEAN Unknown);
+BOOLEAN EptCoherenceQueryFault(UINT64 PhysicalPage,UINT64 *Epoch,NTSTATUS *Status);

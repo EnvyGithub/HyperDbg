@@ -286,6 +286,9 @@ VmFuncGetLastVmexitRip(UINT32 CoreId);
 // 当前 hidden-CC 同步回调中返回已确认 GPA；其他上下文返回 0，不重新翻译 VA。
 IMPORT_EXPORT_VMM UINT64
 VmFuncGetHiddenBreakpointPhysicalAddress(VOID);
+IMPORT_EXPORT_VMM VOID VmFuncRetryHiddenBreakpoint(VOID);
+IMPORT_EXPORT_VMM NTSTATUS ConfigureEptCoherentWriteFromRootV1(UINT64 Cr3, UINT64 Cr4, UINT64 Va, UINT64 Pa,
+    const VOID *Buffer, UINT32 Size, PUINT32 Bytes, PBOOLEAN OutcomeUnknown);
 
 IMPORT_EXPORT_VMM GUEST_REGS *
 VmFuncGetGuestRegs(UINT32 CoreId);
@@ -1202,3 +1205,8 @@ PciReadCam(WORD Bus, WORD Device, WORD Function, BYTE Offset, UINT8 Width);
 
 IMPORT_EXPORT_VMM BOOLEAN
 PciWriteCam(WORD Bus, WORD Device, WORD Function, BYTE Offset, UINT8 Width, QWORD Value);
+
+IMPORT_EXPORT_VMM NTSTATUS ConfigureEptBeginCoherentWriteFromRootV1(UINT64 Cr3,UINT64 Cr4,UINT64 Va,UINT64 Size,UINT64 *Token);
+IMPORT_EXPORT_VMM NTSTATUS ConfigureEptEndCoherentWriteFromRootV1(UINT64 Token,PBOOLEAN Unknown);
+IMPORT_EXPORT_VMM BOOLEAN ConfigureEptQueryCoherenceFaultV1(UINT64 PhysicalPage,UINT64 *Epoch,NTSTATUS *Status);
+IMPORT_EXPORT_VMM BOOLEAN ConfigureEptRecoverCoherenceV1(VOID);

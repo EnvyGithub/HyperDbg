@@ -17,14 +17,18 @@
 static EX_PUSH_LOCK g_EptControlLock;
 static BOOLEAN g_EptControlWriteReady;
 
-VOID EptControlAcquireExclusive(VOID)
+BOOLEAN EptControlAcquireExclusive(VOID)
 {
     KeEnterCriticalRegion();
     ExAcquirePushLockExclusive(&g_EptControlLock);
+    if (!EptCoherenceControlEnter())
+    { ExReleasePushLockExclusive(&g_EptControlLock); KeLeaveCriticalRegion(); return FALSE; }
+    return TRUE;
 }
 
 VOID EptControlReleaseExclusive(VOID)
 {
+    EptCoherenceControlLeave();
     ExReleasePushLockExclusive(&g_EptControlLock);
     KeLeaveCriticalRegion();
 }
@@ -211,7 +215,7 @@ BOOLEAN
 ConfigureEptHookUnHookAllByHookingTag(UINT64 HookingTag)
 {
     BOOLEAN Result;
-    EptControlAcquireExclusive();
+    if (!EptControlAcquireExclusive()) return FALSE;
     Result = EptHookUnHookAllByHookingTag(HookingTag);
     EptControlReleaseExclusive();
     return Result;
@@ -248,7 +252,7 @@ ConfigureEptHookUnHookSingleAddress(UINT64 VirtualAddress,
                                     UINT32 ProcessId)
 {
     BOOLEAN Result;
-    EptControlAcquireExclusive();
+    if (!EptControlAcquireExclusive()) return FALSE;
     Result = EptHookUnHookSingleAddress(VirtualAddress, PhysAddress, ProcessId);
     EptControlReleaseExclusive();
     return Result;
@@ -335,7 +339,7 @@ VMM_HIDDEN_BREAKPOINT_INSTALL_STATUS
 ConfigureEptHookPinned(PVOID TargetAddress, UINT32 ProcessId, UINT64 PhysicalPage)
 {
     VMM_HIDDEN_BREAKPOINT_INSTALL_STATUS Result;
-    EptControlAcquireExclusive();
+    if (!EptControlAcquireExclusive()) return VmmHiddenBreakpointInstallCleanFailure;
     Result = EptHookPinned(TargetAddress, ProcessId, PhysicalPage);
     EptControlReleaseExclusive();
     return Result;
@@ -345,7 +349,7 @@ BOOLEAN
 ConfigureEptHook(PVOID TargetAddress, UINT32 ProcessId)
 {
     BOOLEAN Result;
-    EptControlAcquireExclusive();
+    if (!EptControlAcquireExclusive()) return FALSE;
     Result = EptHook(TargetAddress, ProcessId);
     EptControlReleaseExclusive();
     return Result;
@@ -386,7 +390,7 @@ ConfigureEptHook2(UINT32 CoreId,
                   UINT32 ProcessId)
 {
     BOOLEAN Result;
-    EptControlAcquireExclusive();
+    if (!EptControlAcquireExclusive()) return FALSE;
     Result = EptHookInlineHook(&g_GuestState[CoreId],
                              TargetAddress,
                              HookFunction,
@@ -404,7 +408,7 @@ ConfigureEptHook2Atomic(UINT32 CoreId,
                         PVOID  GuardedTailTarget)
 {
     VMM_ATOMIC_INLINE_INSTALL_STATUS Result;
-    EptControlAcquireExclusive();
+    if (!EptControlAcquireExclusive()) return VmmAtomicInlineInstallCleanFailure;
     Result = EptHookInlineHookAtomic(&g_GuestState[CoreId],
                                    TargetAddress,
                                    ProcessId,
@@ -437,7 +441,7 @@ ConfigureEptHook2AtomicDemandV1(UINT32 CoreId, PVOID TargetAddress,
 {
     VMM_ATOMIC_INLINE_INSTALL_STATUS Result;
     if (Demand == NULL) { return VmmAtomicInlineInstallCleanFailure; }
-    EptControlAcquireExclusive();
+    if (!EptControlAcquireExclusive()) return FALSE;
     Result = EptHookInlineHookAtomicDemand(&g_GuestState[CoreId], TargetAddress,
         ProcessId, PlainOrigin, GuardedOrigin, GuardedTailTarget, Demand);
     if (Result == VmmAtomicInlineInstallIndeterminate) EptControlSetWriteReady(FALSE);
@@ -450,7 +454,7 @@ ConfigureEptHookUnHookAtomicPage(UINT64 Target,
                                  UINT64 PhysicalPage)
 {
     VMM_ATOMIC_INLINE_DETACH_STATUS Result;
-    EptControlAcquireExclusive();
+    if (!EptControlAcquireExclusive()) return VmmAtomicInlineDetachRetrySafe;
     Result = EptHookUnHookAtomicPage(Target, PhysicalPage);
     if (Result == VmmAtomicInlineDetachIndeterminate) EptControlSetWriteReady(FALSE);
     EptControlReleaseExclusive();
@@ -468,7 +472,7 @@ ConfigureEptHook2ExactCall(UINT32 CoreId,
                            UINT32 ProcessId)
 {
     BOOLEAN Result;
-    EptControlAcquireExclusive();
+    if (!EptControlAcquireExclusive()) return FALSE;
     Result = EptHookExactCall(&g_GuestState[CoreId],
                             TargetAddress,
                             SamePageRelayAddress,
@@ -488,7 +492,7 @@ ConfigureEptHookUnHookExactCall(PVOID  TargetAddress,
                                 UINT32 ProcessId)
 {
     BOOLEAN Result;
-    EptControlAcquireExclusive();
+    if (!EptControlAcquireExclusive()) return FALSE;
     Result = EptHookUnHookExactCall(TargetAddress,
                                   SamePageRelayAddress,
                                   HookFunction,
@@ -514,7 +518,7 @@ ConfigureEptHookMonitor(UINT32                                         CoreId,
                         UINT32                                         ProcessId)
 {
     BOOLEAN Result;
-    EptControlAcquireExclusive();
+    if (!EptControlAcquireExclusive()) return FALSE;
     Result = EptHookMonitorHook(&g_GuestState[CoreId],
                               HookingDetails,
                               ProcessId);
@@ -766,4 +770,25 @@ VOID
 ConfigureChangeIoBitmapOnSingleCore(UINT32 TargetCoreId, UINT64 Port)
 {
     DpcRoutineRunTaskOnSingleCore(TargetCoreId, (PVOID)DpcRoutinePerformChangeIoBitmapOnSingleCore, (PVOID)Port);
+}
+
+NTSTATUS ConfigureEptCoherentWriteFromRootV1(UINT64 Cr3,UINT64 Cr4,UINT64 Va,UINT64 Pa,
+    const VOID *Buffer,UINT32 Size,PUINT32 Bytes,PBOOLEAN Unknown)
+{ return EptCoherenceWrite(Cr3,Cr4,Va,Pa,Buffer,Size,Bytes,Unknown); }
+
+NTSTATUS ConfigureEptBeginCoherentWriteFromRootV1(UINT64 Cr3,UINT64 Cr4,UINT64 Va,UINT64 Size,UINT64 *Token)
+{ return EptCoherenceBeginWrite(Cr3,Cr4,Va,Size,Token); }
+NTSTATUS ConfigureEptEndCoherentWriteFromRootV1(UINT64 Token,PBOOLEAN Unknown)
+{ return EptCoherenceEndWrite(Token,Unknown); }
+BOOLEAN ConfigureEptQueryCoherenceFaultV1(UINT64 PhysicalPage,UINT64 *Epoch,NTSTATUS *Status)
+{
+    if(VmxGetCurrentExecutionMode())return EptCoherenceQueryFault(PhysicalPage,Epoch,Status);
+    KeEnterCriticalRegion();ExAcquirePushLockShared(&g_EptControlLock);
+    BOOLEAN Fault=EptCoherenceQueryFault(PhysicalPage,Epoch,Status);
+    ExReleasePushLockShared(&g_EptControlLock);KeLeaveCriticalRegion();return Fault;
+}
+BOOLEAN ConfigureEptRecoverCoherenceV1(VOID)
+{
+    if(VmxGetCurrentExecutionMode()||!EptControlAcquireExclusive())return FALSE;
+    EptControlReleaseExclusive();return TRUE;
 }

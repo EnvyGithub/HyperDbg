@@ -15,6 +15,9 @@
 #include "../../../header/hooks/HiddenBreakpointIdentity.h"
 #include "../../../header/hooks/EptPoolReservation.h"
 
+static BOOLEAN EptCoherenceControlBegin(EPT_HOOKED_PAGE_DETAIL *Page);
+static BOOLEAN EptCoherenceControlEnd(VOID);
+
 #define EPT_EXACT_CALL_TARGET_SIZE 5u
 #define EPT_EXACT_CALL_RELAY_SIZE  14u
 
@@ -674,7 +677,7 @@ EptHookPerformPageHook(VIRTUAL_MACHINE_STATE * VCpu,
     {
         // [DOWNSTREAM] 隐藏 CC 只能追加到已有隐藏 CC 页。普通 monitor/detour
         // 的 EPT 权限和 backing 不同，不能仅添加断点数组后报告安装成功。
-        if (!HookedEntry->IsHiddenBreakpoint ||
+        if (HookedEntry->CoherenceFault || !HookedEntry->IsHiddenBreakpoint ||
             HookedEntry->IsExactCallHook || HookedEntry->IsAtomicInlineHookPage)
         {
             VmmCallbackSetLastError(
@@ -703,27 +706,21 @@ BOOLEAN
 EptHookPerformHook(PVOID   TargetAddress,
                    UINT32  ProcessId,
                    BOOLEAN ApplyDirectlyFromVmxRoot,
-                   UINT64  ExpectedPhysicalPage)
+                   UINT64  ExpectedPhysicalPage,
+                   PBOOLEAN Unconfirmed)
 {
+    if(Unconfirmed)*Unconfirmed=FALSE;
     if (ApplyDirectlyFromVmxRoot)
     {
-        DIRECT_VMCALL_PARAMETERS DirectVmcallOptions = {0};
-
-        //
-        // Set VMCALL options
-        //
-        DirectVmcallOptions.OptionalParam1 = (UINT64)TargetAddress;
-        DirectVmcallOptions.OptionalParam2 = LayoutGetCurrentProcessCr3().Flags;
-
-        //
-        // Perform the direct VMCALL
-        //
-        if (DirectVmcallSetHiddenBreakpointHook(PlatformCpuGetCurrentProcessorNumber(), &DirectVmcallOptions) == STATUS_SUCCESS)
-        {
-            LogDebugInfo("Hidden breakpoint hook applied from VMX Root Mode");
-
-            return TRUE;
-        }
+        UINT64 Token=0;BOOLEAN Unknown=FALSE;
+        NTSTATUS Begin=EptCoherenceBeginWrite(GetGuestCr3(),GetGuestCr4(),(UINT64)TargetAddress,1,&Token);
+        if(!NT_SUCCESS(Begin))return FALSE;
+        DIRECT_VMCALL_PARAMETERS Options={0};
+        Options.OptionalParam1=(UINT64)TargetAddress;Options.OptionalParam2=GetGuestCr3();
+        NTSTATUS Applied=DirectVmcallSetHiddenBreakpointHook(PlatformCpuGetCurrentProcessorNumber(),&Options);
+        NTSTATUS End=EptCoherenceEndWrite(Token,&Unknown);
+        if(Unconfirmed&&Applied==STATUS_SUCCESS&&!NT_SUCCESS(End))*Unconfirmed=TRUE;
+        return Applied==STATUS_SUCCESS&&NT_SUCCESS(End)&&!Unknown;
     }
     else
     {
@@ -735,10 +732,20 @@ EptHookPerformHook(PVOID   TargetAddress,
             BroadcastEnableBreakpointExitingOnExceptionBitmapAllCores();
         }
 
-        if (AsmVmxVmcall(VMCALL_SET_HIDDEN_CC_BREAKPOINT,
+        UINT64 PhysicalPage = ExpectedPhysicalPage != 0 ? ExpectedPhysicalPage :
+            (UINT64)PAGE_ALIGN(VirtualAddressToPhysicalAddressByProcessId(TargetAddress, ProcessId));
+        EPT_HOOKED_PAGE_DETAIL *Existing = EptHookFindByPhysAddress(PhysicalPage);
+        if (Existing != NULL && (!Existing->IsHiddenBreakpoint || Existing->CoherenceFault || !EptCoherenceControlBegin(Existing))) return FALSE;
+        NTSTATUS Applied = AsmVmxVmcall(VMCALL_SET_HIDDEN_CC_BREAKPOINT,
                          (UINT64)TargetAddress,
                          LayoutGetCr3ByProcessId(ProcessId).Flags,
-                         ExpectedPhysicalPage) == STATUS_SUCCESS)
+                         ExpectedPhysicalPage);
+        if (Existing != NULL && !EptCoherenceControlEnd())
+        {
+            if(Unconfirmed&&Applied==STATUS_SUCCESS)*Unconfirmed=TRUE;
+            return FALSE;
+        }
+        if (Applied == STATUS_SUCCESS)
         {
             LogDebugInfo("Hidden breakpoint hook applied from VMX Root Mode");
 
@@ -789,7 +796,7 @@ EptHook(PVOID TargetAddress, UINT32 ProcessId)
         return FALSE;
     }
 
-    return EptHookPerformHook(TargetAddress, ProcessId, FALSE, 0);
+    return EptHookPerformHook(TargetAddress, ProcessId, FALSE, 0, NULL);
 }
 
 /**
@@ -815,7 +822,7 @@ EptHookFromVmxRoot(PVOID TargetAddress)
         return FALSE;
     }
 
-    return EptHookPerformHook(TargetAddress, NULL_ZERO, TRUE, 0);
+    return EptHookPerformHook(TargetAddress, NULL_ZERO, TRUE, 0, NULL);
 }
 
 /**
@@ -858,6 +865,8 @@ EptHookRetireMtfRestorePointForUnhook(VIRTUAL_MACHINE_STATE * VCpu,
     VCpu->IgnoreOneMtf           = TRUE;
     HvEnableAndCheckForPreviousExternalInterrupts(VCpu);
 }
+
+#include "EptHiddenCoherence.inc"
 
 /**
  * @brief Remove and Invalidate Hook in TLB (Hidden Detours and if counter of hidden breakpoint is zero)
@@ -2359,9 +2368,10 @@ EptHookPinned(PVOID TargetAddress, UINT32 ProcessId, UINT64 PhysicalPage)
     {
         return VmmHiddenBreakpointInstallCleanFailure;
     }
-    if (!EptHookPerformHook(TargetAddress, ProcessId, FALSE, PhysicalPage))
+    BOOLEAN Unconfirmed=FALSE;
+    if (!EptHookPerformHook(TargetAddress, ProcessId, FALSE, PhysicalPage, &Unconfirmed))
     {
-        return VmmHiddenBreakpointInstallCleanFailure;
+        return Unconfirmed ? VmmHiddenBreakpointInstallIndeterminate : VmmHiddenBreakpointInstallCleanFailure;
     }
     // 不以 NMI 已发送代替全核 INVEPT 完成。失败时保留入口和锁页所有权。
     PlatformDpcGenericCall(EptHookAtomicInvalidateDpc, &Invalidation);
@@ -3124,6 +3134,7 @@ EptHookHandleMonitorTrapFlag(VIRTUAL_MACHINE_STATE * VCpu)
 {
     PVOID   TargetPage;
     BOOLEAN RestoreHookedEntry = TRUE;
+    if (EptCoherenceFinishMtf(VCpu)) return;
 
     if (VCpu->MtfEptHookViolation == EPT_HOOKED_LAST_VIOLATION_WRITE)
     {
@@ -3210,6 +3221,13 @@ EptHookUnHookSingleAddressHiddenBreakpoint(PEPT_HOOKED_PAGE_DETAIL             H
                                            BOOLEAN                             ApplyDirectlyFromVmxRoot,
                                            EPT_SINGLE_HOOK_UNHOOKING_DETAILS * TargetUnhookingDetails)
 {
+    if(HookedEntry->CoherenceRemovalPending!=0&&HookedEntry->CoherenceRemovalPending!=VirtualAddress)return FALSE;
+    if(HookedEntry->CoherenceRemovalPending==VirtualAddress && VirtualAddress!=0)
+    {
+        if(ApplyDirectlyFromVmxRoot||!EptCoherenceControlBegin(HookedEntry)||!EptCoherenceControlEnd())return FALSE;
+        HookedEntry->CoherenceRemovalPending=0;return TRUE;
+    }
+
     UINT64 TargetAddressInFakePageContent;
 
     //
@@ -3317,6 +3335,7 @@ EptHookUnHookSingleAddressHiddenBreakpoint(PEPT_HOOKED_PAGE_DETAIL             H
                 //
                 // Set 0xcc to its previous value
                 //
+                if (ApplyDirectlyFromVmxRoot || !EptCoherenceControlBegin(HookedEntry)) return FALSE;
                 TargetAddressInFakePageContent = EptHookCalcBreakpointOffset((PVOID)VirtualAddress, HookedEntry);
 
                 //
@@ -3354,7 +3373,9 @@ EptHookUnHookSingleAddressHiddenBreakpoint(PEPT_HOOKED_PAGE_DETAIL             H
                 // Decrease the count of breakpoints
                 //
                 HookedEntry->CountOfBreakpoints = HookedEntry->CountOfBreakpoints - 1;
-
+                // 修改已提交；恢复未确认时gate保留，不重复删除另一个相同VA引用。
+                if(!EptCoherenceControlEnd())
+                { HookedEntry->CoherenceRemovalPending=VirtualAddress;return FALSE; }
                 return TRUE;
             }
         }

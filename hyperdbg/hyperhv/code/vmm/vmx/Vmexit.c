@@ -79,6 +79,8 @@ VmxVmexitHandler(_Inout_ PGUEST_REGS GuestRegs)
     // LogInfo("VMCS_EXIT_QUALIFICATION : 0x%llx", VCpu->ExitQualification);
     //
 
+    EptCoherenceOnExit(VCpu);
+
     switch (ExitReason)
     {
     case VMX_EXIT_REASON_TRIPLE_FAULT:
@@ -361,6 +363,7 @@ VmxVmexitHandler(_Inout_ PGUEST_REGS GuestRegs)
     //
     // Set indicator of Vmx non root mode to false
     //
+    EptCoherenceSafePoint(VCpu);
     VCpu->IsOnVmxRootMode = FALSE;
 
     //

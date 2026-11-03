@@ -337,10 +337,7 @@ DebuggerUninitializeVmmOperations()
     //
     UdUninitializeUserDebugger();
 
-    //
-    // Uninitialize NMI broadcasting mechanism
-    //
-    VmFuncVmxBroadcastUninitialize();
+    // NMI transport 由 checked VMM 退出统一排空和关闭。
 }
 
 /**

@@ -251,13 +251,15 @@ DrvDispatchBasicIoControl(PIRP Irp, PIO_STACK_LOCATION IrpStack, BOOLEAN * DoNot
             //
             // There was a problem, so not loaded
             //
-            Status = STATUS_UNSUCCESSFUL;
+            Status = g_VmmResourcesOwned ? STATUS_DEVICE_BUSY : STATUS_UNSUCCESSFUL;
         }
 
         //
         // Adjust the status and output size
         //
+        NTSTATUS InitStatus=Status;
         DrvAdjustStatusAndSetOutputSize(SIZEOF_DEBUGGER_INIT_VMM_PACKET, DoNotChangeInformation, Irp, &Status);
+        Status=InitStatus;
 
         break;
 
@@ -449,7 +451,7 @@ DrvDispatchVmmIoControl(PIRP Irp, PIO_STACK_LOCATION IrpStack, BOOLEAN * DoNotCh
         //
         LoaderUninitVmmAndDebugger();
 
-        Status = STATUS_SUCCESS;
+        Status = g_VmmResourcesOwned ? STATUS_DEVICE_BUSY : STATUS_SUCCESS;
 
         break;
 
