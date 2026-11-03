@@ -364,7 +364,7 @@ NTSTATUS EptCoherenceBeginWrite(UINT64 Cr3,UINT64 Cr4,UINT64 Va,UINT64 Size,UINT
         EptCoherencePublish(Cpu,EPT_COH_QUIESCE);
         for(UINT32 i=0;i<65536&&!EptCoherenceAllAck(EptCoherenceState());i++)YieldProcessor();
         if(!EptCoherenceAllAck(EptCoherenceState()))
-        {(VOID)EptCoherenceResume(Cpu);return STATUS_DEVICE_BUSY;}
+        {(VOID)EptCoherenceResume(Cpu);return STATUS_IO_TIMEOUT;}
     }
     g_HiddenCoherence.RootActive=TRUE;*Token=(UINT64)g_HiddenCoherence.Gate;return STATUS_SUCCESS;
 }
