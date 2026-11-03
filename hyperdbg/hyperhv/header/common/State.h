@@ -329,6 +329,8 @@ typedef struct _VIRTUAL_MACHINE_STATE
     UINT32           ExitReason;                                                    // The core's exit reason
     UINT32           ExitQualification;                                             // The core's exit qualification
     UINT64           LastVmexitRip;                                                 // RIP in the current VM-exit
+    // [DOWNSTREAM] 仅隐藏 CC 同步回调期间有效，来自已确认的 fake-page 命中。
+    UINT64           CurrentHiddenBreakpointPhysicalAddress;
     UINT64           VmxonRegionPhysicalAddress;                                    // Vmxon region physical address
     UINT64           VmxonRegionVirtualAddress;                                     // VMXON region virtual address
     UINT64           VmcsRegionPhysicalAddress;                                     // VMCS region physical address

@@ -365,6 +365,14 @@ VmFuncGetLastVmexitRip(UINT32 CoreId)
     return g_GuestState[CoreId].LastVmexitRip;
 }
 
+// [DOWNSTREAM] 保持 Context=GuestRip 的既有事件 ABI；只在当前隐藏 CC 回调中取 GPA。
+UINT64
+VmFuncGetHiddenBreakpointPhysicalAddress(VOID)
+{
+    if (g_GuestState == NULL || !VmxGetCurrentExecutionMode()) return 0;
+    return g_GuestState[PlatformCpuGetCurrentProcessorNumber()].CurrentHiddenBreakpointPhysicalAddress;
+}
+
 /**
  * @brief Get the guest's general-purpose registers of the target core
  *

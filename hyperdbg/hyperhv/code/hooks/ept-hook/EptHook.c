@@ -672,7 +672,10 @@ EptHookPerformPageHook(VIRTUAL_MACHINE_STATE * VCpu,
 
     if (HookedEntry != NULL)
     {
-        if (HookedEntry->IsExactCallHook || HookedEntry->IsAtomicInlineHookPage)
+        // [DOWNSTREAM] 隐藏 CC 只能追加到已有隐藏 CC 页。普通 monitor/detour
+        // 的 EPT 权限和 backing 不同，不能仅添加断点数组后报告安装成功。
+        if (!HookedEntry->IsHiddenBreakpoint ||
+            HookedEntry->IsExactCallHook || HookedEntry->IsAtomicInlineHookPage)
         {
             VmmCallbackSetLastError(
                 DEBUGGER_ERROR_EPT_MULTIPLE_HOOKS_IN_A_SINGLE_PAGE);

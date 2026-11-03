@@ -1320,7 +1320,11 @@ EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
                     // As the context to event trigger, we send the rip
                     // of where triggered this event
                     //
+                    // [DOWNSTREAM] VA 可在其他 CPU 上重映射。保存本次已识别的 GPA，
+                    // 供外部观察器路由使用；#BP 的 VMCS_GUEST_PHYSICAL_ADDRESS 不作依据。
+                    VCpu->CurrentHiddenBreakpointPhysicalAddress = PhysicalRip;
                     DispatchEventHiddenHookExecCc(VCpu, (PVOID)GuestRip);
+                    VCpu->CurrentHiddenBreakpointPhysicalAddress = 0;
 
                     //
                     // Pointer to the page entry in the page table

@@ -283,6 +283,10 @@ VmFuncReadExceptionBitmap();
 IMPORT_EXPORT_VMM UINT64
 VmFuncGetLastVmexitRip(UINT32 CoreId);
 
+// 当前 hidden-CC 同步回调中返回已确认 GPA；其他上下文返回 0，不重新翻译 VA。
+IMPORT_EXPORT_VMM UINT64
+VmFuncGetHiddenBreakpointPhysicalAddress(VOID);
+
 IMPORT_EXPORT_VMM GUEST_REGS *
 VmFuncGetGuestRegs(UINT32 CoreId);
 
