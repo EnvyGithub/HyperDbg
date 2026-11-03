@@ -1210,3 +1210,5 @@ IMPORT_EXPORT_VMM NTSTATUS ConfigureEptBeginCoherentWriteFromRootV1(UINT64 Cr3,U
 IMPORT_EXPORT_VMM NTSTATUS ConfigureEptEndCoherentWriteFromRootV1(UINT64 Token,PBOOLEAN Unknown);
 IMPORT_EXPORT_VMM BOOLEAN ConfigureEptQueryCoherenceFaultV1(UINT64 PhysicalPage,UINT64 *Epoch,NTSTATUS *Status);
 IMPORT_EXPORT_VMM BOOLEAN ConfigureEptRecoverCoherenceV1(VOID);
+
+IMPORT_EXPORT_VMM NTSTATUS ConfigureEptRepairHiddenPageV1(UINT64 PhysicalPage,UINT64 ExpectedFaultEpoch);

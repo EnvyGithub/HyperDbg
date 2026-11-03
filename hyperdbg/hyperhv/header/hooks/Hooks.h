@@ -507,3 +507,6 @@ VOID EptCoherenceOnExit(VIRTUAL_MACHINE_STATE *Cpu);
 NTSTATUS EptCoherenceBeginWrite(UINT64 Cr3,UINT64 Cr4,UINT64 Va,UINT64 Size,UINT64 *Token);
 NTSTATUS EptCoherenceEndWrite(UINT64 Token,PBOOLEAN Unknown);
 BOOLEAN EptCoherenceQueryFault(UINT64 PhysicalPage,UINT64 *Epoch,NTSTATUS *Status);
+
+NTSTATUS EptCoherenceRepairRefresh(UINT64 PhysicalPage,UINT64 ExpectedFaultEpoch);
+NTSTATUS EptCoherenceRepairHiddenPage(UINT64 PhysicalPage,UINT64 ExpectedFaultEpoch);

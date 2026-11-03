@@ -792,3 +792,11 @@ BOOLEAN ConfigureEptRecoverCoherenceV1(VOID)
     if(VmxGetCurrentExecutionMode()||!EptControlAcquireExclusive())return FALSE;
     EptControlReleaseExclusive();return TRUE;
 }
+
+NTSTATUS ConfigureEptRepairHiddenPageV1(UINT64 PhysicalPage,UINT64 ExpectedFaultEpoch)
+{
+    if(VmxGetCurrentExecutionMode()||KeGetCurrentIrql()>APC_LEVEL)return STATUS_INVALID_DEVICE_STATE;
+    if(!EptControlAcquireExclusive())return STATUS_DEVICE_BUSY;
+    NTSTATUS Status=EptCoherenceRepairHiddenPage(PhysicalPage,ExpectedFaultEpoch);
+    EptControlReleaseExclusive();return Status;
+}

@@ -7,6 +7,7 @@
 #define EPT_COH_RESUME 3
 #define EPT_COH_FAULT 4
 #define EPT_COH_RETIRED 5
+#define EPT_COH_REPAIR 6
 #define EPT_COH_GUEST 1u
 #define EPT_COH_ROOT 2u
 #define EPT_COH_CONTROL 3u
@@ -71,6 +72,8 @@ BOOLEAN EptCoherenceApply(VIRTUAL_MACHINE_STATE *Cpu)
             if(Pte==NULL)return FALSE;
             EPT_PML1_ENTRY Entry=Page->ChangedEntry;
             if(Phase==EPT_COH_QUIESCE||Phase==EPT_COH_FAULT)Entry=EptCoherenceDenied(Page);
+            else if(Phase==EPT_COH_REPAIR)
+            { EptHookRetireMtfRestorePointForUnhook(Cpu,Page->PhysicalBaseAddress,FALSE);Entry=Page->ChangedEntry; }
             else if(Phase==EPT_COH_RETIRED||g_HiddenCoherence.RestoreOriginal)
             { EptHookRetireMtfRestorePointForUnhook(Cpu,Page->PhysicalBaseAddress,FALSE);Entry=Page->OriginalEntry; }
             else if(Cpu->MtfEptHookRestorePoint==Page)
@@ -168,7 +171,7 @@ BOOLEAN EptCoherenceFinishMtf(VIRTUAL_MACHINE_STATE *Cpu)
         {
             if(Phase==EPT_COH_QUIESCE||Phase==EPT_COH_WRITING||Phase==EPT_COH_FAULT)
                 {Entry=EptCoherenceDenied(Completed);Denied=TRUE;}
-            else if(Phase==EPT_COH_RESUME&&!g_HiddenCoherence.RestoreOriginal)
+            else if(Phase==EPT_COH_REPAIR||(Phase==EPT_COH_RESUME&&!g_HiddenCoherence.RestoreOriginal))
                 Entry=Completed->ChangedEntry;
         }
         PEPT_PML1_ENTRY Pte=EptGetPml1Entry(Cpu->EptPageTable,Completed->PhysicalBaseAddress);
@@ -403,9 +406,48 @@ NTSTATUS EptCoherenceEndWrite(UINT64 Token,PBOOLEAN Unknown)
 }
 BOOLEAN EptCoherenceQueryFault(UINT64 PhysicalPage,UINT64 *Epoch,NTSTATUS *Status)
 {
-    EPT_HOOKED_PAGE_DETAIL *Page=EptHookFindByPhysAddress(PhysicalPage);
+    EPT_HOOKED_PAGE_DETAIL *Page=g_EptState?EptHookFindByPhysAddress(PhysicalPage):NULL;
     NTSTATUS Fault=Page?(NTSTATUS)CpuInterlockedCompareExchange(&Page->CoherenceFault,0,0):STATUS_SUCCESS;
     if(Epoch)*Epoch=Fault&&Page?Page->CoherenceFaultEpoch:0;
     if(Status)*Status=Fault;
     return Fault!=STATUS_SUCCESS;
+}
+
+// 只从控制事务的 VMCALL 刷新，所有核已撤销执行；不借用目标写缓冲区，也不重做目标写。
+NTSTATUS EptCoherenceRepairRefresh(UINT64 PhysicalPage,UINT64 ExpectedFaultEpoch)
+{
+    if(!VmxGetCurrentExecutionMode()||g_HiddenCoherence.Gate>=0||!g_HiddenCoherence.ControlHeld||
+       g_HiddenCoherence.Kind!=EPT_COH_CONTROL||g_HiddenCoherence.Count!=1||
+       g_HiddenCoherence.Published!=g_HiddenCoherence.Gate||EptCoherenceCurrentPhase()!=EPT_COH_QUIESCE||
+       !EptCoherenceAllAck(EptCoherenceState()))return STATUS_INVALID_DEVICE_STATE;
+    EPT_HOOKED_PAGE_DETAIL *Page=g_HiddenCoherence.Pages[0];
+    if(Page->PhysicalBaseAddress!=PhysicalPage||!Page->IsHiddenBreakpoint||!Page->CoherenceFault||
+       Page->CoherenceFaultEpoch!=ExpectedFaultEpoch||Page->CoherenceRemovalPending)return STATUS_REVISION_MISMATCH;
+    return EptHookRefreshExecutionFakePage(Page)?STATUS_SUCCESS:STATUS_UNSUCCESSFUL;
+}
+NTSTATUS EptCoherenceRepairHiddenPage(UINT64 PhysicalPage,UINT64 ExpectedFaultEpoch)
+{
+    if(VmxGetCurrentExecutionMode()||!PhysicalPage||(PhysicalPage&(PAGE_SIZE-1))||!ExpectedFaultEpoch||
+       g_HiddenCoherence.Gate>=0||!g_HiddenCoherence.ControlHeld)return STATUS_INVALID_PARAMETER;
+    EPT_HOOKED_PAGE_DETAIL *Page=g_EptState?EptHookFindByPhysAddress(PhysicalPage):NULL;
+    if(!Page||!Page->IsHiddenBreakpoint)return STATUS_NOT_FOUND;
+    if(!Page->CoherenceFault||Page->CoherenceFaultEpoch!=ExpectedFaultEpoch)return STATUS_REVISION_MISMATCH;
+    // 待确认删除的精确回执必须先由原撤销者消费，不能把已移除的 offset 重新当作已安装。
+    if(Page->CoherenceRemovalPending)return STATUS_DEVICE_BUSY;
+    if(!EptCoherenceControlBegin(Page))return STATUS_IO_TIMEOUT;
+    NTSTATUS Status=AsmVmxVmcall(VMCALL_HIDDEN_COHERENCE_REFRESH,PhysicalPage,ExpectedFaultEpoch,0);
+    if(NT_SUCCESS(Status))
+    {
+        EptCoherencePhase(EPT_COH_REPAIR);
+        if(!EptCoherenceDpcRound())Status=STATUS_IO_TIMEOUT;
+    }
+    if(!NT_SUCCESS(Status))
+    {
+        // 可能有核已使用新 fake；必须再次全核撤执行，再恢复 original。保留首次故障身份。
+        EptCoherencePhase(EPT_COH_FAULT);(VOID)EptCoherenceDpcRound();return Status;
+    }
+    // REPAIR 不选 original；仅在所有核已确认 fake 后清故障。phase/gate 仍阻止 root 准入。
+    CpuInterlockedExchange(&Page->CoherenceFault,0);
+    EptCoherencePhase(0);
+    return STATUS_SUCCESS;
 }
