@@ -136,7 +136,7 @@ PVOID(*ExAllocatePoolWithTagOrig)
  * @return BOOLEAN
  */
 BOOLEAN
-EptHookPerformPageHook(VIRTUAL_MACHINE_STATE * VCpu, PVOID TargetAddress, CR3_TYPE ProcessCr3);
+EptHookPerformPageHook(VIRTUAL_MACHINE_STATE * VCpu, PVOID TargetAddress, CR3_TYPE ProcessCr3, UINT64 ExpectedPhysicalPage);
 
 /**
  * @brief Hook in VMX Root Mode with hidden detours and monitor
@@ -164,6 +164,9 @@ EptHookPerformPageHookMonitorAndInlineHook(VIRTUAL_MACHINE_STATE * VCpu,
  */
 BOOLEAN
 EptHook(PVOID TargetAddress, UINT32 ProcessId);
+
+VMM_HIDDEN_BREAKPOINT_INSTALL_STATUS
+EptHookPinned(PVOID TargetAddress, UINT32 ProcessId, UINT64 PhysicalPage);
 
 /**
  * @brief This function invokes a direct VMCALL to setup the hook

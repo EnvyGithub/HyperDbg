@@ -331,6 +331,16 @@ ConfigureEptHookAllocateExtraHookingPagesChecked(UINT32 Count)
  * @param ProcessId The process id to translate based on that process's cr3
  * @return BOOLEAN Returns true if the hook was successful or false if there was an error
  */
+VMM_HIDDEN_BREAKPOINT_INSTALL_STATUS
+ConfigureEptHookPinned(PVOID TargetAddress, UINT32 ProcessId, UINT64 PhysicalPage)
+{
+    VMM_HIDDEN_BREAKPOINT_INSTALL_STATUS Result;
+    EptControlAcquireExclusive();
+    Result = EptHookPinned(TargetAddress, ProcessId, PhysicalPage);
+    EptControlReleaseExclusive();
+    return Result;
+}
+
 BOOLEAN
 ConfigureEptHook(PVOID TargetAddress, UINT32 ProcessId)
 {

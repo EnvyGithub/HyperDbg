@@ -301,48 +301,18 @@ EptHookAllocateExtraHookingPagesForMemoryMonitorsAndExecEptHooks(UINT32 Count)
 static BOOLEAN
 EptHookCreateHookPage(_Inout_ VIRTUAL_MACHINE_STATE * VCpu,
                       _In_ PVOID                      TargetAddress,
-                      _In_ CR3_TYPE                   ProcessCr3)
+                      _In_ SIZE_T                     PhysicalBaseAddress)
 {
     ULONG                   ProcessorsCount;
     EPT_PML1_ENTRY          ChangedEntry;
-    SIZE_T                  PhysicalBaseAddress;
-    PVOID                   VirtualTarget;
     UINT64                  TargetAddressInFakePageContent;
     PEPT_PML1_ENTRY         TargetPage;
     PEPT_HOOKED_PAGE_DETAIL HookedPage;
-    CR3_TYPE                Cr3OfCurrentProcess;
 
     //
     // Get number of processors
     //
     ProcessorsCount = PlatformCpuGetActiveProcessorCount();
-
-    //
-    // Translate the page from a physical address to virtual so we can read its memory.
-    // This function will return NULL if the physical address was not already mapped in
-    // virtual memory.
-    //
-    VirtualTarget = PAGE_ALIGN(TargetAddress);
-
-    //
-    // Here we have to change the CR3, it is because we are in SYSTEM process
-    // and if the target address is not mapped in SYSTEM address space (e.g
-    // user mode address of another process) then the translation is invalid
-    //
-
-    //
-    // Find cr3 of target core
-    //
-    PhysicalBaseAddress = (SIZE_T)VirtualAddressToPhysicalAddressByProcessCr3(VirtualTarget, ProcessCr3);
-
-    //
-    // If the physical address is NULL, it means that the address is not valid
-    //
-    if (!PhysicalBaseAddress)
-    {
-        VmmCallbackSetLastError(DEBUGGER_ERROR_INVALID_ADDRESS);
-        return FALSE;
-    }
 
     //
     // Check if the physical address is bigger than 512 GB
@@ -408,17 +378,16 @@ EptHookCreateHookPage(_Inout_ VIRTUAL_MACHINE_STATE * VCpu,
     //
     TargetAddressInFakePageContent = EptHookCalcBreakpointOffset(TargetAddress, HookedPage);
 
-    //
-    // Switch to target process
-    //
-    Cr3OfCurrentProcess = SwitchToProcessMemoryLayoutByCr3(ProcessCr3);
-
-    //
-    // Copy the content to the fake page
-    // The following line can't be used in user mode addresses
-    // RtlCopyBytes(&HookedPage->FakePageContents, VirtualTarget, PAGE_SIZE);
-    //
-    MemoryMapperReadMemorySafe((UINT64)VirtualTarget, &HookedPage->FakePageContents, PAGE_SIZE);
+    // [DOWNSTREAM] 用已选定的物理页复制；VA 在此期间可以被释放或重映射。
+    // 读取失败发生在任何 EPT 发布之前，不能把未初始化的 fake 页交给 CPU。
+    if (!MemoryMapperReadMemorySafeByPhysicalAddress(PhysicalBaseAddress,
+                                                       (UINT64)&HookedPage->FakePageContents,
+                                                       PAGE_SIZE))
+    {
+        PoolManagerCallbackFreePool((UINT64)HookedPage);
+        VmmCallbackSetLastError(DEBUGGER_ERROR_INVALID_ADDRESS);
+        return FALSE;
+    }
 
     //
     // Save the original byte of the first breakpoint
@@ -434,11 +403,6 @@ EptHookCreateHookPage(_Inout_ VIRTUAL_MACHINE_STATE * VCpu,
     // we set the breakpoint on the fake page
     //
     *(BYTE *)TargetAddressInFakePageContent = 0xcc;
-
-    //
-    // Restore to original process
-    //
-    SwitchToPreviousProcess(Cr3OfCurrentProcess);
 
     //
     // Split the 2MB page-table of each core to 4KB page-table
@@ -480,7 +444,13 @@ EptHookCreateHookPage(_Inout_ VIRTUAL_MACHINE_STATE * VCpu,
             VmmCallbackSetLastError(DEBUGGER_ERROR_EPT_FAILED_TO_GET_PML1_ENTRY_OF_TARGET_ADDRESS);
             return FALSE;
         }
+    }
 
+    // [DOWNSTREAM] 全核准备完成后才发布。准备失败时可以回收 HookedPage，
+    // 但不能在部分 CPU 已引用 fake 页后仍走同一释放分支。
+    for (SIZE_T i = 0; i < ProcessorsCount; i++)
+    {
+        TargetPage = EptGetPml1Entry(g_GuestState[i].EptPageTable, PhysicalBaseAddress);
         //
         // Save the original entry (only one of the page tables as the base original entry
         // is enough)
@@ -653,7 +623,8 @@ ExAllocatePoolWithTagHook(
 BOOLEAN
 EptHookPerformPageHook(VIRTUAL_MACHINE_STATE * VCpu,
                        PVOID                   TargetAddress,
-                       CR3_TYPE                ProcessCr3)
+                       CR3_TYPE                ProcessCr3,
+                       UINT64                  ExpectedPhysicalPage)
 {
     SIZE_T                   PhysicalBaseAddress;
     PVOID                    VirtualTarget;
@@ -677,7 +648,8 @@ EptHookPerformPageHook(VIRTUAL_MACHINE_STATE * VCpu,
     //
     PhysicalBaseAddress = (SIZE_T)VirtualAddressToPhysicalAddressByProcessCr3(VirtualTarget, ProcessCr3);
 
-    if (!PhysicalBaseAddress)
+    if (!PhysicalBaseAddress ||
+        (ExpectedPhysicalPage != 0 && PhysicalBaseAddress != ExpectedPhysicalPage))
     {
         VmmCallbackSetLastError(DEBUGGER_ERROR_INVALID_ADDRESS);
         return FALSE;
@@ -710,7 +682,7 @@ EptHookPerformPageHook(VIRTUAL_MACHINE_STATE * VCpu,
     }
     else
     {
-        return EptHookCreateHookPage(VCpu, TargetAddress, ProcessCr3);
+        return EptHookCreateHookPage(VCpu, TargetAddress, PhysicalBaseAddress);
     }
 }
 
@@ -727,7 +699,8 @@ EptHookPerformPageHook(VIRTUAL_MACHINE_STATE * VCpu,
 BOOLEAN
 EptHookPerformHook(PVOID   TargetAddress,
                    UINT32  ProcessId,
-                   BOOLEAN ApplyDirectlyFromVmxRoot)
+                   BOOLEAN ApplyDirectlyFromVmxRoot,
+                   UINT64  ExpectedPhysicalPage)
 {
     if (ApplyDirectlyFromVmxRoot)
     {
@@ -762,14 +735,17 @@ EptHookPerformHook(PVOID   TargetAddress,
         if (AsmVmxVmcall(VMCALL_SET_HIDDEN_CC_BREAKPOINT,
                          (UINT64)TargetAddress,
                          LayoutGetCr3ByProcessId(ProcessId).Flags,
-                         (UINT64)NULL64_ZERO) == STATUS_SUCCESS)
+                         ExpectedPhysicalPage) == STATUS_SUCCESS)
         {
             LogDebugInfo("Hidden breakpoint hook applied from VMX Root Mode");
 
             //
             // Now we have to notify all the core to invalidate their EPT
             //
-            BroadcastNotifyAllToInvalidateEptAllCores();
+            if (ExpectedPhysicalPage == 0)
+            {
+                BroadcastNotifyAllToInvalidateEptAllCores();
+            }
 
             return TRUE;
         }
@@ -810,7 +786,7 @@ EptHook(PVOID TargetAddress, UINT32 ProcessId)
         return FALSE;
     }
 
-    return EptHookPerformHook(TargetAddress, ProcessId, FALSE);
+    return EptHookPerformHook(TargetAddress, ProcessId, FALSE, 0);
 }
 
 /**
@@ -836,7 +812,7 @@ EptHookFromVmxRoot(PVOID TargetAddress)
         return FALSE;
     }
 
-    return EptHookPerformHook(TargetAddress, NULL_ZERO, TRUE);
+    return EptHookPerformHook(TargetAddress, NULL_ZERO, TRUE, 0);
 }
 
 /**
@@ -2371,6 +2347,26 @@ EptHookAtomicInvalidateDpc(_In_ PKDPC Dpc,
                                               SystemArgument2);
 }
 
+VMM_HIDDEN_BREAKPOINT_INSTALL_STATUS
+EptHookPinned(PVOID TargetAddress, UINT32 ProcessId, UINT64 PhysicalPage)
+{
+    EPT_ATOMIC_INVALIDATION_RESULT Invalidation = {0};
+    if (VmxGetCurrentExecutionMode() || !VmxGetCurrentLaunchState() ||
+        PhysicalPage == 0 || (PhysicalPage & (PAGE_SIZE - 1u)) != 0)
+    {
+        return VmmHiddenBreakpointInstallCleanFailure;
+    }
+    if (!EptHookPerformHook(TargetAddress, ProcessId, FALSE, PhysicalPage))
+    {
+        return VmmHiddenBreakpointInstallCleanFailure;
+    }
+    // 不以 NMI 已发送代替全核 INVEPT 完成。失败时保留入口和锁页所有权。
+    PlatformDpcGenericCall(EptHookAtomicInvalidateDpc, &Invalidation);
+    return Invalidation.FailedCores == 0
+        ? VmmHiddenBreakpointInstallReady
+        : VmmHiddenBreakpointInstallIndeterminate;
+}
+
 VMM_ATOMIC_INLINE_INSTALL_STATUS
 EptHookInlineHookAtomicDemand(VIRTUAL_MACHINE_STATE * VCpu,
                               PVOID TargetAddress, UINT32 ProcessId,
@@ -3255,7 +3251,15 @@ EptHookUnHookSingleAddressHiddenBreakpoint(PEPT_HOOKED_PAGE_DETAIL             H
                     // Remove the hook entirely on all cores
                     //
                     TargetUnhookingDetails->CallerNeedsToRestoreEntryAndInvalidateEpt = FALSE;
-                    PlatformDpcGenericCall(DpcRoutineRemoveHookAndInvalidateSingleEntryOnAllCores, TargetUnhookingDetails);
+                    EPT_ATOMIC_UNHOOK_RESULT Result = {0};
+                    Result.PhysicalAddress = HookedEntry->PhysicalBaseAddress;
+                    Result.OriginalEntry = HookedEntry->OriginalEntry.AsUInt;
+                    PlatformDpcGenericCall(EptHookAtomicUnhookDpc, &Result);
+                    if (Result.FailedCores != 0)
+                    {
+                        // 未确认全核恢复时保留元数据及页；调用者可重试同一物理身份。
+                        return FALSE;
+                    }
                 }
 
                 //

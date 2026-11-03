@@ -447,6 +447,17 @@ IMPORT_EXPORT_VMM BOOLEAN ConfigureEptPhysicalPageHasHookV1(UINT64 PhysicalPage)
 IMPORT_EXPORT_VMM BOOLEAN
 ConfigureEptHook(PVOID TargetAddress, UINT32 ProcessId);
 
+// 已由调用者锁页；Indeterminate 保留物理入口，调用者不得解锁页。
+typedef enum _VMM_HIDDEN_BREAKPOINT_INSTALL_STATUS
+{
+    VmmHiddenBreakpointInstallCleanFailure = 0,
+    VmmHiddenBreakpointInstallReady = 1,
+    VmmHiddenBreakpointInstallIndeterminate = 2
+} VMM_HIDDEN_BREAKPOINT_INSTALL_STATUS;
+
+IMPORT_EXPORT_VMM VMM_HIDDEN_BREAKPOINT_INSTALL_STATUS
+ConfigureEptHookPinned(PVOID TargetAddress, UINT32 ProcessId, UINT64 PhysicalPage);
+
 IMPORT_EXPORT_VMM BOOLEAN
 ConfigureEptHookFromVmxRoot(PVOID TargetAddress);
 
