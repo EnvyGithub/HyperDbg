@@ -1112,6 +1112,8 @@ DispatchEventException(VIRTUAL_MACHINE_STATE * VCpu)
         if (!VCpu->InstrumentationStepInMtf &&
             VmxBroadcastNmiHandler(VCpu, FALSE))
         {
+            // 内部 NMI 是异步通知，没有可跳过的 guest 指令；退出长度字段不适用。
+            HvSuppressRipIncrement(VCpu);
             return;
         }
     }
