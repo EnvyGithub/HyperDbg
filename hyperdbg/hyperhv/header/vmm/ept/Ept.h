@@ -162,7 +162,8 @@ typedef struct _VMM_EPT_DYNAMIC_SPLIT
      * @brief Linked list entries for each dynamic split
      *
      */
-    LIST_ENTRY DynamicSplitList;
+    UINT64 PublishedNext;
+    UINT64 PhysicalAddress;
 
 } VMM_EPT_DYNAMIC_SPLIT, *PVMM_EPT_DYNAMIC_SPLIT;
 
@@ -270,6 +271,9 @@ EptHandleEptViolation(VIRTUAL_MACHINE_STATE * VCpu);
  */
 PEPT_PML1_ENTRY
 EptGetPml1Entry(PVMM_EPT_PAGE_TABLE EptPageTable, SIZE_T PhysicalAddress);
+
+// 根据调用者已经取得的同一个 PML2 快照查找；不混入并发拆页后的另一代指针。
+PEPT_PML1_ENTRY EptGetPml1EntryFromSnapshot(PVMM_EPT_PAGE_TABLE Table, SIZE_T Address, UINT64 Snapshot);
 
 /**
  * @brief Get the PML1 entry for this physical address if the large page

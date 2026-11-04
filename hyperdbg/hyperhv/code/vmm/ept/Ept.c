@@ -314,17 +314,37 @@ EptBuildMtrrMap(VOID)
  */
 _Must_inspect_result_
 static PEPT_PML1_ENTRY
-EptGetSplitPml1VaByPml2Entry(_In_ PVMM_EPT_PAGE_TABLE EptPageTable, _In_ PEPT_PML2_ENTRY TargetEntry)
+EptGetSplitPml1VaBySnapshot(_In_ PVMM_EPT_PAGE_TABLE EptPageTable, _In_ PEPT_PML2_ENTRY TargetEntry, UINT64 Entry)
 {
-    LIST_FOR_EACH_LINK(EptPageTable->DynamicSplitList, VMM_EPT_DYNAMIC_SPLIT, DynamicSplitList, CurrentSplit)
+    UINT64 Link = (UINT64)CpuInterlockedCompareExchange64(&EptPageTable->RootSplitHead, 0, 0);
+    if ((Entry & 0x80ull) != 0) return NULL;
+    while (Link != 0)
     {
-        if (CurrentSplit->Fields.Entry == TargetEntry)
+        PVMM_EPT_DYNAMIC_SPLIT CurrentSplit = (PVMM_EPT_DYNAMIC_SPLIT)(ULONG_PTR)Link;
+        if (CurrentSplit->Fields.Entry == TargetEntry &&
+            CurrentSplit->PhysicalAddress == (Entry & 0x000ffffffffff000ull))
         {
             return &CurrentSplit->PML1[0];
         }
+        Link = CurrentSplit->PublishedNext;
     }
 
     return NULL;
+}
+
+static PEPT_PML1_ENTRY
+EptGetSplitPml1VaByPml2Entry(PVMM_EPT_PAGE_TABLE Table, PEPT_PML2_ENTRY Entry)
+{
+    UINT64 Snapshot = (UINT64)CpuInterlockedCompareExchange64((volatile LONG64 *)&Entry->AsUInt, 0, 0);
+    return EptGetSplitPml1VaBySnapshot(Table, Entry, Snapshot);
+}
+
+PEPT_PML1_ENTRY EptGetPml1EntryFromSnapshot(PVMM_EPT_PAGE_TABLE Table, SIZE_T Address, UINT64 Snapshot)
+{
+    PEPT_PML2_ENTRY Entry = EptGetPml2Entry(Table, Address);
+    if (Entry == NULL || (Snapshot & 0x80ull) != 0) return NULL;
+    PEPT_PML1_ENTRY First = EptGetSplitPml1VaBySnapshot(Table, Entry, Snapshot);
+    return First != NULL ? &First[ADDRMASK_EPT_PML1_INDEX(Address)] : NULL;
 }
 
 /**
@@ -488,6 +508,7 @@ EptSplitLargePage(PVMM_EPT_PAGE_TABLE EptPageTable,
     SIZE_T                 EntryIndex;
     PEPT_PML2_ENTRY        TargetEntry;
     EPT_PML2_POINTER       NewPointer;
+    EPT_PML2_ENTRY         Original;
 
     //
     // Find the PML2 entry that's currently used
@@ -504,7 +525,8 @@ EptSplitLargePage(PVMM_EPT_PAGE_TABLE EptPageTable,
     // If this large page is not marked a large page, that means it's a pointer already.
     // That page is therefore already split.
     //
-    if (!TargetEntry->LargePage)
+    Original.AsUInt = (UINT64)CpuInterlockedCompareExchange64((volatile LONG64 *)&TargetEntry->AsUInt, 0, 0);
+    if (!Original.LargePage)
     {
         return TRUE;
     }
@@ -557,9 +579,9 @@ EptSplitLargePage(PVMM_EPT_PAGE_TABLE EptPageTable,
     //
     // copy other bits from target entry
     //
-    EntryTemplate.MemoryType = TargetEntry->MemoryType;
-    EntryTemplate.IgnorePat  = TargetEntry->IgnorePat;
-    EntryTemplate.SuppressVe = TargetEntry->SuppressVe;
+    EntryTemplate.MemoryType = Original.MemoryType;
+    EntryTemplate.IgnorePat  = Original.IgnorePat;
+    EntryTemplate.SuppressVe = Original.SuppressVe;
 
     //
     // Copy the template into all the PML1 entries
@@ -574,7 +596,7 @@ EptSplitLargePage(PVMM_EPT_PAGE_TABLE EptPageTable,
         //
         // Convert the 2MB page frame number to the 4096 page entry number plus the offset into the frame
         //
-        NewSplit->PML1[EntryIndex].PageFrameNumber = ((TargetEntry->PageFrameNumber * SIZE_2_MB) / PAGE_SIZE) + EntryIndex;
+        NewSplit->PML1[EntryIndex].PageFrameNumber = ((Original.PageFrameNumber * SIZE_2_MB) / PAGE_SIZE) + EntryIndex;
         NewSplit->PML1[EntryIndex].MemoryType      = EptGetMemoryType(NewSplit->PML1[EntryIndex].PageFrameNumber, FALSE);
     }
 
@@ -599,19 +621,37 @@ EptSplitLargePage(PVMM_EPT_PAGE_TABLE EptPageTable,
     }
 
     NewPointer.PageFrameNumber = (SIZE_T)VirtualAddressToPhysicalAddress(&NewSplit->PML1[0]) / PAGE_SIZE;
-
-    //
-    // Now, replace the entry in the page table with our new split pointer
-    //
-    RtlCopyMemory(TargetEntry, &NewPointer, sizeof(NewPointer));
-
-    //
-    // Track the split so we can directly resolve PML1 VA from PML2 entry
-    // without any PA->VA reverse translation
-    //
-    InsertHeadList(&EptPageTable->DynamicSplitList, &(NewSplit->DynamicSplitList));
-
-    return TRUE;
+    NewSplit->PhysicalAddress = (UINT64)NewPointer.PageFrameNumber << 12;
+    // 不让 root 看到已经生效的 PML2，却找不到它的 PML1 VA。单链不修改已发布节点，
+    // 同时发布别的 chunk 不会产生半个双链表。未赢得 PML2 的节点仍归此链所有。
+    for (UINT32 Attempt = 0; Attempt < 1024; Attempt++) {
+        LONG64 Head = CpuInterlockedCompareExchange64(&EptPageTable->RootSplitHead, 0, 0);
+        NewSplit->PublishedNext = (UINT64)Head;
+        if (CpuInterlockedCompareExchange64(&EptPageTable->RootSplitHead, (LONG64)(ULONG_PTR)NewSplit, Head) == Head) {
+            for (UINT32 Publish = 0; Publish < 1024; Publish++) {
+                EPT_PML2_ENTRY Current;
+                Current.AsUInt = (UINT64)CpuInterlockedCompareExchange64((volatile LONG64 *)&TargetEntry->AsUInt, 0, 0);
+                if (!Current.LargePage) return TRUE;
+                if ((Current.AsUInt & ~0x300ull) != (Original.AsUInt & ~0x300ull)) return FALSE;
+                // 保留有效权限及已经发生的 A/D；不会用预先构造的 RWX 覆盖另一控制者。
+                NewPointer.ReadAccess = Current.ReadAccess;
+                NewPointer.WriteAccess = Current.WriteAccess;
+                NewPointer.ExecuteAccess = Current.ExecuteAccess;
+                NewPointer.UserModeExecute = Current.UserModeExecute;
+                NewPointer.Accessed = Current.Accessed;
+                for (SIZE_T Index = 0; Index < VMM_EPT_PML1E_COUNT; Index++) {
+                    NewSplit->PML1[Index].Accessed = Current.Accessed;
+                    NewSplit->PML1[Index].Dirty = Current.Dirty;
+                }
+                if ((UINT64)CpuInterlockedCompareExchange64((volatile LONG64 *)&TargetEntry->AsUInt,
+                        (LONG64)NewPointer.AsUInt, (LONG64)Current.AsUInt) == Current.AsUInt) return TRUE;
+            }
+            return FALSE; // 已发布节点不能立即释放；VMXOFF 后从唯一所有权链回收。
+        }
+    }
+    if (UsePreAllocatedBuffer) (VOID)PoolManagerCallbackFreePool((UINT64)NewSplit);
+    else PlatformMemFreePool(NewSplit);
+    return FALSE;
 }
 
 /**
@@ -713,7 +753,7 @@ EptAllocateAndCreateIdentityPageTable(VOID)
     //
     // Keep track of dynamic 2MB->4KB split metadata for this EPT table.
     //
-    InitializeListHead(&PageTable->DynamicSplitList);
+    PageTable->RootSplitHead = 0;
 
     //
     // Create the template for the first entry in the PML4
@@ -869,13 +909,11 @@ EptFreeIdentityPageTable(_In_opt_ PVMM_EPT_PAGE_TABLE EptPageTable)
         return;
     }
 
-    while (!IsListEmpty(&EptPageTable->DynamicSplitList))
+    while (EptPageTable->RootSplitHead != 0)
     {
-        PLIST_ENTRY             Link;
         PVMM_EPT_DYNAMIC_SPLIT Split;
-
-        Link  = RemoveHeadList(&EptPageTable->DynamicSplitList);
-        Split = CONTAINING_RECORD(Link, VMM_EPT_DYNAMIC_SPLIT, DynamicSplitList);
+        Split = (PVMM_EPT_DYNAMIC_SPLIT)(ULONG_PTR)EptPageTable->RootSplitHead;
+        EptPageTable->RootSplitHead = (LONG64)Split->PublishedNext;
 
         // Runtime hook splits belong to the caller's pool manager. Identity-map
         // construction splits are allocated directly by HyperHV.
@@ -1157,6 +1195,8 @@ EptHandleEptViolation(VIRTUAL_MACHINE_STATE * VCpu)
     // Reading guest physical address
     //
     VmxVmread64P(VMCS_GUEST_PHYSICAL_ADDRESS, &GuestPhysicalAddr);
+
+    if (EptExecuteWatchViolation(VCpu, GuestPhysicalAddr, ViolationQualification)) return TRUE;
 
     if (EptHandlePageHookExit(VCpu, ViolationQualification, GuestPhysicalAddr))
     {

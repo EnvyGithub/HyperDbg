@@ -212,6 +212,7 @@ ModeBasedExecHookEnableOrDisable(VIRTUAL_MACHINE_STATE * VCpu, UINT32 State)
 BOOLEAN
 ModeBasedExecHookInitialize()
 {
+    if (EptExecuteWatchActive()) return FALSE;
     ULONG ProcessorsCount;
 
     //

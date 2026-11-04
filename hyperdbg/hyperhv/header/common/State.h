@@ -138,7 +138,8 @@ typedef struct _VMM_EPT_PAGE_TABLE
      * NOTE: Each item stores a direct VA to the split PML1 page and the corresponding PML2 entry it services.
      *
      */
-    LIST_ENTRY DynamicSplitList;
+    // 只追加的发布链；节点先完整发布，PML2 后发布。仅在全部 CPU VMXOFF 后回收。
+    volatile LONG64 RootSplitHead;
 
 } VMM_EPT_PAGE_TABLE, *PVMM_EPT_PAGE_TABLE;
 

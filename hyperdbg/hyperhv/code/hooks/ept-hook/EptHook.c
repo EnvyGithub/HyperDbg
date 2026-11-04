@@ -3401,8 +3401,8 @@ EptHookUnHookSingleAddressHiddenBreakpoint(PEPT_HOOKED_PAGE_DETAIL             H
  *
  * @return BOOLEAN If unhook was successful it returns true or if it was not successful returns false
  */
-BOOLEAN
-EptHookPerformUnHookSingleAddress(UINT64                              VirtualAddress,
+static BOOLEAN
+EptHookPerformUnHookSingleAddressCore(UINT64                              VirtualAddress,
                                   UINT64                              PhysAddress,
                                   UINT64                              HookingTag,
                                   UINT32                              ProcessId,
@@ -3487,10 +3487,23 @@ EptHookPerformUnHookSingleAddress(UINT64                              VirtualAdd
     return FALSE;
 }
 
+// 直接 root 撤销没有完整的视图排空回执；与执行观察初始化按同一门串行。
+BOOLEAN
+EptHookPerformUnHookSingleAddress(UINT64 VirtualAddress, UINT64 PhysAddress, UINT64 HookingTag,
+    UINT32 ProcessId, BOOLEAN ApplyDirectlyFromVmxRoot, EPT_SINGLE_HOOK_UNHOOKING_DETAILS *Details)
+{
+    // 旧 root API 把真实撤销留给 caller，却提前排队释放 fake 页；没有 overlay 的全核回执。
+    // 初始化期间也不能跨过此门。正常 checked guest/DPC 路径不受此门影响。
+    if (ApplyDirectlyFromVmxRoot && !EptExecuteWatchLegacyUnhookBegin()) return FALSE;
+    BOOLEAN Result = EptHookPerformUnHookSingleAddressCore(VirtualAddress, PhysAddress, HookingTag,
+        ProcessId, ApplyDirectlyFromVmxRoot, Details);
+    if (ApplyDirectlyFromVmxRoot) EptExecuteWatchLegacyUnhookEnd();
+    return Result;
+}
+
 /**
  * @brief Remove all hooks from the hooked pages by the given hooking tag
  * @details Should be called from Vmx Non-root
- *
  * @param HookingTag The hooking tag to unhook
  * @return BOOLEAN If unhook was successful it returns true or if it was not successful returns false
  */

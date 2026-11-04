@@ -368,6 +368,7 @@ ExecTrapReadRamPhysicalRegions()
 BOOLEAN
 ExecTrapInitialize()
 {
+    if (EptExecuteWatchActive()) return FALSE;
     //
     // Check if the exec trap is already initialized
     //

@@ -22,6 +22,8 @@ MtfHandleVmexit(VIRTUAL_MACHINE_STATE * VCpu)
 {
     BOOLEAN IsMtfHandled = FALSE;
 
+    IsMtfHandled = EptExecuteWatchMtf(VCpu);
+
     //
     // Redo the instruction
     //

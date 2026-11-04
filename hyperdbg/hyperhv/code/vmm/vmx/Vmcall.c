@@ -164,6 +164,7 @@ VmxVmcallHandler(VIRTUAL_MACHINE_STATE * VCpu,
     }
     case VMCALL_VMXOFF:
     {
+        if (EptExecuteWatchActive()) { VmcallStatus = STATUS_DEVICE_BUSY; break; }
         VmxPerformVmxoff(VCpu);
         VmcallStatus = STATUS_SUCCESS;
 

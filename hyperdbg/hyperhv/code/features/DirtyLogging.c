@@ -20,6 +20,7 @@
 BOOLEAN
 DirtyLoggingInitialize()
 {
+    if (EptExecuteWatchActive()) return FALSE;
     ULONG ProcessorsCount;
 
     //
@@ -104,6 +105,7 @@ DirtyLoggingInitialize()
 BOOLEAN
 DirtyLoggingEnable(VIRTUAL_MACHINE_STATE * VCpu)
 {
+    if (EptExecuteWatchActive()) return FALSE;
     //
     // Check if PML Address buffer is empty or not
     //
