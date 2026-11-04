@@ -98,6 +98,12 @@ typedef struct _EVENT_INFORMATION
 VOID
 EventInjectInterruptOrException(_In_ VMEXIT_INTERRUPT_INFORMATION InterruptExit);
 
+#ifdef HYPERDBG_ENV_WINDOWS
+// EPT 可能在 IDT 投递中退出；此时恢复的是原事件，不是被中断 RIP 的普通执行命中。
+BOOLEAN EventEptViolationIsVectoring(VOID);
+VOID EventRestoreAfterEptViolation(VIRTUAL_MACHINE_STATE *VCpu);
+#endif
+
 VOID
 EventInjectPageFaults(_Inout_ VIRTUAL_MACHINE_STATE *   VCpu,
                       _In_ VMEXIT_INTERRUPT_INFORMATION InterruptExit,

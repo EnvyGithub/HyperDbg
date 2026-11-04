@@ -11,6 +11,79 @@
  */
 #include "pch.h"
 
+#ifdef HYPERDBG_ENV_WINDOWS
+// Intel SDM Vol.3C 28.2.4/27.6：EPT 退出可中断尚未完成的 IDT 投递。
+// 本产品 EPT 回调不注入新的异常。若回调违反此契约，保留两份 VMCS 元数据并停止，
+// 不能用覆盖或延迟异常的方式伪造成功；不改变普通中断队列及其中的顺序。
+static VOID EventEptDeliveryFailure(UINT32 Reason, UINT64 Original, UINT64 Existing)
+{
+    KeBugCheckEx(0x20001u, 0x45565054u, Reason, (ULONG_PTR)Original, (ULONG_PTR)Existing);
+}
+
+static UINT32 EventEptRead32(UINT32 Field)
+{
+    // VMREAD 的内存输出宽度是宿主自然字长；不能让 x64 intrinsic 写进 UINT32 局部量。
+    UINT64 Value = 0;
+    if (VmxVmread64P(Field, &Value) != 0) EventEptDeliveryFailure(1, Field, 0);
+    return (UINT32)Value;
+}
+
+static VOID EventEptWrite32(UINT32 Field, UINT32 Value)
+{
+    if (VmxVmwrite64(Field, Value) != 0) EventEptDeliveryFailure(2, Field, Value);
+}
+
+BOOLEAN EventEptViolationIsVectoring(VOID)
+{
+    return (EventEptRead32(VMCS_IDT_VECTORING_INFORMATION) & 0x80000000u) != 0;
+}
+
+VOID EventRestoreAfterEptViolation(VIRTUAL_MACHINE_STATE *VCpu)
+{
+    UINT32 Vectoring = EventEptRead32(VMCS_IDT_VECTORING_INFORMATION);
+    if ((Vectoring & 0x80000000u) == 0)
+    {
+        // bit12 只在无 vectoring 且 NMI-exiting=0 或 virtual-NMI=1 时有定义。
+        if ((VCpu->ExitQualification & (1u << 12)) != 0)
+        {
+            UINT32 Pin = EventEptRead32(VMCS_CTRL_PIN_BASED_VM_EXECUTION_CONTROLS);
+            if ((Pin & (1u << 3)) == 0 || (Pin & (1u << 5)) != 0)
+            {
+                UINT32 Blocking = EventEptRead32(VMCS_GUEST_INTERRUPTIBILITY_STATE);
+                if ((Blocking & 8u) == 0)
+                    EventEptWrite32(VMCS_GUEST_INTERRUPTIBILITY_STATE, Blocking | 8u);
+            }
+        }
+        return;
+    }
+
+    // IDT-vectoring bit12 与高保留位不属于 VM-entry event 的有效字段。
+    UINT32 Original = Vectoring & 0x80000fffu;
+    UINT32 Type = (Original >> 8) & 7u;
+    UINT32 Error = (Original & 0x800u) ? EventEptRead32(VMCS_IDT_VECTORING_ERROR_CODE) : 0;
+    BOOLEAN Software = Type >= 4u && Type <= 6u;
+    UINT32 Length = Software ? EventEptRead32(VMCS_VMEXIT_INSTRUCTION_LENGTH) : 0;
+    UINT32 Existing = EventEptRead32(VMCS_CTRL_VMENTRY_INTERRUPTION_INFORMATION_FIELD);
+    // 每次 EPT 退出只调用一次。相同 metadata 也可能是第二个事件，不能把它合并掉。
+    if ((Existing & 0x80000000u) != 0)
+        EventEptDeliveryFailure(3, Original, Existing);
+
+    HvSuppressRipIncrement(VCpu);
+    if (Type == 2u)
+    {
+        // 失败的 NMI 投递可能已置 blocking；重新投递前只清此位，保留其他阻塞状态。
+        UINT32 Blocking = EventEptRead32(VMCS_GUEST_INTERRUPTIBILITY_STATE);
+        if ((Blocking & 8u) != 0)
+            EventEptWrite32(VMCS_GUEST_INTERRUPTIBILITY_STATE, Blocking & ~8u);
+    }
+    if ((Original & 0x800u) != 0) EventEptWrite32(VMCS_CTRL_VMENTRY_EXCEPTION_ERROR_CODE, Error);
+    // 合法注入可有 0 长度；这里不把它擅自转换为普通 INT 指令长度。
+    if (Software) EventEptWrite32(VMCS_CTRL_VMENTRY_INSTRUCTION_LENGTH, Length);
+    // 先准备依赖字段，最后提交 valid。函数只恢复事件，不重跑 EPT 回调。
+    EventEptWrite32(VMCS_CTRL_VMENTRY_INTERRUPTION_INFORMATION_FIELD, Original);
+}
+#endif
+
 /**
  * @brief Injects interruption to a guest
  *

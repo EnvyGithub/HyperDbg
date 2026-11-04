@@ -472,7 +472,10 @@ BOOLEAN EptExecuteWatchViolation(VIRTUAL_MACHINE_STATE *Cpu, UINT64 PhysicalAddr
             (Access == EW_WRITE ? C->Pages[I].WriteReferences : C->Pages[I].ExecuteReferences)) { Active = TRUE; break; }
         EwUnlock(C);
     }
-    if (Active && !C->Closing && C->Fault == STATUS_SUCCESS && !EwCallback(C, Cpu, PhysicalAddress, Access, 0)) goto Done;
+    // IDT 投递不代表被中断 RIP 已到达调用者；只放行投递，不消费返回帧。
+    // 页表写仍必须先取消依赖帧，不能因投递阶段而跳过映射失效通知。
+    BOOLEAN Observe = Access == EW_WRITE || !EventEptViolationIsVectoring();
+    if (Active && Observe && !C->Closing && C->Fault == STATUS_SUCCESS && !EwCallback(C, Cpu, PhysicalAddress, Access, 0)) goto Done;
     L->StepAccess[Step] |= Access;
     L->MtfPending = TRUE; HvSetMonitorTrapFlag(TRUE);
     // 底层本来拒绝 W 时只做失效通知，不授权 W；交回原 hook/coherence 完成它的事务。

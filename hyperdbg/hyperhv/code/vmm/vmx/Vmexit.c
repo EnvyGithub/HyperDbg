@@ -199,6 +199,10 @@ VmxVmexitHandler(_Inout_ PGUEST_REGS GuestRegs)
             LogError("Err, there were errors in handling EPT violation");
         }
 
+#ifdef HYPERDBG_ENV_WINDOWS
+        EventRestoreAfterEptViolation(VCpu);
+#endif
+
         break;
     }
     case VMX_EXIT_REASON_EPT_MISCONFIGURATION:
