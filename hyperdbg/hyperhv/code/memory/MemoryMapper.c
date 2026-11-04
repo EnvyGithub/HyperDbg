@@ -13,6 +13,26 @@
  */
 #include "pch.h"
 
+static UINT32 g_MemoryMapperAllocationCount;
+
+BOOLEAN MemoryMapperPrivatePtePagesReady(UINT32 ProcessorCount)
+{
+    if (g_MemoryMapper == NULL || ProcessorCount == 0 || g_MemoryMapperAllocationCount != ProcessorCount) return FALSE;
+    for (UINT32 I = 0; I < g_MemoryMapperAllocationCount; I++)
+        if (!g_MemoryMapper[I].PtePhysicalAddressForRead || !g_MemoryMapper[I].PtePhysicalAddressForWrite) return FALSE;
+    return TRUE;
+}
+BOOLEAN MemoryMapperIsPrivatePtePage(UINT64 PhysicalPage)
+{
+    if (g_MemoryMapper == NULL || (PhysicalPage & (PAGE_SIZE - 1)) != 0) return FALSE;
+    for (UINT32 I = 0; I < g_MemoryMapperAllocationCount; I++) {
+        UINT64 Read = g_MemoryMapper[I].PtePhysicalAddressForRead, Write = g_MemoryMapper[I].PtePhysicalAddressForWrite;
+        if ((Read != 0 && (Read & ~(UINT64)(PAGE_SIZE - 1)) == PhysicalPage) ||
+            (Write != 0 && (Write & ~(UINT64)(PAGE_SIZE - 1)) == PhysicalPage)) return TRUE;
+    }
+    return FALSE;
+}
+
 /**
  * @brief Get Index of VA on PMLx
  *
@@ -690,7 +710,7 @@ MemoryMapperInitialize()
         //
         // It's already initialized
         //
-        return TRUE;
+        return MemoryMapperPrivatePtePagesReady(ProcessorsCount);
     }
 
     //
@@ -702,6 +722,7 @@ MemoryMapperInitialize()
         LogError("Err, insufficient memory for memory mapper state");
         return FALSE;
     }
+    g_MemoryMapperAllocationCount = ProcessorsCount;
 
     //
     // Set the core's id and initialize memory mapper
@@ -756,6 +777,10 @@ Error:
 VOID
 MemoryMapperUninitialize()
 {
+    if (EptExecuteWatchActive()) {
+        LogError("Err, memory mapper retains private PTE pages until execute/write watches are withdrawn");
+        return;
+    }
     PMEMORY_MAPPER_ADDRESSES MemoryMapper;
     ULONG                    ProcessorsCount;
 
@@ -765,7 +790,7 @@ MemoryMapperUninitialize()
         return;
     }
 
-    ProcessorsCount = PlatformCpuGetActiveProcessorCount();
+    ProcessorsCount = g_MemoryMapperAllocationCount;
 
     for (SIZE_T i = 0; i < ProcessorsCount; i++)
     {
@@ -794,6 +819,7 @@ MemoryMapperUninitialize()
     // Publish the uninitialized state before releasing the owner buffer.
     //
     g_MemoryMapper = NULL;
+    g_MemoryMapperAllocationCount = 0;
     PlatformMemFreePool(MemoryMapper);
 }
 
@@ -802,10 +828,11 @@ static BOOLEAN MemoryMapperBeginPteChange(UINT64 PteVa, UINT64 *Token)
     *Token = 0;
     if (!VmxGetCurrentExecutionMode() || !EptExecuteWatchActive()) return TRUE;
     UINT32 Core = PlatformCpuGetCurrentProcessorNumber();
-    if (g_MemoryMapper == NULL || Core >= PlatformCpuGetActiveProcessorCount()) return FALSE;
+    if (g_MemoryMapper == NULL || Core >= g_MemoryMapperAllocationCount) return FALSE;
     UINT64 Pa = PteVa == g_MemoryMapper[Core].PteVirtualAddressForRead ? g_MemoryMapper[Core].PtePhysicalAddressForRead :
         PteVa == g_MemoryMapper[Core].PteVirtualAddressForWrite ? g_MemoryMapper[Core].PtePhysicalAddressForWrite : 0;
-    return Pa != 0 && EptExecuteWatchBeginPhysicalWrite(Pa, sizeof(UINT64), Token);
+    // 这些整 PFN 在 W 租约发布前就被排除；私有 mapper 读不再争用可选观察器的 Gate。
+    return Pa != 0 && MemoryMapperIsPrivatePtePage(Pa & ~(UINT64)(PAGE_SIZE - 1));
 }
 
 /**

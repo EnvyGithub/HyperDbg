@@ -502,6 +502,7 @@ IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchInitializeV1(UINT32 MaximumPa
     if (!g_GuestState || !g_NmiBroadcastingInitialized || g_ModeBasedExecutionControlState || g_ExecTrapInitialized) { Status = STATUS_NOT_SUPPORTED; goto Done; }
     UINT32 Cpus = PlatformCpuGetActiveProcessorCount();
     if (!Cpus || Cpus > EW_MAX_CPUS) { Status = STATUS_NOT_SUPPORTED; goto Done; }
+    if (!MemoryMapperPrivatePtePagesReady(Cpus)) { Status = STATUS_INVALID_DEVICE_STATE; goto Done; }
     for (UINT32 I = 0; I < Cpus; I++) if (!g_GuestState[I].HasLaunched || !g_GuestState[I].EptPageTable || g_GuestState[I].PmlBufferAddress) { Status = STATUS_NOT_SUPPORTED; goto Done; }
     C = PlatformMemAllocateZeroedNonPagedPool(sizeof(*C));
     if (!C) { Status = STATUS_INSUFFICIENT_RESOURCES; goto Done; }
@@ -544,6 +545,7 @@ static NTSTATUS EwAcquireFromRoot(UINT64 Page, PUINT64 Token, UINT32 Access)
     VIRTUAL_MACHINE_STATE *Cpu = &g_GuestState[PlatformCpuGetCurrentProcessorNumber()];
     if (!Cpu->HasLaunched || Cpu->VmxoffState.IsVmxoffExecuted) { Status = STATUS_INVALID_DEVICE_STATE; goto Done; }
     if (C->Fault != STATUS_SUCCESS) { Status = (NTSTATUS)C->Fault; goto Done; }
+    if (Access == EW_WRITE && MemoryMapperIsPrivatePtePage(Page)) { Status = STATUS_NOT_SUPPORTED; goto Done; }
     if (!EwLock(C)) { Status = STATUS_DEVICE_BUSY; goto Done; }
     if (C->Closing || C->Fault != STATUS_SUCCESS) {
         Status = C->Closing ? STATUS_INVALID_DEVICE_STATE : (NTSTATUS)C->Fault;

@@ -199,6 +199,10 @@ MemoryMapperWriteMemorySafeWrapper(_In_ MEMORY_MAPPER_WRAPPER_FOR_MEMORY_WRITE T
 BOOLEAN
 MemoryMapperInitialize();
 
+// 生命周期内冻结的私有映射 PTE 整页集合；不是目标进程页表写的豁免。
+BOOLEAN MemoryMapperPrivatePtePagesReady(UINT32 ProcessorCount);
+BOOLEAN MemoryMapperIsPrivatePtePage(UINT64 PhysicalPage);
+
 VOID
 MemoryMapperUninitialize();
 
