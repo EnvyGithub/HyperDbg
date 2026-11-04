@@ -3,25 +3,31 @@
 
 #ifdef HYPERDBG_ENV_WINDOWS
 
-#define EW_MAX_PAGES 128u
-#define EW_MAX_LEASES 1024u
+#define EW_MAX_PAGES 256u
+#define EW_MAX_LEASES 8192u
 #define EW_MAX_CPUS 256u
+#define EW_MAX_STEP (EW_MAX_PAGES + 2u)
+#define EW_EXECUTE 1u
+#define EW_WRITE 2u
 #define EW_PHYSICAL_MASK 0x000ffffffffff000ull
 #define EW_AD_MASK 0x300ull
 #define EW_LARGE_MASK 0x000fffffffe00000ull
 #define EW_SPINS 65536u
 
 typedef struct EW_TABLE { UINT64 *Va; UINT64 Pa; } EW_TABLE;
-typedef struct EW_PAGE { UINT64 Pa, RetiredAt, PublishedAt; UINT32 References; } EW_PAGE;
-typedef struct EW_LEASE { UINT64 Token; UINT32 Page; } EW_LEASE;
+typedef struct EW_PAGE { UINT64 Pa, RetiredAt, PublishedAt; UINT32 References, ExecuteReferences; volatile LONG WriteReferences; } EW_PAGE;
+typedef struct EW_LEASE { UINT64 Token; UINT32 Page, Access; } EW_LEASE;
+typedef struct EW_WRITER { volatile LONG64 Token; UINT64 Page; } EW_WRITER;
 typedef struct EW_CPU {
     EW_TABLE Pml4, Pml3, Pml2[EW_MAX_PAGES], Pml1[EW_MAX_PAGES];
-    UINT64 ViewPages[EW_MAX_PAGES], StepPages[2], StepRip, StepCr3, ViewGeneration;
+    UINT64 ViewPages[EW_MAX_PAGES], StepPages[EW_MAX_STEP], StepWriters[EW_MAX_STEP], StepRip, StepCr3, ViewGeneration;
+    UINT32 ViewAccess[EW_MAX_PAGES], StepAccess[EW_MAX_STEP];
     UINT64 Pml4Source[512], Pml3Source[512];
     UINT32 ViewCount, Pml2Count, Pml1Count, StepCount;
     UINT32 Pml2Index[EW_MAX_PAGES];
     UINT64 Pml1Chunk[EW_MAX_PAGES], Pml1Source[EW_MAX_PAGES];
     UINT64 Pml1Execute[EW_MAX_PAGES][8];
+    UINT64 Pml1Write[EW_MAX_PAGES][8];
     UINT64 *Pml1SourceVa[EW_MAX_PAGES];
     BOOLEAN Pml1Large[EW_MAX_PAGES], Installed, Incoming, MtfPending, NeedsInvalidate;
     volatile LONG64 Acknowledged;
@@ -29,11 +35,14 @@ typedef struct EW_CPU {
 } EW_CPU;
 typedef struct EW_CONTEXT {
     volatile LONG Gate, Closing, CallbackActive, Fault;
-    UINT32 MaximumPages, MaximumLeases, Cpus, ActivePages, ActiveLeases;
+    UINT32 MaximumPages, MaximumLeases, Cpus, ActivePages, ActiveLeases, MaximumWriters;
+    volatile LONG ActiveWriters;
     volatile LONG64 Generation, Serial, Observations, Retries, CapacityFailures, SynchronizationFailures;
     VMM_EXECUTE_WATCH_CALLBACK Callback;
     EW_PAGE Pages[EW_MAX_PAGES];
     EW_LEASE Leases[EW_MAX_LEASES];
+    EW_WRITER *Writers;
+    volatile LONG64 WriterSerial;
     EW_CPU *Cpu;
 } EW_CONTEXT;
 static EW_CONTEXT *volatile g_ExecuteWatch;
@@ -94,6 +103,7 @@ static VOID EwFree(EW_CONTEXT *C)
         }
         PlatformMemFreePool(C->Cpu);
     }
+    if (C->Writers != NULL) PlatformMemFreePool(C->Writers);
     PlatformMemFreePool(C);
 }
 
@@ -160,15 +170,20 @@ static BOOLEAN EwSnapshot(EW_CONTEXT *C, EW_CPU *L)
     L->ViewCount = 0;
     if (C->Closing == 0 && C->Fault == STATUS_SUCCESS) {
         for (UINT32 I = 0; I < C->MaximumPages; I++)
-            if (C->Pages[I].References != 0) L->ViewPages[L->ViewCount++] = C->Pages[I].Pa;
+            if (C->Pages[I].References != 0) {
+                UINT32 Index = L->ViewCount++;
+                L->ViewPages[Index] = C->Pages[I].Pa;
+                L->ViewAccess[Index] = (C->Pages[I].ExecuteReferences ? EW_EXECUTE : 0) |
+                    (C->Pages[I].WriteReferences ? EW_WRITE : 0);
+            }
     }
     L->ViewGeneration = EwGeneration(C);
     EwUnlock(C);
     return TRUE;
 }
-static BOOLEAN EwExempt(EW_CPU *L, UINT64 Page)
+static BOOLEAN EwExempt(EW_CPU *L, UINT64 Page, UINT32 Access)
 {
-    for (UINT32 I = 0; I < L->StepCount; I++) if (L->StepPages[I] == Page) return TRUE;
+    for (UINT32 I = 0; I < L->StepCount; I++) if (L->StepPages[I] == Page && (L->StepAccess[I] & Access) != 0) return TRUE;
     return FALSE;
 }
 static UINT64 EwReadEntry(const UINT64 *Entry)
@@ -185,8 +200,9 @@ static BOOLEAN EwPrimaryStable(VIRTUAL_MACHINE_STATE *Cpu, EW_CPU *L)
         if ((EwReadEntry(&Cpu->EptPageTable->PML2[L->Pml2Index[I]][J].AsUInt) & ~EW_AD_MASK) != (Expected & ~EW_AD_MASK)) return FALSE;
     }
     for (UINT32 I = 0; I < L->Pml1Count; I++) if (!L->Pml1Large[I]) for (UINT32 J = 0; J < 512; J++) {
-        UINT64 Expected = L->Pml1[I].Va[J] & ~4ull;
+        UINT64 Expected = L->Pml1[I].Va[J] & ~6ull;
         if (L->Pml1Execute[I][J / 64] & (1ull << (J % 64))) Expected |= 4;
+        if (L->Pml1Write[I][J / 64] & (1ull << (J % 64))) Expected |= 2;
         if ((EwReadEntry(&L->Pml1SourceVa[I][J]) & ~EW_AD_MASK) != (Expected & ~EW_AD_MASK)) return FALSE;
     }
     return TRUE;
@@ -220,6 +236,7 @@ static BOOLEAN EwBuild(VIRTUAL_MACHINE_STATE *Cpu, EW_CPU *L)
             L->Pml1Chunk[Table] = Chunk; L->Pml1Source[Table] = Snapshot.AsUInt;
             L->Pml1Large[Table] = Snapshot.LargePage != 0;
             RtlZeroMemory(L->Pml1Execute[Table], sizeof(L->Pml1Execute[Table]));
+            RtlZeroMemory(L->Pml1Write[Table], sizeof(L->Pml1Write[Table]));
             if (Snapshot.LargePage) {
                 UINT64 Flags = Snapshot.AsUInt & ~(EW_PHYSICAL_MASK | 0x80ull);
                 UINT64 Base = Snapshot.AsUInt & EW_LARGE_MASK;
@@ -235,9 +252,12 @@ static BOOLEAN EwBuild(VIRTUAL_MACHINE_STATE *Cpu, EW_CPU *L)
             }
             for (UINT32 J = 0; J < 512; J++) if (L->Pml1[Table].Va[J] & 4u)
                 L->Pml1Execute[Table][J / 64] |= 1ull << (J % 64);
+            for (UINT32 J = 0; J < 512; J++) if (L->Pml1[Table].Va[J] & 2u)
+                L->Pml1Write[Table][J / 64] |= 1ull << (J % 64);
             L->Pml1Count++;
         }
-        if (!EwExempt(L, Page)) L->Pml1[Table].Va[Pt] &= ~4ull;
+        if ((L->ViewAccess[I] & EW_EXECUTE) != 0 && !EwExempt(L, Page, EW_EXECUTE)) L->Pml1[Table].Va[Pt] &= ~4ull;
+        if ((L->ViewAccess[I] & EW_WRITE) != 0 && !EwExempt(L, Page, EW_WRITE)) L->Pml1[Table].Va[Pt] &= ~2ull;
     }
     return TRUE;
 }
@@ -249,6 +269,92 @@ static VOID EwWriteEptPointer(VIRTUAL_MACHINE_STATE *Cpu, EW_CONTEXT *C, UINT64 
         // 合法活动 VMCS 的字段写失败不是可重发的 guest 指令；不得吞异步事件后 resume。
         KeBugCheckEx(0x20001u, 0x45575054u, Cpu->CoreId, Cpu->ExitReason, (ULONG_PTR)Pointer);
     }
+}
+
+// 写窗口先登记、后通知。最后一个 store/MTF 完成以前，新页表路径租约不能从其间穿过。
+static BOOLEAN EwWriterBegin(EW_CONTEXT *C, UINT64 Page, UINT64 *Token)
+{
+    *Token = 0;
+    if (!EwLock(C)) return FALSE;
+    if (C->Closing || C->Fault != STATUS_SUCCESS) { EwUnlock(C); return TRUE; }
+    UINT32 Index;
+    for (Index = 0; Index < C->MaximumWriters; Index++) if (C->Writers[Index].Token == 0) break;
+    UINT64 Serial = (UINT64)InterlockedIncrement64(&C->WriterSerial);
+    if (Index == C->MaximumWriters || Serial > 0x7ffffffffffull) { EwUnlock(C); return FALSE; }
+    C->Writers[Index].Page = Page;
+    UINT64 Value = (Serial << 20) | (Index + 1u);
+    InterlockedIncrement(&C->ActiveWriters);
+    InterlockedExchange64(&C->Writers[Index].Token, (LONG64)Value);
+    *Token = Value; EwUnlock(C); return TRUE;
+}
+static VOID EwWriterEnd(EW_CONTEXT *C, UINT64 Token)
+{
+    if (!Token) return;
+    UINT32 Index = (UINT32)(Token & 0xfffffu);
+    if (!Index || --Index >= C->MaximumWriters) return;
+    if ((UINT64)InterlockedCompareExchange64(&C->Writers[Index].Token, 0, (LONG64)Token) == Token)
+        InterlockedDecrement(&C->ActiveWriters);
+}
+static BOOLEAN EwWriterPresent(EW_CONTEXT *C, UINT64 Page)
+{
+    // 调用者持有 Gate；End 只清 Token，不修改 Page，不能被下一 writer 重用到本次扫描中。
+    if (C->ActiveWriters == 0) return FALSE;
+    for (UINT32 I = 0; I < C->MaximumWriters; I++)
+        if (C->Writers[I].Token != 0 && C->Writers[I].Page == Page) return TRUE;
+    return FALSE;
+}
+static VOID EwClearStep(EW_CONTEXT *C, EW_CPU *L)
+{
+    for (UINT32 I = 0; I < L->StepCount; I++) {
+        EwWriterEnd(C, L->StepWriters[I]); L->StepWriters[I] = 0; L->StepAccess[I] = 0;
+    }
+    L->StepCount = 0;
+}
+static BOOLEAN EwCallback(EW_CONTEXT *C, VIRTUAL_MACHINE_STATE *Cpu, UINT64 Address, UINT32 Access, UINT64 Size)
+{
+    GUEST_REGS Registers = {0};
+    if (Cpu->Regs != NULL) Registers = *Cpu->Regs;
+    VMM_EXECUTE_WATCH_HIT Hit = {0}; Hit.Size = sizeof(Hit); Hit.CoreId = Cpu->CoreId;
+    VmxVmread64P(VMCS_GUEST_RIP, &Hit.GuestRip); Hit.GuestCr3 = GetGuestCr3(); Hit.GuestCr4 = GetGuestCr4();
+    Hit.PhysicalAddress = Address; Hit.Registers = &Registers; Hit.CsSelector = GetGuestCs().Selector;
+    Hit.Access = Access; Hit.AccessSize = Size;
+    VmxVmread64P(VMCS_GUEST_RFLAGS, &Hit.Rflags);
+    InterlockedIncrement(&C->CallbackActive); InterlockedIncrement64(&C->Observations);
+    if (C->Callback != NULL && C->Closing == 0) C->Callback(&Hit);
+    if (Access == EW_EXECUTE && Hit.Action == 0 && Hit.WriteRax != 0 && Cpu->Regs != NULL) Cpu->Regs->rax = Hit.Rax;
+    InterlockedDecrement(&C->CallbackActive);
+    if (Hit.Action != 0) { InterlockedIncrement64(&C->Retries); return FALSE; }
+    return TRUE;
+}
+
+BOOLEAN EptExecuteWatchBeginPhysicalWrite(UINT64 Address, UINT64 Size, PUINT64 Token)
+{
+    if (!Token) return FALSE; *Token = 0;
+    if (g_ExecuteWatch == NULL || !VmxGetCurrentExecutionMode()) return TRUE;
+    if (!Size || Size > PAGE_SIZE - (Address & (PAGE_SIZE - 1))) return FALSE;
+    if (Address >= SIZE_512_GB) return TRUE; // 此后端不接受该范围的路径租约。
+    EW_CONTEXT *C = EwEnter(); BOOLEAN Allowed = TRUE;
+    if (C != NULL) {
+        UINT64 Page = Address & ~(UINT64)(PAGE_SIZE - 1);
+        Allowed = EwWriterBegin(C, Page, Token);
+        if (Allowed && *Token != 0) {
+            if (!EwLock(C)) Allowed = FALSE;
+            else {
+                BOOLEAN Watched = FALSE;
+                for (UINT32 I = 0; I < C->MaximumPages; I++)
+                    if (C->Pages[I].WriteReferences && C->Pages[I].Pa == Page) { Watched = TRUE; break; }
+                EwUnlock(C);
+                if (Watched) Allowed = EwCallback(C, &g_GuestState[PlatformCpuGetCurrentProcessorNumber()], Address, 3, Size);
+            }
+            if (!Allowed) { EwWriterEnd(C, *Token); *Token = 0; }
+        }
+    }
+    EwLeave(); return Allowed;
+}
+VOID EptExecuteWatchEndPhysicalWrite(UINT64 Token)
+{
+    if (!Token) return;
+    EW_CONTEXT *C = EwEnter(); if (C) EwWriterEnd(C, Token); EwLeave();
 }
 
 BOOLEAN EptExecuteWatchOnExit(VIRTUAL_MACHINE_STATE *Cpu)
@@ -265,7 +371,7 @@ BOOLEAN EptExecuteWatchOnExit(VIRTUAL_MACHINE_STATE *Cpu)
         }
         // EPT 边界与隐藏 INT3 回放可能仍属于同一条指令；其他退出不保留旧放行范围。
         if (Cpu->ExitReason != VMX_EXIT_REASON_EPT_VIOLATION && Cpu->ExitReason != VMX_EXIT_REASON_MONITOR_TRAP_FLAG &&
-            Cpu->ExitReason != VMX_EXIT_REASON_EXCEPTION_OR_NMI) L->StepCount = 0;
+            Cpu->ExitReason != VMX_EXIT_REASON_EXCEPTION_OR_NMI) EwClearStep(C, L);
     }
     EwLeave(); return Result;
 }
@@ -276,7 +382,7 @@ static BOOLEAN EwApply(VIRTUAL_MACHINE_STATE *Cpu, EW_CONTEXT *C, BOOLEAN Instal
     if (g_ModeBasedExecutionControlState || g_ExecTrapInitialized || Cpu->PmlBufferAddress != NULL)
         EwFault(C, STATUS_NOT_SUPPORTED);
     UINT64 Rip = 0; VmxVmread64P(VMCS_GUEST_RIP, &Rip);
-    if (L->StepCount != 0 && (L->StepRip != Rip || L->StepCr3 != GetGuestCr3())) L->StepCount = 0;
+    if (L->StepCount != 0 && (L->StepRip != Rip || L->StepCr3 != GetGuestCr3())) EwClearStep(C, L);
     UINT32 PreviousCount = L->ViewCount;
     BOOLEAN Snapshot = EwSnapshot(C, L);
     // 取新快照遇到争用也必须按当前 primary 重建旧视图，不能执行已经退休的 fake PFN。
@@ -314,57 +420,63 @@ BOOLEAN EptExecuteWatchMtf(VIRTUAL_MACHINE_STATE *Cpu)
     if (g_ExecuteWatch == NULL) return FALSE;
     EW_CONTEXT *C = EwEnter(); BOOLEAN Handled = FALSE;
     if (C != NULL && Cpu->CoreId < C->Cpus) {
-        EW_CPU *L = &C->Cpu[Cpu->CoreId]; Handled = L->MtfPending; L->StepCount = 0; L->MtfPending = FALSE;
+        EW_CPU *L = &C->Cpu[Cpu->CoreId]; Handled = L->MtfPending; EwClearStep(C, L); L->MtfPending = FALSE;
     }
     EwLeave(); return Handled;
 }
 
+static BOOLEAN EwHasWriteWatch(EW_CONTEXT *C, UINT64 Page)
+{
+    for (UINT32 I = 0; I < C->MaximumPages; I++)
+        if (InterlockedCompareExchange(&C->Pages[I].WriteReferences, 0, 0) != 0 && C->Pages[I].Pa == Page) return TRUE;
+    return FALSE;
+}
 BOOLEAN EptExecuteWatchViolation(VIRTUAL_MACHINE_STATE *Cpu, UINT64 PhysicalAddress,
     VMX_EXIT_QUALIFICATION_EPT_VIOLATION Q)
 {
     if (g_ExecuteWatch == NULL) return FALSE;
     EW_CONTEXT *C = EwEnter(); BOOLEAN Handled = FALSE;
-    if (C == NULL || Cpu->CoreId >= C->Cpus || !Q.ExecuteAccess) goto Done;
+    if (C == NULL || Cpu->CoreId >= C->Cpus || (!Q.ExecuteAccess && !Q.WriteAccess)) goto Done;
     EW_CPU *L = &C->Cpu[Cpu->CoreId]; UINT64 Page = PhysicalAddress & ~(UINT64)(PAGE_SIZE - 1);
-    if (!L->Incoming) goto Done;
-    UINT32 I; for (I = 0; I < L->ViewCount; I++) if (L->ViewPages[I] == Page) break;
-    if (I == L->ViewCount) goto Done;
-    // primary 也拒绝执行时由原 hook/coherence 决策处理，不能为观察页绕过它。
+    UINT32 Access = Q.WriteAccess ? EW_WRITE : EW_EXECUTE, Incoming = 0;
+    if (L->Incoming) for (UINT32 I = 0; I < L->ViewCount; I++)
+        if (L->ViewPages[I] == Page) { Incoming = L->ViewAccess[I]; break; }
+    // 新 W 租约还在 all-core ACK 时，也要处理 primary 先触发的写退出。
+    if (!(Incoming & Access) && !(Access == EW_WRITE && EwHasWriteWatch(C, Page))) goto Done;
     BOOLEAN Large = FALSE; PEPT_PML1_ENTRY Leaf = EptGetPml1OrPml2Entry(Cpu->EptPageTable, Page, &Large);
-    if (Leaf == NULL || !Leaf->ExecuteAccess ||
-        !(Cpu->EptPageTable->PML4[0].AsUInt & 4u) ||
-        !(Cpu->EptPageTable->PML3[(Page >> 30) & 511].AsUInt & 4u) ||
-        !(Cpu->EptPageTable->PML2[(Page >> 30) & 511][(Page >> 21) & 511].AsUInt & 4u)) goto Done;
+    UINT64 Permission = Access == EW_EXECUTE ? 4u : 2u;
+    BOOLEAN PrimaryAllows = Leaf != NULL && (Leaf->AsUInt & Permission) &&
+        (Cpu->EptPageTable->PML4[0].AsUInt & Permission) &&
+        (Cpu->EptPageTable->PML3[(Page >> 30) & 511].AsUInt & Permission) &&
+        (Cpu->EptPageTable->PML2[(Page >> 30) & 511][(Page >> 21) & 511].AsUInt & Permission);
+    if (Access == EW_EXECUTE && !PrimaryAllows) goto Done;
     Handled = TRUE; HvSuppressRipIncrement(Cpu);
+    if (L->StepCount == 0 || L->StepRip != Cpu->LastVmexitRip || L->StepCr3 != GetGuestCr3()) {
+        EwClearStep(C, L); L->StepRip = Cpu->LastVmexitRip; L->StepCr3 = GetGuestCr3();
+    }
+    UINT32 Step;
+    for (Step = 0; Step < L->StepCount; Step++) if (L->StepPages[Step] == Page) break;
+    if (Step == L->StepCount) {
+        if (Step == EW_MAX_STEP) { EwFault(C, STATUS_INSUFFICIENT_RESOURCES); goto Done; }
+        L->StepPages[Step] = Page; L->StepAccess[Step] = 0; L->StepWriters[Step] = 0; L->StepCount++;
+    }
+    if (Access == EW_WRITE && L->StepWriters[Step] == 0 &&
+        !EwWriterBegin(C, Page, &L->StepWriters[Step])) { InterlockedIncrement64(&C->Retries); goto Done; }
+    // 即使 callback 要求重试也保留 MTF 完成通知；若随后进入 fault/primary-only，
+    // 首次实际执行仍会结束 writer 区间，不把未授写阶段留下的元数据永久占住。
+    if (Access == EW_WRITE) { L->MtfPending = TRUE; HvSetMonitorTrapFlag(TRUE); }
     BOOLEAN Active = FALSE;
-    if ((GetGuestCs().Selector & 3u) == 3u) {
+    if (Access == EW_WRITE || (GetGuestCs().Selector & 3u) == 3u) {
         if (!EwLock(C)) { InterlockedIncrement64(&C->Retries); goto Done; }
-        for (I = 0; I < C->MaximumPages; I++) if (C->Pages[I].References && C->Pages[I].Pa == Page) { Active = TRUE; break; }
+        for (UINT32 I = 0; I < C->MaximumPages; I++) if (C->Pages[I].Pa == Page &&
+            (Access == EW_WRITE ? C->Pages[I].WriteReferences : C->Pages[I].ExecuteReferences)) { Active = TRUE; break; }
         EwUnlock(C);
     }
-    if (Active && !C->Closing && C->Fault == STATUS_SUCCESS && (GetGuestCs().Selector & 3u) == 3u) {
-        GUEST_REGS Registers = *Cpu->Regs;
-        VMM_EXECUTE_WATCH_HIT Hit = {0}; Hit.Size = sizeof(Hit); Hit.CoreId = Cpu->CoreId;
-        Hit.GuestRip = Cpu->LastVmexitRip; Hit.GuestCr3 = GetGuestCr3(); Hit.GuestCr4 = GetGuestCr4();
-        Hit.PhysicalAddress = PhysicalAddress; Hit.Registers = &Registers; Hit.CsSelector = GetGuestCs().Selector;
-        VmxVmread64P(VMCS_GUEST_RFLAGS, &Hit.Rflags);
-        InterlockedIncrement(&C->CallbackActive); InterlockedIncrement64(&C->Observations);
-        if (C->Callback != NULL && C->Closing == 0) C->Callback(&Hit);
-        // 已进入的回调对本次已发生的返回负责。候选提交仍属于 CallbackActive 生命周期，
-        // 后来的其他页故障不能把已发布为 applied 的本次结果悄悄取消。
-        if (Hit.Action == 0 && Hit.WriteRax != 0) Cpu->Regs->rax = Hit.Rax;
-        InterlockedDecrement(&C->CallbackActive);
-        if (Hit.Action != 0) { InterlockedIncrement64(&C->Retries); goto Done; }
-    }
-    // 同一条跨页指令必须同时放行两页；真正的 MTF 才消费这个范围。
-    if (L->StepCount == 0 || L->StepRip != Cpu->LastVmexitRip || L->StepCr3 != GetGuestCr3()) {
-        L->StepCount = 0; L->StepRip = Cpu->LastVmexitRip; L->StepCr3 = GetGuestCr3();
-    }
-    if (!EwExempt(L, Page)) {
-        if (L->StepCount == 2) { EwFault(C, STATUS_CONFLICTING_ADDRESSES); goto Done; }
-        L->StepPages[L->StepCount++] = Page;
-    }
+    if (Active && !C->Closing && C->Fault == STATUS_SUCCESS && !EwCallback(C, Cpu, PhysicalAddress, Access, 0)) goto Done;
+    L->StepAccess[Step] |= Access;
     L->MtfPending = TRUE; HvSetMonitorTrapFlag(TRUE);
+    // 底层本来拒绝 W 时只做失效通知，不授权 W；交回原 hook/coherence 完成它的事务。
+    if (Access == EW_WRITE && !PrimaryAllows) Handled = FALSE;
 Done:
     EwLeave(); return Handled;
 }
@@ -394,6 +506,9 @@ IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchInitializeV1(UINT32 MaximumPa
     C = PlatformMemAllocateZeroedNonPagedPool(sizeof(*C));
     if (!C) { Status = STATUS_INSUFFICIENT_RESOURCES; goto Done; }
     C->MaximumPages = MaximumPages; C->MaximumLeases = MaximumLeases; C->Cpus = Cpus; C->Callback = Callback; C->Generation = 1;
+    C->MaximumWriters = Cpus * (MaximumPages + 4u);
+    C->Writers = PlatformMemAllocateZeroedNonPagedPool(sizeof(EW_WRITER) * C->MaximumWriters);
+    if (!C->Writers) { Status = STATUS_INSUFFICIENT_RESOURCES; goto Done; }
     C->Cpu = PlatformMemAllocateZeroedNonPagedPool(sizeof(EW_CPU) * Cpus);
     if (!C->Cpu) { Status = STATUS_INSUFFICIENT_RESOURCES; goto Done; }
     for (UINT32 I = 0; I < Cpus; I++) {
@@ -418,7 +533,7 @@ Done:
     EwFree(C); InterlockedExchange(&g_ExecuteWatchControl, 0); return Status;
 }
 
-IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchAcquireFromRootV1(UINT64 Page, PUINT64 Token)
+static NTSTATUS EwAcquireFromRoot(UINT64 Page, PUINT64 Token, UINT32 Access)
 {
     if (!Token) return STATUS_INVALID_PARAMETER; *Token = 0;
     if (!VmxGetCurrentExecutionMode() || (Page & (PAGE_SIZE - 1)) || Page >= SIZE_512_GB) return STATUS_INVALID_PARAMETER;
@@ -434,6 +549,7 @@ IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchAcquireFromRootV1(UINT64 Page
         Status = C->Closing ? STATUS_INVALID_DEVICE_STATE : (NTSTATUS)C->Fault;
         EwUnlock(C); goto Done;
     }
+    if (Access == EW_WRITE && EwWriterPresent(C, Page)) { EwUnlock(C); Status = STATUS_DEVICE_BUSY; goto Done; }
     UINT32 PageIndex, LeaseIndex;
     for (LeaseIndex = 0; LeaseIndex < C->MaximumLeases; LeaseIndex++) if (!C->Leases[LeaseIndex].Token) break;
     for (PageIndex = 0; PageIndex < C->MaximumPages; PageIndex++) if (C->Pages[PageIndex].References && C->Pages[PageIndex].Pa == Page) break;
@@ -447,11 +563,13 @@ IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchAcquireFromRootV1(UINT64 Page
     }
     UINT64 Serial = (UINT64)InterlockedIncrement64(&C->Serial);
     if (Serial > 0x7fffffffffffULL) { EwUnlock(C); Status = STATUS_INSUFFICIENT_RESOURCES; goto Done; }
-    C->Leases[LeaseIndex].Token = (Serial << 16) | (LeaseIndex + 1u); C->Leases[LeaseIndex].Page = PageIndex;
+    C->Leases[LeaseIndex].Token = (Serial << 16) | (LeaseIndex + 1u); C->Leases[LeaseIndex].Page = PageIndex; C->Leases[LeaseIndex].Access = Access;
     *Token = C->Leases[LeaseIndex].Token;
-    BOOLEAN NewPage = C->Pages[PageIndex].References++ == 0;
-    if (NewPage) {
-        C->ActivePages++; C->Pages[PageIndex].Pa = Page;
+    BOOLEAN NewPage = C->Pages[PageIndex].References == 0;
+    if (NewPage) { C->ActivePages++; C->Pages[PageIndex].Pa = Page; }
+    C->Pages[PageIndex].References++;
+    BOOLEAN NewAccess = Access == EW_WRITE ? InterlockedIncrement(&C->Pages[PageIndex].WriteReferences) == 1 : C->Pages[PageIndex].ExecuteReferences++ == 0;
+    if (NewAccess) {
         C->Pages[PageIndex].PublishedAt = (UINT64)InterlockedIncrement64(&C->Generation);
     }
     C->ActiveLeases++;
@@ -467,6 +585,10 @@ IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchAcquireFromRootV1(UINT64 Page
 Done:
     EwLeave(); return Status;
 }
+IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchAcquireFromRootV1(UINT64 Page, PUINT64 Token)
+{ return EwAcquireFromRoot(Page, Token, EW_EXECUTE); }
+IMPORT_EXPORT_VMM NTSTATUS ConfigureEptWriteWatchAcquireFromRootV1(UINT64 Page, PUINT64 Token)
+{ return EwAcquireFromRoot(Page, Token, EW_WRITE); }
 
 IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchReleaseV1(UINT64 Token)
 {
@@ -476,10 +598,13 @@ IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchReleaseV1(UINT64 Token)
     if (!Index || --Index >= C->MaximumLeases) { Status = STATUS_NOT_FOUND; goto Done; }
     if (!EwLock(C)) { Status = STATUS_DEVICE_BUSY; goto Done; }
     if (C->Leases[Index].Token != Token) { EwUnlock(C); Status = STATUS_NOT_FOUND; goto Done; }
-    EW_PAGE *P = &C->Pages[C->Leases[Index].Page]; C->Leases[Index].Token = 0; C->ActiveLeases--;
+    EW_PAGE *P = &C->Pages[C->Leases[Index].Page]; UINT32 Access = C->Leases[Index].Access;
+    C->Leases[Index].Token = 0; C->ActiveLeases--;
+    BOOLEAN Changed = Access == EW_WRITE ? InterlockedDecrement(&P->WriteReferences) == 0 : --P->ExecuteReferences == 0;
     BOOLEAN Retired = --P->References == 0;
-    if (Retired) { C->ActivePages--; P->RetiredAt = (UINT64)InterlockedIncrement64(&C->Generation); }
-    EwUnlock(C); if (Retired) EwKick(C);
+    UINT64 Generation = Changed ? (UINT64)InterlockedIncrement64(&C->Generation) : EwGeneration(C);
+    if (Retired) { C->ActivePages--; P->RetiredAt = Generation; }
+    EwUnlock(C); if (Changed) EwKick(C);
 Done:
     EwLeave(); return Status;
 }
@@ -510,7 +635,7 @@ IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchUninitializeV1(VOID)
     EW_CONTEXT *C = g_ExecuteWatch; NTSTATUS Status = STATUS_SUCCESS;
     if (!C) goto Done;
     if (!EwLock(C)) { Status = STATUS_DEVICE_BUSY; goto Done; }
-    if (C->ActiveLeases || C->CallbackActive) { EwUnlock(C); Status = STATUS_DEVICE_BUSY; goto Done; }
+    if (C->ActiveLeases || C->CallbackActive || C->ActiveWriters) { EwUnlock(C); Status = STATUS_DEVICE_BUSY; goto Done; }
     InterlockedExchange(&C->Closing, 1); InterlockedIncrement64(&C->Generation); EwUnlock(C);
     Status = ConfigureEptExecuteWatchSynchronizeV1();
     if (!NT_SUCCESS(Status)) goto Done;
@@ -533,6 +658,7 @@ IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchQueryV1(VMM_EXECUTE_WATCH_STA
     if (!EwLock(C)) { Status = STATUS_DEVICE_BUSY; goto Done; }
     S->Initialized = 1; S->Closing = C->Closing; S->MaximumPages = C->MaximumPages; S->MaximumLeases = C->MaximumLeases;
     S->ActivePages = C->ActivePages; S->ActiveLeases = C->ActiveLeases; S->CallbackActive = C->CallbackActive;
+    S->ActiveWriters = (UINT32)InterlockedCompareExchange(&C->ActiveWriters, 0, 0);
     S->Generation = EwGeneration(C); S->MinimumAcknowledged = EwMinimumAck(C);
     S->Observations = C->Observations; S->Retries = C->Retries; S->CapacityFailures = C->CapacityFailures; S->SynchronizationFailures = C->SynchronizationFailures;
     EwUnlock(C);
@@ -551,9 +677,14 @@ BOOLEAN EptExecuteWatchMtf(VIRTUAL_MACHINE_STATE *Cpu) { UNREFERENCED_PARAMETER(
 BOOLEAN EptExecuteWatchActive(VOID) { return FALSE; }
 BOOLEAN EptExecuteWatchLegacyUnhookBegin(VOID) { return TRUE; }
 VOID EptExecuteWatchLegacyUnhookEnd(VOID) { }
+BOOLEAN EptExecuteWatchBeginPhysicalWrite(UINT64 Address, UINT64 Size, PUINT64 Token)
+{ UNREFERENCED_PARAMETER(Address); UNREFERENCED_PARAMETER(Size); if (Token) *Token = 0; return TRUE; }
+VOID EptExecuteWatchEndPhysicalWrite(UINT64 Token) { UNREFERENCED_PARAMETER(Token); }
 IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchInitializeV1(UINT32 Pages, UINT32 Leases, VMM_EXECUTE_WATCH_CALLBACK Callback)
 { UNREFERENCED_PARAMETER(Pages); UNREFERENCED_PARAMETER(Leases); UNREFERENCED_PARAMETER(Callback); return STATUS_NOT_SUPPORTED; }
 IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchAcquireFromRootV1(UINT64 Page, PUINT64 Token)
+{ UNREFERENCED_PARAMETER(Page); if (Token) *Token = 0; return STATUS_NOT_SUPPORTED; }
+IMPORT_EXPORT_VMM NTSTATUS ConfigureEptWriteWatchAcquireFromRootV1(UINT64 Page, PUINT64 Token)
 { UNREFERENCED_PARAMETER(Page); if (Token) *Token = 0; return STATUS_NOT_SUPPORTED; }
 IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchReleaseV1(UINT64 Token) { UNREFERENCED_PARAMETER(Token); return STATUS_NOT_SUPPORTED; }
 IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchSynchronizeV1(VOID) { return STATUS_SUCCESS; }

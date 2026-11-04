@@ -108,6 +108,8 @@ typedef struct _MEMORY_MAPPER_ADDRESSES
 
     UINT64 PteVirtualAddressForWrite; // The virtual address of PTE for write operations
     UINT64 VirualAddressForWrite;     // The actual kernel virtual address to write
+    UINT64 PtePhysicalAddressForRead;  // 准备时缓存，root 不再临时查询 Windows 地址空间。
+    UINT64 PtePhysicalAddressForWrite;
 } MEMORY_MAPPER_ADDRESSES, *PMEMORY_MAPPER_ADDRESSES;
 
 //////////////////////////////////////////////////
@@ -204,7 +206,7 @@ BOOLEAN
 MemoryMapperCheckIfPageIsPresentByCr3(_In_ PVOID    Va,
                                       _In_ CR3_TYPE TargetCr3);
 
-VOID
+BOOLEAN
 MemoryMapperMapPhysicalAddressToPte(_In_ PHYSICAL_ADDRESS PhysicalAddress,
                                     _In_ PVOID            TargetProcessVirtualAddress,
                                     _In_ CR3_TYPE         TargetProcessKernelCr3);

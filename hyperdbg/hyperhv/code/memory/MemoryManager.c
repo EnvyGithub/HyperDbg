@@ -52,6 +52,8 @@ ReadPhysicalMemoryUsingMapIoSpace(PVOID PhysicalAddress, PVOID Buffer, SIZE_T Bu
 BOOLEAN
 WritePhysicalMemoryUsingMapIoSpace(PVOID PhysicalAddress, PVOID Buffer, SIZE_T BufferSize)
 {
+    // 旧 root 映射写没有逐页完成协议；观察开启时明确拒绝，不伪报成功。
+    if (VmxGetCurrentExecutionMode() && EptExecuteWatchActive()) return FALSE;
     PHYSICAL_ADDRESS PhysicalAddressTemp = {0};
     PhysicalAddressTemp.QuadPart         = (LONGLONG)PhysicalAddress;
 

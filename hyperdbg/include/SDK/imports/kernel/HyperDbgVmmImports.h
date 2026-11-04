@@ -1221,17 +1221,20 @@ typedef struct _VMM_EXECUTE_WATCH_HIT {
     UINT32 CsSelector;
     UINT32 Action;       // 0: 放行一条指令；1: 在当前位置重试。
     UINT32 WriteRax;     // 只允许显式提交 RAX；不回写其他寄存器。
-    UINT32 Reserved;
+    UINT32 Access;       // 1: 执行；2: guest 写；3: root 物理写。写观察忽略 RAX。
     UINT64 Rax;
+    UINT64 AccessSize;   // guest 写为 0（指令完整写范围未知）；root 为本次物理写长度。
 } VMM_EXECUTE_WATCH_HIT;
 typedef VOID (*VMM_EXECUTE_WATCH_CALLBACK)(VMM_EXECUTE_WATCH_HIT *Hit);
 typedef struct _VMM_EXECUTE_WATCH_STATUS {
     UINT32 Size, Initialized, Closing, MaximumPages, MaximumLeases, ActivePages, ActiveLeases, CallbackActive;
+    UINT32 ActiveWriters, Reserved;
     UINT64 Generation, MinimumAcknowledged, Observations, Retries, CapacityFailures, SynchronizationFailures;
 } VMM_EXECUTE_WATCH_STATUS;
 IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchInitializeV1(UINT32 MaximumPages, UINT32 MaximumLeases, VMM_EXECUTE_WATCH_CALLBACK Callback);
 // acquire 失败时 Token 仍可能非零，须保留并释放；不能盲目重发 acquire。
 IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchAcquireFromRootV1(UINT64 PhysicalPage, PUINT64 Token);
+IMPORT_EXPORT_VMM NTSTATUS ConfigureEptWriteWatchAcquireFromRootV1(UINT64 PhysicalPage, PUINT64 Token);
 // root/guest 均可调用；成功消费一次 lease。物理撤销由 Synchronize 的全核确认收尾。
 IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchReleaseV1(UINT64 Token);
 IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchSynchronizeV1(VOID);
