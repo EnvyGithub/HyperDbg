@@ -336,6 +336,11 @@ typedef struct _VIRTUAL_MACHINE_STATE
     // [DOWNSTREAM] 仅隐藏 CC 同步回调期间有效，来自已确认的 fake-page 命中。
     UINT64           CurrentHiddenBreakpointPhysicalAddress;
     BOOLEAN          CurrentHiddenBreakpointRetry;
+    UINT64           CurrentHiddenBreakpointRedirectRip;
+    UINT64           CurrentHiddenBreakpointReplayCookie;
+    UINT64           MtfHiddenReplayCookie;
+    UINT64           CompletedHiddenReplayCookie;
+    BOOLEAN          GuestExecutionStepPending;
     volatile LONG    HiddenCoherenceKick;
     volatile LONG    NmiIpiPending;
     UINT32 NmiApicId;

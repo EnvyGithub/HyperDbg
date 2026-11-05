@@ -1200,12 +1200,6 @@ VmxPerformTermination()
 {
     LogDebugInfo("Terminating VMX...\n");
 
-    if (!NT_SUCCESS(ConfigureEptExecuteWatchUninitializeV1()))
-    {
-        LogError("Err, execute-watch references or per-core withdrawal remain pending");
-        return FALSE;
-    }
-
     if (g_GuestState == NULL)
     {
         VmxFreeSharedLifecycleResources();

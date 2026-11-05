@@ -190,7 +190,6 @@ HyperDbg-objs += hyperhv/code/mmio/MmioShadowing.o
 HyperDbg-objs += hyperhv/code/processor/Idt.o
 HyperDbg-objs += hyperhv/code/processor/Smm.o
 HyperDbg-objs += hyperhv/code/vmm/ept/Ept.o
-HyperDbg-objs += hyperhv/code/vmm/ept/EptExecuteWatch.o
 HyperDbg-objs += hyperhv/code/vmm/ept/Invept.o
 HyperDbg-objs += hyperhv/code/vmm/ept/Vpid.o
 HyperDbg-objs += hyperhv/code/vmm/vmx/Counters.o

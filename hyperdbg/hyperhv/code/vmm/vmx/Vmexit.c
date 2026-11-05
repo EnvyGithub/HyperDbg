@@ -56,6 +56,7 @@ VmxVmexitHandler(_Inout_ PGUEST_REGS GuestRegs)
     // Increase the RIP by default
     //
     VCpu->IncrementRip = TRUE;
+    VCpu->CompletedHiddenReplayCookie = 0;
 
     //
     // Save the current rip
@@ -79,7 +80,6 @@ VmxVmexitHandler(_Inout_ PGUEST_REGS GuestRegs)
     // LogInfo("VMCS_EXIT_QUALIFICATION : 0x%llx", VCpu->ExitQualification);
     //
 
-    (VOID)EptExecuteWatchOnExit(VCpu);
     EptCoherenceOnExit(VCpu);
 
     switch (ExitReason)
@@ -369,7 +369,7 @@ VmxVmexitHandler(_Inout_ PGUEST_REGS GuestRegs)
     // Set indicator of Vmx non root mode to false
     //
     EptCoherenceSafePoint(VCpu);
-    EptExecuteWatchBeforeResume(VCpu);
+    if (!VCpu->VmxoffState.IsVmxoffExecuted) EventNotifyGuestExecution(VCpu);
     VCpu->IsOnVmxRootMode = FALSE;
 
     //

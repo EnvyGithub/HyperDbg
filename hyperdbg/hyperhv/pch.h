@@ -96,7 +96,6 @@
 #include "vmm/vmx/VmxRegions.h"
 #include "vmm/ept/Ept.h"
 #include "SDK/imports/kernel/HyperDbgVmmImports.h"
-#include "vmm/ept/EptExecuteWatch.h"
 
 //
 // Hyper-V TLFS

@@ -108,8 +108,6 @@ typedef struct _MEMORY_MAPPER_ADDRESSES
 
     UINT64 PteVirtualAddressForWrite; // The virtual address of PTE for write operations
     UINT64 VirualAddressForWrite;     // The actual kernel virtual address to write
-    UINT64 PtePhysicalAddressForRead;  // 准备时缓存，root 不再临时查询 Windows 地址空间。
-    UINT64 PtePhysicalAddressForWrite;
 } MEMORY_MAPPER_ADDRESSES, *PMEMORY_MAPPER_ADDRESSES;
 
 //////////////////////////////////////////////////
@@ -199,9 +197,6 @@ MemoryMapperWriteMemorySafeWrapper(_In_ MEMORY_MAPPER_WRAPPER_FOR_MEMORY_WRITE T
 BOOLEAN
 MemoryMapperInitialize();
 
-// 生命周期内冻结的私有映射 PTE 整页集合；不是目标进程页表写的豁免。
-BOOLEAN MemoryMapperPrivatePtePagesReady(UINT32 ProcessorCount);
-BOOLEAN MemoryMapperIsPrivatePtePage(UINT64 PhysicalPage);
 
 VOID
 MemoryMapperUninitialize();

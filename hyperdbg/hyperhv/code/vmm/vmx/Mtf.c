@@ -22,7 +22,11 @@ MtfHandleVmexit(VIRTUAL_MACHINE_STATE * VCpu)
 {
     BOOLEAN IsMtfHandled = FALSE;
 
-    IsMtfHandled = EptExecuteWatchMtf(VCpu);
+    if (VCpu->GuestExecutionStepPending)
+    {
+        IsMtfHandled = TRUE;
+        VCpu->GuestExecutionStepPending = FALSE;
+    }
 
     //
     // Redo the instruction
@@ -59,6 +63,7 @@ MtfHandleVmexit(VIRTUAL_MACHINE_STATE * VCpu)
         // Restore the previous state
         //
         EptHookHandleMonitorTrapFlag(VCpu);
+        VCpu->CompletedHiddenReplayCookie = VCpu->MtfHiddenReplayCookie;
 
         //
         // Set it to NULL
@@ -73,6 +78,7 @@ MtfHandleVmexit(VIRTUAL_MACHINE_STATE * VCpu)
         //
         HvEnableAndCheckForPreviousExternalInterrupts(VCpu);
     }
+    VCpu->MtfHiddenReplayCookie = 0;
 
     //
     // Check for ignored MTFs

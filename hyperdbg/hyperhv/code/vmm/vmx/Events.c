@@ -12,6 +12,56 @@
 #include "pch.h"
 
 #ifdef HYPERDBG_ENV_WINDOWS
+static PVOID volatile g_GuestExecutionObserver;
+static volatile LONG g_GuestExecutionReaders, g_GuestExecutionControl;
+
+BOOLEAN ConfigureGuestExecutionObserverV1(VMM_GUEST_EXECUTION_OBSERVER Observer)
+{
+    if (VmxGetCurrentExecutionMode() || KeGetCurrentIrql() != PASSIVE_LEVEL ||
+        InterlockedCompareExchange(&g_GuestExecutionControl, 1, 0) != 0) return FALSE;
+    BOOLEAN Result = TRUE;
+    if (Observer != NULL)
+    {
+        PVOID Previous = InterlockedCompareExchangePointer(&g_GuestExecutionObserver, (PVOID)Observer, NULL);
+        Result = Previous == NULL || Previous == (PVOID)Observer;
+    }
+    else
+    {
+        PVOID Previous = InterlockedExchangePointer(&g_GuestExecutionObserver, NULL);
+        LARGE_INTEGER Delay; Delay.QuadPart = -10000;
+        for (UINT32 Attempt = 0; Attempt < 500 && InterlockedCompareExchange(&g_GuestExecutionReaders, 0, 0) != 0; Attempt++)
+            KeDelayExecutionThread(KernelMode, FALSE, &Delay);
+        if (InterlockedCompareExchange(&g_GuestExecutionReaders, 0, 0) != 0)
+        {
+            InterlockedExchangePointer(&g_GuestExecutionObserver, Previous);
+            Result = FALSE;
+        }
+    }
+    InterlockedExchange(&g_GuestExecutionControl, 0);
+    return Result;
+}
+
+VOID EventNotifyGuestExecution(VIRTUAL_MACHINE_STATE *VCpu)
+{
+    if (g_GuestExecutionObserver == NULL) return;
+    InterlockedIncrement(&g_GuestExecutionReaders);
+    VMM_GUEST_EXECUTION_OBSERVER Observer = (VMM_GUEST_EXECUTION_OBSERVER)
+        InterlockedCompareExchangePointer(&g_GuestExecutionObserver, NULL, NULL);
+    if (Observer != NULL && Observer(VCpu->CompletedHiddenReplayCookie))
+    {
+        VCpu->GuestExecutionStepPending = TRUE;
+        HvSetMonitorTrapFlag(TRUE);
+    }
+    // 不在这里关 MTF：既有回放/调试器仍可能持有它。自己的剩余一次 MTF 由 Mtf.c 消费。
+    InterlockedDecrement(&g_GuestExecutionReaders);
+}
+#else
+BOOLEAN ConfigureGuestExecutionObserverV1(VMM_GUEST_EXECUTION_OBSERVER Observer)
+{ UNREFERENCED_PARAMETER(Observer); return FALSE; }
+VOID EventNotifyGuestExecution(VIRTUAL_MACHINE_STATE *VCpu) { UNREFERENCED_PARAMETER(VCpu); }
+#endif
+
+#ifdef HYPERDBG_ENV_WINDOWS
 // Intel SDM Vol.3C 28.2.4/27.6：EPT 退出可中断尚未完成的 IDT 投递。
 // 本产品 EPT 回调不注入新的异常。若回调违反此契约，保留两份 VMCS 元数据并停止，
 // 不能用覆盖或延迟异常的方式伪造成功；不改变普通中断队列及其中的顺序。

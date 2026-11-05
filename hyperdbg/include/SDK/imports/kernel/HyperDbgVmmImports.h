@@ -1213,30 +1213,9 @@ IMPORT_EXPORT_VMM BOOLEAN ConfigureEptRecoverCoherenceV1(VOID);
 
 IMPORT_EXPORT_VMM NTSTATUS ConfigureEptRepairHiddenPageV1(UINT64 PhysicalPage,UINT64 ExpectedFaultEpoch);
 
-// 纯执行观察：不复制或修改 guest 代码，不更改调用栈。接口能力不等于某次 acquire 已完成。
-typedef struct _VMM_EXECUTE_WATCH_HIT {
-    UINT32 Size, CoreId;
-    UINT64 GuestRip, GuestCr3, GuestCr4, PhysicalAddress, Rflags;
-    const GUEST_REGS *Registers;
-    UINT32 CsSelector;
-    UINT32 Action;       // 0: 放行一条指令；1: 在当前位置重试。
-    UINT32 WriteRax;     // 只允许显式提交 RAX；不回写其他寄存器。
-    UINT32 Access;       // 1: 执行；2: guest 写；3: root 物理写。写观察忽略 RAX。
-    UINT64 Rax;
-    UINT64 AccessSize;   // guest 写为 0（指令完整写范围未知）；root 为本次物理写长度。
-} VMM_EXECUTE_WATCH_HIT;
-typedef VOID (*VMM_EXECUTE_WATCH_CALLBACK)(VMM_EXECUTE_WATCH_HIT *Hit);
-typedef struct _VMM_EXECUTE_WATCH_STATUS {
-    UINT32 Size, Initialized, Closing, MaximumPages, MaximumLeases, ActivePages, ActiveLeases, CallbackActive;
-    UINT32 ActiveWriters, Reserved;
-    UINT64 Generation, MinimumAcknowledged, Observations, Retries, CapacityFailures, SynchronizationFailures;
-} VMM_EXECUTE_WATCH_STATUS;
-IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchInitializeV1(UINT32 MaximumPages, UINT32 MaximumLeases, VMM_EXECUTE_WATCH_CALLBACK Callback);
-// acquire 失败时 Token 仍可能非零，须保留并释放；不能盲目重发 acquire。
-IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchAcquireFromRootV1(UINT64 PhysicalPage, PUINT64 Token);
-IMPORT_EXPORT_VMM NTSTATUS ConfigureEptWriteWatchAcquireFromRootV1(UINT64 PhysicalPage, PUINT64 Token);
-// root/guest 均可调用；成功消费一次 lease。物理撤销由 Synchronize 的全核确认收尾。
-IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchReleaseV1(UINT64 Token);
-IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchSynchronizeV1(VOID);
-IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchUninitializeV1(VOID);
-IMPORT_EXPORT_VMM NTSTATUS ConfigureEptExecuteWatchQueryV1(VMM_EXECUTE_WATCH_STATUS *Status);
+// 固定隐藏点的受控转移和真实回放完成通知，不修改目标返回槽。
+IMPORT_EXPORT_VMM VOID VmFuncRedirectHiddenBreakpoint(UINT64 Rip);
+IMPORT_EXPORT_VMM VOID VmFuncSetHiddenBreakpointReplayCookie(UINT64 Cookie);
+// VM-exit 尾部的 root 回调；TRUE 仅请求下一条指令的 MTF，不代替其他 MTF owner。
+typedef BOOLEAN (*VMM_GUEST_EXECUTION_OBSERVER)(UINT64 CompletedReplayCookie);
+IMPORT_EXPORT_VMM BOOLEAN ConfigureGuestExecutionObserverV1(VMM_GUEST_EXECUTION_OBSERVER Observer);

@@ -1196,7 +1196,6 @@ EptHandleEptViolation(VIRTUAL_MACHINE_STATE * VCpu)
     //
     VmxVmread64P(VMCS_GUEST_PHYSICAL_ADDRESS, &GuestPhysicalAddr);
 
-    if (EptExecuteWatchViolation(VCpu, GuestPhysicalAddr, ViolationQualification)) return TRUE;
 
     if (EptHandlePageHookExit(VCpu, ViolationQualification, GuestPhysicalAddr))
     {
@@ -1373,8 +1372,16 @@ EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
                     // 供外部观察器路由使用；#BP 的 VMCS_GUEST_PHYSICAL_ADDRESS 不作依据。
                     VCpu->CurrentHiddenBreakpointPhysicalAddress = PhysicalRip;
                     VCpu->CurrentHiddenBreakpointRetry = FALSE;
+                    VCpu->CurrentHiddenBreakpointRedirectRip = 0;
+                    VCpu->CurrentHiddenBreakpointReplayCookie = 0;
                     DispatchEventHiddenHookExecCc(VCpu, (PVOID)GuestRip);
                     VCpu->CurrentHiddenBreakpointPhysicalAddress = 0;
+                    if (VCpu->CurrentHiddenBreakpointRedirectRip != 0)
+                    {
+                        HvSetRip(VCpu->CurrentHiddenBreakpointRedirectRip);
+                        HvSuppressRipIncrement(VCpu);
+                        return TRUE;
+                    }
                     if (VCpu->CurrentHiddenBreakpointRetry)
                     {
                         // mailbox/所有权视图忙时重新触发同一 fake CC；不执行原指令，
@@ -1399,6 +1406,7 @@ EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
                     // Next we have to save the current hooked entry to restore on the next instruction's vm-exit
                     //
                     VCpu->MtfEptHookRestorePoint = HookedEntry;
+                    VCpu->MtfHiddenReplayCookie = VCpu->CurrentHiddenBreakpointReplayCookie;
 
                     //
                     // The following codes are added because we realized if the execution takes long then

@@ -1177,3 +1177,19 @@ VOID VmFuncRetryHiddenBreakpoint()
     VIRTUAL_MACHINE_STATE *VCpu = &g_GuestState[PlatformCpuGetCurrentProcessorNumber()];
     if (VCpu->CurrentHiddenBreakpointPhysicalAddress != 0) VCpu->CurrentHiddenBreakpointRetry = TRUE;
 }
+
+VOID VmFuncRedirectHiddenBreakpoint(UINT64 Rip)
+{
+    if (g_GuestState == NULL || !VmxGetCurrentExecutionMode()) return;
+    VIRTUAL_MACHINE_STATE *VCpu = &g_GuestState[PlatformCpuGetCurrentProcessorNumber()];
+    if (VCpu->CurrentHiddenBreakpointPhysicalAddress != 0 && Rip != 0)
+        VCpu->CurrentHiddenBreakpointRedirectRip = Rip;
+}
+
+VOID VmFuncSetHiddenBreakpointReplayCookie(UINT64 Cookie)
+{
+    if (g_GuestState == NULL || !VmxGetCurrentExecutionMode()) return;
+    VIRTUAL_MACHINE_STATE *VCpu = &g_GuestState[PlatformCpuGetCurrentProcessorNumber()];
+    if (VCpu->CurrentHiddenBreakpointPhysicalAddress != 0)
+        VCpu->CurrentHiddenBreakpointReplayCookie = Cookie;
+}

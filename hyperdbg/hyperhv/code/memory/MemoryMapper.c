@@ -15,24 +15,6 @@
 
 static UINT32 g_MemoryMapperAllocationCount;
 
-BOOLEAN MemoryMapperPrivatePtePagesReady(UINT32 ProcessorCount)
-{
-    if (g_MemoryMapper == NULL || ProcessorCount == 0 || g_MemoryMapperAllocationCount != ProcessorCount) return FALSE;
-    for (UINT32 I = 0; I < g_MemoryMapperAllocationCount; I++)
-        if (!g_MemoryMapper[I].PtePhysicalAddressForRead || !g_MemoryMapper[I].PtePhysicalAddressForWrite) return FALSE;
-    return TRUE;
-}
-BOOLEAN MemoryMapperIsPrivatePtePage(UINT64 PhysicalPage)
-{
-    if (g_MemoryMapper == NULL || (PhysicalPage & (PAGE_SIZE - 1)) != 0) return FALSE;
-    for (UINT32 I = 0; I < g_MemoryMapperAllocationCount; I++) {
-        UINT64 Read = g_MemoryMapper[I].PtePhysicalAddressForRead, Write = g_MemoryMapper[I].PtePhysicalAddressForWrite;
-        if ((Read != 0 && (Read & ~(UINT64)(PAGE_SIZE - 1)) == PhysicalPage) ||
-            (Write != 0 && (Write & ~(UINT64)(PAGE_SIZE - 1)) == PhysicalPage)) return TRUE;
-    }
-    return FALSE;
-}
-
 /**
  * @brief Get Index of VA on PMLx
  *
@@ -710,7 +692,11 @@ MemoryMapperInitialize()
         //
         // It's already initialized
         //
-        return MemoryMapperPrivatePtePagesReady(ProcessorsCount);
+        if (g_MemoryMapperAllocationCount != ProcessorsCount) return FALSE;
+        for (UINT32 i = 0; i < g_MemoryMapperAllocationCount; i++)
+            if (!g_MemoryMapper[i].VirualAddressForRead || !g_MemoryMapper[i].PteVirtualAddressForRead ||
+                !g_MemoryMapper[i].VirualAddressForWrite || !g_MemoryMapper[i].PteVirtualAddressForWrite) return FALSE;
+        return TRUE;
     }
 
     //
@@ -743,8 +729,6 @@ MemoryMapperInitialize()
             goto Error;
         }
         g_MemoryMapper[i].PteVirtualAddressForRead = TempPte;
-        g_MemoryMapper[i].PtePhysicalAddressForRead = VirtualAddressToPhysicalAddress((PVOID)TempPte);
-        if (g_MemoryMapper[i].PtePhysicalAddressForRead == 0) goto Error;
 
         //
         // Initial and reserve for write operations
@@ -756,8 +740,6 @@ MemoryMapperInitialize()
             goto Error;
         }
         g_MemoryMapper[i].PteVirtualAddressForWrite = TempPte;
-        g_MemoryMapper[i].PtePhysicalAddressForWrite = VirtualAddressToPhysicalAddress((PVOID)TempPte);
-        if (g_MemoryMapper[i].PtePhysicalAddressForWrite == 0) goto Error;
     }
 
     return TRUE;
@@ -777,10 +759,6 @@ Error:
 VOID
 MemoryMapperUninitialize()
 {
-    if (EptExecuteWatchActive()) {
-        LogError("Err, memory mapper retains private PTE pages until execute/write watches are withdrawn");
-        return;
-    }
     PMEMORY_MAPPER_ADDRESSES MemoryMapper;
     ULONG                    ProcessorsCount;
 
@@ -812,7 +790,6 @@ MemoryMapperUninitialize()
 
         MemoryMapper[i].VirualAddressForWrite     = NULL64_ZERO;
         MemoryMapper[i].PteVirtualAddressForWrite = NULL64_ZERO;
-        MemoryMapper[i].PtePhysicalAddressForRead = MemoryMapper[i].PtePhysicalAddressForWrite = 0;
     }
 
     //
@@ -821,18 +798,6 @@ MemoryMapperUninitialize()
     g_MemoryMapper = NULL;
     g_MemoryMapperAllocationCount = 0;
     PlatformMemFreePool(MemoryMapper);
-}
-
-static BOOLEAN MemoryMapperBeginPteChange(UINT64 PteVa, UINT64 *Token)
-{
-    *Token = 0;
-    if (!VmxGetCurrentExecutionMode() || !EptExecuteWatchActive()) return TRUE;
-    UINT32 Core = PlatformCpuGetCurrentProcessorNumber();
-    if (g_MemoryMapper == NULL || Core >= g_MemoryMapperAllocationCount) return FALSE;
-    UINT64 Pa = PteVa == g_MemoryMapper[Core].PteVirtualAddressForRead ? g_MemoryMapper[Core].PtePhysicalAddressForRead :
-        PteVa == g_MemoryMapper[Core].PteVirtualAddressForWrite ? g_MemoryMapper[Core].PtePhysicalAddressForWrite : 0;
-    // 这些整 PFN 在 W 租约发布前就被排除；私有 mapper 读不再争用可选观察器的 Gate。
-    return Pa != 0 && MemoryMapperIsPrivatePtePage(Pa & ~(UINT64)(PAGE_SIZE - 1));
 }
 
 /**
@@ -859,8 +824,6 @@ MemoryMapperReadMemorySafeByPte(PHYSICAL_ADDRESS PaAddressToRead,
     PAGE_ENTRY  PageEntry;
     PPAGE_ENTRY Pte = (PAGE_ENTRY *)PteVaAddress;
     PVOID       Va  = (PVOID)MappingVa;
-    UINT64 WriteToken = 0;
-    if (!MemoryMapperBeginPteChange(PteVaAddress, &WriteToken)) return FALSE;
 
     //
     // Copy the previous entry into the new entry
@@ -921,8 +884,6 @@ MemoryMapperReadMemorySafeByPte(PHYSICAL_ADDRESS PaAddressToRead,
     //
     Pte->Flags = NULL64_ZERO;
 
-    EptExecuteWatchEndPhysicalWrite(WriteToken);
-
     return TRUE;
 }
 
@@ -950,9 +911,6 @@ MemoryMapperWriteMemorySafeByPte(PVOID            SourceVA,
     PAGE_ENTRY  PageEntry;
     PPAGE_ENTRY Pte = (PAGE_ENTRY *)PteVaAddress;
     PVOID       Va  = (PVOID)MappingVa;
-    UINT64 DataToken = 0, PteToken = 0;
-    if (!EptExecuteWatchBeginPhysicalWrite((UINT64)PaAddressToWrite.QuadPart, SizeToWrite, &DataToken)) return FALSE;
-    if (!MemoryMapperBeginPteChange(PteVaAddress, &PteToken)) { EptExecuteWatchEndPhysicalWrite(DataToken); return FALSE; }
 
     //
     // Copy the previous entry into the new entry
@@ -1009,9 +967,6 @@ MemoryMapperWriteMemorySafeByPte(PVOID            SourceVA,
     // Unmap Address
     //
     Pte->Flags = NULL64_ZERO;
-
-    EptExecuteWatchEndPhysicalWrite(PteToken);
-    EptExecuteWatchEndPhysicalWrite(DataToken);
 
     return TRUE;
 }
@@ -1786,7 +1741,6 @@ MemoryMapperMapPhysicalAddressToPte(PHYSICAL_ADDRESS PhysicalAddress,
                                     PVOID            TargetProcessVirtualAddress,
                                     CR3_TYPE         TargetProcessKernelCr3)
 {
-    if (VmxGetCurrentExecutionMode() && EptExecuteWatchActive()) return FALSE;
     PPAGE_ENTRY PreviousPteEntry;
     PAGE_ENTRY  PageEntry;
     CR3_TYPE    CurrentProcessCr3;
@@ -1868,7 +1822,6 @@ _Use_decl_annotations_
 BOOLEAN
 MemoryMapperSetSupervisorBitWithoutSwitchingByCr3(PVOID Va, BOOLEAN Set, PAGING_LEVEL Level, CR3_TYPE TargetCr3)
 {
-    if (VmxGetCurrentExecutionMode() && EptExecuteWatchActive()) return FALSE;
     PPAGE_ENTRY Pml = NULL;
 
     Pml = MemoryMapperGetPteVaWithoutSwitchingByCr3(Va, Level, TargetCr3);
