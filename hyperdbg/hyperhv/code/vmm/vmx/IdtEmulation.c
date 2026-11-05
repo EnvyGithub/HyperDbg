@@ -373,7 +373,14 @@ IdtEmulationHandleExceptionAndNmi(_Inout_ VIRTUAL_MACHINE_STATE *   VCpu,
 
             MemoryMapperReadMemorySafe(GuestRip, &TargetMem, sizeof(BYTE));
 
-            if (!EptCheckAndHandleBreakpoint(VCpu) || TargetMem == 0xcc)
+            // 只认本次已完成的重定向，不能复用上一个命中的标记。
+            VCpu->CurrentHiddenBreakpointRedirectRip = 0;
+            BOOLEAN EptHandled = EptCheckAndHandleBreakpoint(VCpu);
+            // 原字节即使是 INT3，也应等桥真实 CALL 原函数后的 replay 才投递，
+            // 不能把读取旧 RIP 得到的 CC 注入到已经转移的桥入口。
+            if (EptHandled && VCpu->CurrentHiddenBreakpointRedirectRip != 0) break;
+
+            if (!EptHandled || TargetMem == 0xcc)
             {
                 if (!DebuggingCallbackHandleBreakpointException(VCpu->CoreId))
                 {
