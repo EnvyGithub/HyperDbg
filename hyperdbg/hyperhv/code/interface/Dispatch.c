@@ -276,6 +276,57 @@ DispatchRetiredRelayBreakpoint(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRip)
     return TRUE;
 }
 
+// [DOWNSTREAM] Complete the caller's per-slot tail VMCALL of an atomic hook
+// (a guarded origin, the owner's invoke wrapper, or its unwind handler leaves
+// through it with the continuation at [rsp]). This is a ret done in VMX root:
+// RIP = [RSP], RSP += 8, and only then the admission taken at entry is
+// released, so the guest runs nothing in the tail or in a trampoline after
+// the release and retirement may free them once the count drains. The tail
+// is in a loaded image, so a thread stopped on it still unwinds to the hooked
+// function's caller (ADR 0069, 0086).
+static BOOLEAN
+DispatchAtomicInlineGuardedTailVmcall(VIRTUAL_MACHINE_STATE * VCpu)
+{
+    VMM_ATOMIC_INLINE_EVENT_DECISION Decision;
+    VMM_ATOMIC_INLINE_EVENT_CALLBACK Callback =
+        (VMM_ATOMIC_INLINE_EVENT_CALLBACK)(ULONG_PTR)
+            CpuInterlockedCompareExchange64(
+                (INT64 volatile *)&g_AtomicInlineEventCallback, 0, 0);
+    UINT64 Continuation = 0;
+
+    if (Callback == NULL)
+    {
+        return FALSE;
+    }
+    RtlZeroMemory(&Decision, sizeof(Decision));
+    Decision.Size = sizeof(Decision);
+    if (!Callback(VCpu->CoreId, VCpu->LastVmexitRip, &Decision) ||
+        Decision.Size != sizeof(Decision) ||
+        Decision.Kind != VmmAtomicInlineGuardedTailVmcall)
+    {
+        return FALSE;
+    }
+    if (Decision.DispatchActive == NULL ||
+        !MemoryMapperReadMemorySafeOnTargetProcess(VCpu->Regs->rsp,
+                                                   &Continuation,
+                                                   sizeof(Continuation)) ||
+        Continuation == 0)
+    {
+        LogError("Err, invalid atomic inline hook tail VMCALL at %llx",
+                 VCpu->LastVmexitRip);
+        return FALSE;
+    }
+
+    HvSetRsp(VCpu->Regs->rsp + sizeof(UINT64));
+    HvSetRip(Continuation);
+    HvSuppressRipIncrement(VCpu);
+    // The callback has returned and the continuation is read. This is the
+    // last access to owner memory; teardown may clear it once the count
+    // reaches zero.
+    DispatchChangeAtomicInlineReference(Decision.DispatchActive, -1);
+    return TRUE;
+}
+
 /**
  * @brief Handling debugger functions related to SYSRET events
  *
@@ -565,6 +616,11 @@ DispatchEventVmcall(VIRTUAL_MACHINE_STATE * VCpu)
 {
     VMM_CALLBACK_TRIGGERING_EVENT_STATUS_TYPE EventTriggerResult;
     BOOLEAN                                   PostEventTriggerReq = FALSE;
+
+    if (DispatchAtomicInlineGuardedTailVmcall(VCpu))
+    {
+        return;
+    }
 
     //
     // As the context to event trigger, we send NULL

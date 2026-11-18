@@ -1275,8 +1275,9 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
         // [DOWNSTREAM] Both origins keep every instruction boundary unwindable
         // to the caller (EptHookAtomicOrigin.h). The guarded origin pushes the
         // continuation while it is still admitted, then enters the caller's
-        // permanent tail; that tail's ret consumes the continuation after the
-        // release, so nothing here executes after the reference drops.
+        // tail VMCALL; VMX root pops the continuation into RIP before it
+        // releases the reference, so nothing here executes after the release
+        // (DispatchAtomicInlineGuardedTailVmcall).
         //
         GuardedTrampoline = (PCHAR)PoolManagerCallbackRequestPool(
             EXEC_TRAMPOLINE, TRUE, MAX_EXEC_TRAMPOLINE_SIZE);

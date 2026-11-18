@@ -22,9 +22,12 @@ typedef enum _VMM_ATOMIC_INLINE_EVENT_KIND
 {
     VmmAtomicInlineNone                   = 0,
     VmmAtomicInlineEntryBreakpoint        = 1,
-    // Reserved: the guarded-origin tail VMCALL was replaced by a permanent
-    // guest tail stub (ADR 0086). Do not reuse this value.
-    VmmAtomicInlineReservedGuardedTail    = 2,
+    // The guest executed the caller's per-slot tail: a VMCALL in a loaded
+    // image, entered with the continuation at [rsp] while holding the entry
+    // admission. VMX root completes it like a ret (RIP = [RSP], RSP += 8) and
+    // then releases DispatchActive, so the guest executes nothing in the tail
+    // or in a trampoline after the release. NextRip is unused (zero).
+    VmmAtomicInlineGuardedTailVmcall      = 2,
     // [DOWNSTREAM] A thread preempted inside a retired same-page relay resumes
     // on the restored original page's 0xCC and faults #BP. The owner completes
     // the transfer instead of injecting it; see ADR 0085.
@@ -477,12 +480,12 @@ ConfigureEptHook2(UINT32 CoreId,
 // [DOWNSTREAM] The fake target starts with one-byte INT3. PlainOrigin is for
 // primary handlers holding their own rundown; GuardedOrigin is for an entry
 // that still holds the VM-exit admission. Its tail pushes the continuation and
-// jumps to GuardedTailTarget, which the caller keeps executable forever and
-// which releases that admission before ret (ADR 0086). GuardedTailTarget is
-// entered with the continuation at [rsp] and may clobber r10 and the
-// arithmetic flags; it must not move rsp, so that every instruction boundary
-// still unwinds to the hooked function's caller. Installation fails for a
-// first instruction the origins cannot replay that way (EptHookAtomicOrigin.h).
+// jumps to GuardedTailTarget: a VMCALL in a loaded image that the atomic
+// inline event callback resolves as VmmAtomicInlineGuardedTailVmcall. VMX root
+// pops the continuation into RIP and only then releases the admission (ADR
+// 0069, 0086). A thread stopped on that VMCALL has the continuation at [rsp],
+// so it still unwinds to the hooked function's caller. Installation fails for
+// a first instruction the origins cannot replay (EptHookAtomicOrigin.h).
 IMPORT_EXPORT_VMM VMM_ATOMIC_INLINE_INSTALL_STATUS
 ConfigureEptHook2Atomic(UINT32 CoreId,
                         PVOID  TargetAddress,

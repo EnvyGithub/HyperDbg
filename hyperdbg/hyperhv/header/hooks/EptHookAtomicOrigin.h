@@ -43,11 +43,11 @@ typedef UINT64 EPT_ORIGIN_ADDRESS;
  * address whose own unwind leads back to the caller, with each nonvolatile
  * register found where the hooked function's unwind data says:
  *
- *   Copy        a mov or lea that writes memory or a volatile register other
- *               than r10, executed as is, or one of two RIP-relative forms
- *               made absolute. rsp, r10, the flags and the nonvolatile
- *               registers stay as the caller left them, and [rsp] stays the
- *               caller's return address.
+ *   Copy        a mov or lea that writes memory or a volatile register,
+ *               executed as is, or one of two RIP-relative forms made
+ *               absolute. rsp, the flags and the nonvolatile registers stay
+ *               as the caller left them, and [rsp] stays the caller's return
+ *               address.
  *   StackAlloc  sub rsp, N becomes N/8 pushes of an address inside the
  *               origin; every pushed slot unwinds as one more leaf frame, so
  *               the chain still ends at the caller. The original leaves that
@@ -63,15 +63,15 @@ typedef UINT64 EPT_ORIGIN_ADDRESS;
  * The others leave through jmp qword ptr [rip+0], which writes no stack.
  *
  * A guarded origin pushes Target + Length with push qword ptr [rip+disp] and
- * jumps to the caller's permanent tail, which is entered with the continuation
- * at [rsp]. The tail may clobber r10 and the arithmetic flags: the hooked
- * function's entry leaves both undefined (Windows x64 ABI), the displaced
- * instruction never writes r10, and it writes the flags only as the stack
- * allocation of a prologue, whose flags nothing reads.
+ * jumps to the caller's tail, a VMCALL in a loaded image. VMX root completes
+ * it like a ret (RIP = [RSP], RSP += 8) and only then releases the entry
+ * admission (DispatchAtomicInlineGuardedTailVmcall), so no register or flag
+ * changes and the guest executes nothing after the release. A thread stopped
+ * on the VMCALL has the continuation at [rsp], which is a valid leaf unwind.
  *
  * Any other first instruction (control transfers, other RIP-relative operands,
- * other writes of rsp, of r10 or of a nonvolatile register, flag-writing
- * arithmetic, LOCK/REP) is rejected and the hook is not installed.
+ * other writes of rsp or of a nonvolatile register, flag-writing arithmetic,
+ * LOCK/REP) is rejected and the hook is not installed.
  */
 
 #define EPT_ORIGIN_KIND_COPY        1u
@@ -100,17 +100,16 @@ EptOriginReadInt32(const EPT_ORIGIN_BYTE * Bytes)
 }
 
 /*
- * Registers a copied first instruction may write: volatile ones other than
- * r10. Writing rsp would break the leaf unwind, r10 belongs to the guarded
- * tail, and writing a nonvolatile register before the prologue saves it
- * would lose the caller's value. Index 4..7 of a byte form without REX is
- * AH..BH; rejecting those is only conservative.
+ * Registers a copied first instruction may write: the volatile ones. Writing
+ * rsp would break the leaf unwind, and writing a nonvolatile register before
+ * the prologue saves it would lose the caller's value. Index 4..7 of a byte
+ * form without REX is AH..BH; rejecting those is only conservative.
  */
 static __inline int
 EptOriginCopyMayWrite(EPT_ORIGIN_SIZE Register)
 {
     return Register == 0 || Register == 1 || Register == 2 || Register == 8 || Register == 9 ||
-           Register == EPT_ORIGIN_REGISTER_R11;
+           Register == EPT_ORIGIN_REGISTER_R10 || Register == EPT_ORIGIN_REGISTER_R11;
 }
 
 /*
@@ -233,12 +232,12 @@ EptHookAtomicClassifyFirstInstruction(const EPT_ORIGIN_BYTE * Bytes,
     }
     Op = Bytes[Offset++];
 
-    /* push r64 */
+    /* push r64; the replay below keeps the continuation in r11 */
     if (Op >= 0x50 && Op <= 0x57)
     {
         EPT_ORIGIN_SIZE Register = (EPT_ORIGIN_SIZE)(Op & 7u) | ((Rex & 1u) ? 8u : 0u);
         if (Legacy || Offset != Length || Register == EPT_ORIGIN_REGISTER_RSP ||
-            Register == EPT_ORIGIN_REGISTER_R10 || Register == EPT_ORIGIN_REGISTER_R11)
+            Register == EPT_ORIGIN_REGISTER_R11)
         {
             return 0;
         }
