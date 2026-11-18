@@ -1169,9 +1169,22 @@ DispatchEventException(VIRTUAL_MACHINE_STATE * VCpu)
         // Check if we're waiting for an NMI on this core and if the guest is NOT in
         // a instrument step-in ('i' command) routine
         //
-        if (!VCpu->InstrumentationStepInMtf &&
-            VmxBroadcastNmiHandler(VCpu, FALSE))
+        if (!VCpu->InstrumentationStepInMtf)
         {
+            if (VmxBroadcastNmiHandler(VCpu, FALSE))
+            {
+                return;
+            }
+        }
+        else if (CpuInterlockedExchange(&VCpu->NmiIpiPending, 0) != 0)
+        {
+            //
+            // [DOWNSTREAM] 单步期间与上游一样不执行广播动作，但本 VMM 自己发出的 NMI 仍在这里消费：
+            // 不能当作 guest NMI 挂起后注入（Windows 对无人认领的 NMI 以 0x80 停机），NmiIpiPending
+            // 也不能留着把下一个 guest NMI 当作内部 NMI 吞掉。未执行的广播动作留在
+            // NmiBroadcastAction，由下一次内部 NMI 处理。
+            //
+            (VOID)CpuInterlockedExchange(&VCpu->HiddenCoherenceKick, 0);
             return;
         }
     }

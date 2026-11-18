@@ -343,6 +343,9 @@ typedef struct _VIRTUAL_MACHINE_STATE
     BOOLEAN          GuestExecutionStepPending;
     // [DOWNSTREAM] 属于 guest 的 NMI 已到达、尚未注入；由 VM-exit 收尾在可投递时注入一次。
     volatile BOOLEAN GuestNmiPending;
+    // [DOWNSTREAM] 本 VMM 注入的 NMI 打断的是 RFLAGS.IF=1 的位置，guest 尚未回到 IF=1 的指令边界：
+    // 视为仍在其 NMI 处理程序内（软件跟踪的 NMI 阻塞，见 IdtEmulationInjectPendingNmi）。
+    BOOLEAN          GuestNmiSoftBlocked;
     volatile LONG    HiddenCoherenceKick;
     volatile LONG    NmiIpiPending;
     UINT32 NmiApicId;

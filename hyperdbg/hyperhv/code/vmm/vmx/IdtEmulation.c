@@ -426,12 +426,10 @@ IdtEmulationHandleExceptionAndNmi(_Inout_ VIRTUAL_MACHINE_STATE *   VCpu,
     case EXCEPTION_VECTOR_NMI:
 
         //
-        // [DOWNSTREAM] 这个 NMI 属于 guest。MTF 单步或调试器暂停窗口关闭外部中断时不再丢弃：
-        // 先挂起，由 IdtEmulationInjectPendingNmi 注入一次——现在可投递就在本次注入，
-        // 否则在第一个可投递的 VM-exit 收尾时注入。
+        // [DOWNSTREAM] 这个 NMI 属于 guest。只挂起，由 VM-exit 收尾的 IdtEmulationInjectPendingNmi
+        // 注入一次：收尾里的 coherence 安全点与执行观察者还可能置 MTF，在这里注入会与 MTF 同行。
         //
         VCpu->GuestNmiPending = TRUE;
-        IdtEmulationInjectPendingNmi(VCpu);
 
         break;
 
@@ -600,15 +598,27 @@ IdtEmulationHandleNmiWindowExiting(_Inout_ VIRTUAL_MACHINE_STATE * VCpu)
 }
 
 /**
- * @brief [DOWNSTREAM] 本次 VM entry 能投递时，注入挂起的 guest NMI
- * @details 以下情况继续挂起：
- *  - MTF 单步或调试器暂停窗口关闭了外部中断，或 MTF 因其他原因已置位：带 MTF 注入向量
- *    事件时，MTF VM-exit 落在 guest NMI 处理程序第一条指令之前，单步的使用者会看到错误的
- *    指令；
- *  - 本次 VM entry 已有别的事件要注入；
- *  - guest 屏蔽 NMI（STI 或 MOV-SS 阴影，或正在其 NMI 处理程序内）。
- * guest NMI 到达时与每次 VM-exit 收尾时调用。未设置 "virtual NMIs"，不能用 NMI-window
- * exiting，被屏蔽的 NMI 等到之后的 VM-exit。
+ * @brief [DOWNSTREAM] VM-exit 收尾：本次 VM entry 能投递时注入挂起的 guest NMI，并跟踪 guest 的
+ * NMI 处理程序
+ * @details 本 VMM 开 "NMI exiting"、不开 "virtual NMIs"。此时 VM entry 注入 NMI 不改变 NMI 阻塞，
+ * guest 执行 IRET 也不解除阻塞（Intel SDM Vol.3C "Changes to Instruction Behavior in VMX Non-Root
+ * Operation" 的 IRET 条目；FRED 规范 346446-003 第 9.6 节复述 VM entry 注入 NMI 的既有处理）。
+ * 中断性状态第 3 位因此不说明 guest 是否仍在其 NMI 处理程序内，这里不用它，改为软件跟踪：
+ * NMI 经中断门投递，处理程序以 IF=0 运行，IRET 恢复被打断处的 RFLAGS。注入时被打断处 IF=1，
+ * 则在 guest 第一次回到 IF=1 且无 STI/MOV-SS 阴影的指令边界之前视为仍在处理程序内，用
+ * interrupt-window exiting 在该边界取得 VM-exit。被打断处 IF=0 时返回后仍是 IF=0，无法据此判定
+ * 返回，不跟踪；处理程序自己置 IF=1 时跟踪提前结束。这两种情况期间再到的 NMI 立即注入，与修改前
+ * 相同。
+ *
+ * 挂起的 NMI 在以下情况继续挂起：
+ *  - MTF 单步或调试器暂停窗口关闭了外部中断，或 MTF 已置位：带 MTF 注入向量事件时，MTF
+ *    VM-exit 落在 guest NMI 处理程序第一条指令之前，单步的使用者会看到错误的指令。由关闭窗口
+ *    或消费 MTF 的那次 VM-exit 收尾注入；
+ *  - 本次 VM entry 已排入别的事件；
+ *  - STI 或 MOV-SS 阴影；
+ *  - guest 仍在本 VMM 注入的上一个 NMI 的处理程序内。
+ * 后三种置 interrupt-window exiting，在下一个 IF=1 且无阴影的边界取得 VM-exit。未设置
+ * "virtual NMIs"，不能用 NMI-window exiting。VMREAD 的内存输出宽度是宿主自然字长，一律读入 UINT64。
  *
  * @param VCpu The virtual processor's state
  * @return BOOLEAN TRUE if the NMI was injected
@@ -616,42 +626,69 @@ IdtEmulationHandleNmiWindowExiting(_Inout_ VIRTUAL_MACHINE_STATE * VCpu)
 BOOLEAN
 IdtEmulationInjectPendingNmi(_Inout_ VIRTUAL_MACHINE_STATE * VCpu)
 {
-    UINT32                     ProcBasedControls = 0;
-    UINT32                     EntryInterruption = 0;
-    VMX_INTERRUPTIBILITY_STATE Interruptibility  = {0};
+    UINT64  Rflags            = 0;
+    UINT64  Interruptibility  = 0;
+    UINT64  EntryInterruption = 0;
+    UINT64  ProcBasedControls = 0;
+    BOOLEAN Shadow;
+    BOOLEAN EntryQueued;
+    BOOLEAN Injected = FALSE;
 
-    if (!VCpu->GuestNmiPending ||
-        VCpu->EnableExternalInterruptsOnContinue ||
-        VCpu->EnableExternalInterruptsOnContinueMtf ||
-        VCpu->InstrumentationStepInMtf)
+    if (!VCpu->GuestNmiPending && !VCpu->GuestNmiSoftBlocked)
     {
         return FALSE;
     }
 
-    VmxVmread32P(VMCS_CTRL_PROCESSOR_BASED_VM_EXECUTION_CONTROLS, &ProcBasedControls);
-    if (ProcBasedControls & IA32_VMX_PROCBASED_CTLS_MONITOR_TRAP_FLAG_FLAG)
-    {
-        return FALSE;
-    }
+    VmxVmread64P(VMCS_GUEST_RFLAGS, &Rflags);
+    VmxVmread64P(VMCS_GUEST_INTERRUPTIBILITY_STATE, &Interruptibility);
+    VmxVmread64P(VMCS_CTRL_VMENTRY_INTERRUPTION_INFORMATION_FIELD, &EntryInterruption);
+    VmxVmread64P(VMCS_CTRL_PROCESSOR_BASED_VM_EXECUTION_CONTROLS, &ProcBasedControls);
+
+    Shadow = (Interruptibility & (GUEST_INTR_STATE_STI | GUEST_INTR_STATE_MOV_SS)) != 0;
 
     //
     // 第 31 位是 valid 位；VM-exit 会清除它，置位说明本次退出已排入别的事件
     //
-    VmxVmread32P(VMCS_CTRL_VMENTRY_INTERRUPTION_INFORMATION_FIELD, &EntryInterruption);
-    if (EntryInterruption & (1u << 31))
+    EntryQueued = (EntryInterruption & (1ull << 31)) != 0;
+
+    //
+    // 回到 IF=1 且无阴影的边界：处理程序已返回。排入的是 NMI 时（EventRestoreAfterEptViolation
+    // 重新投递被 EPT 退出打断的同一个 NMI），RFLAGS 仍是被打断处的值，不据此判定。
+    //
+    if (VCpu->GuestNmiSoftBlocked && (Rflags & X86_FLAGS_IF) != 0 && !Shadow &&
+        !(EntryQueued && ((EntryInterruption >> 8) & 7) == INTERRUPT_TYPE_NMI))
+    {
+        VCpu->GuestNmiSoftBlocked = FALSE;
+    }
+
+    if (VCpu->EnableExternalInterruptsOnContinue ||
+        VCpu->EnableExternalInterruptsOnContinueMtf ||
+        VCpu->InstrumentationStepInMtf ||
+        (ProcBasedControls & IA32_VMX_PROCBASED_CTLS_MONITOR_TRAP_FLAG_FLAG) != 0)
     {
         return FALSE;
     }
 
-    VmxVmread32P(VMCS_GUEST_INTERRUPTIBILITY_STATE, &Interruptibility.AsUInt);
-    if (Interruptibility.BlockingBySti || Interruptibility.BlockingByMovSs || Interruptibility.BlockingByNmi)
+    if (VCpu->GuestNmiPending && !EntryQueued && !Shadow && !VCpu->GuestNmiSoftBlocked)
     {
-        return FALSE;
+        VCpu->GuestNmiPending     = FALSE;
+        VCpu->GuestNmiSoftBlocked = (Rflags & X86_FLAGS_IF) != 0;
+        EventInjectNmi(VCpu);
+        Injected = TRUE;
     }
 
-    VCpu->GuestNmiPending = FALSE;
-    EventInjectNmi(VCpu);
-    return TRUE;
+    //
+    // 窗口关闭时 HvDisableExternalInterruptsAndInterruptWindow 清掉了这一位，之后只为挂起的外部
+    // 中断恢复，所以每次收尾按需重新置位；没有挂起的外部中断时由 interrupt-window 处理清除。
+    //
+    if ((VCpu->GuestNmiPending || VCpu->GuestNmiSoftBlocked) &&
+        (ProcBasedControls & IA32_VMX_PROCBASED_CTLS_INTERRUPT_WINDOW_EXITING_FLAG) == 0)
+    {
+        VmxVmwrite64(VMCS_CTRL_PROCESSOR_BASED_VM_EXECUTION_CONTROLS,
+                     ProcBasedControls | IA32_VMX_PROCBASED_CTLS_INTERRUPT_WINDOW_EXITING_FLAG);
+    }
+
+    return Injected;
 }
 
 /**

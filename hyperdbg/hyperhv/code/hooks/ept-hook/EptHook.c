@@ -264,8 +264,9 @@ EptHookQuerySplitDemandV1(PVOID TargetAddress, UINT32 ProcessId,
     // MBEC setup mutates PML2 permission bitfields from guest context. It is
     // not part of this opt-in monitor contract; reject that mode instead of
     // claiming that a snapshot serializes those independent writers.
-    PhysicalPage = VirtualAddressToPhysicalAddressByProcessCr3(
-        PAGE_ALIGN(TargetAddress), LayoutGetCr3ByProcessId(ProcessId));
+    // [DOWNSTREAM] 按 PID 翻译在装载目录表基址期间持有进程引用，查不到进程时返回 0。
+    // LayoutGetCr3ByProcessId 返回前已释放引用，查不到时返回 0，交给按 CR3 翻译会装载 CR3 0。
+    PhysicalPage = VirtualAddressToPhysicalAddressByProcessId(PAGE_ALIGN(TargetAddress), ProcessId);
     if (PhysicalPage == 0 || PhysicalPage >= SIZE_512_GB) { return FALSE; }
     ProcessorsCount = PlatformCpuGetActiveProcessorCount();
     if (!EptCountRequiredSplits(PhysicalPage, ProcessorsCount,
