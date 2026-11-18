@@ -21,3 +21,7 @@
 SYM_FUNC_START(AsmGeneralDetourHook)
 	ret			/* TODO(Linux): port from AsmHooks.asm */
 SYM_FUNC_END(AsmGeneralDetourHook)
+
+SYM_FUNC_START(AsmEptHookUnwindSkip8Body)
+	ret			/* TODO(Linux): unwind-only address on Windows, never executed */
+SYM_FUNC_END(AsmEptHookUnwindSkip8Body)

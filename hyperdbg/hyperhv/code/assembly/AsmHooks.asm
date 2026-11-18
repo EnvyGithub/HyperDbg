@@ -1,4 +1,5 @@
 PUBLIC AsmGeneralDetourHook
+PUBLIC AsmEptHookUnwindSkip8Body
 EXTERN EptHook2GeneralDetourEventHandler:PROC
 
 .code _text
@@ -56,5 +57,23 @@ RestoreTheRegisters:
     ret ; jump back to the trampoline
     
 AsmGeneralDetourHook ENDP 
+
+;------------------------------------------------------------------------
+
+; [DOWNSTREAM] Unwind-only frame for atomic EPT hook origins
+; (EptHookAtomicOrigin.h); never executed. Its body address, pushed as a
+; return address, makes RtlVirtualUnwind skip the 8-byte slot above it and
+; take the next slot as the return address. The body starts one byte past the
+; prolog, so unwinders that look up the return address minus one apply the
+; same allocation.
+
+AsmEptHookUnwindSkip8 PROC FRAME
+    sub rsp, 8
+    .allocstack 8
+    .endprolog
+    nop
+AsmEptHookUnwindSkip8Body LABEL NEAR
+    int 3
+AsmEptHookUnwindSkip8 ENDP
 
 END

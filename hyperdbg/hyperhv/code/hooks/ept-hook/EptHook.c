@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "../../../header/hooks/HiddenBreakpointIdentity.h"
 #include "../../../header/hooks/EptPoolReservation.h"
+#include "../../../header/hooks/EptHookAtomicOrigin.h"
 
 static BOOLEAN EptCoherenceControlBegin(EPT_HOOKED_PAGE_DETAIL *Page);
 static BOOLEAN EptCoherenceControlEnd(VOID);
@@ -1100,75 +1101,9 @@ EptHookApplyExactCallPatch(_Inout_ EPT_HOOKED_PAGE_DETAIL * HookedPage)
     return TRUE;
 }
 
-// A guarded origin releases admission in its permanent tail stub. Reject a
-// copied control transfer that could leave the trampoline without reaching it.
-static BOOLEAN
-EptHookAtomicInstructionReachesTail(_In_reads_bytes_(Length) const UCHAR * Bytes,
-                                    _In_ UINT32 Length)
-{
-    UINT32 Offset = 0;
-    UCHAR Op;
-
-    while (Offset < Length)
-    {
-        UCHAR Prefix = Bytes[Offset];
-        if ((Prefix >= 0x40 && Prefix <= 0x4F) || Prefix == 0x66 ||
-            Prefix == 0x67 || Prefix == 0xF0 || Prefix == 0xF2 ||
-            Prefix == 0xF3 || Prefix == 0x2E || Prefix == 0x36 ||
-            Prefix == 0x3E || Prefix == 0x26 || Prefix == 0x64 ||
-            Prefix == 0x65)
-        {
-            Offset++;
-            continue;
-        }
-        break;
-    }
-    if (Offset == Length)
-    {
-        return FALSE;
-    }
-    Op = Bytes[Offset];
-    if (Op == 0x9A || Op == 0xC2 || Op == 0xC3 || Op == 0xCA ||
-        Op == 0xCB || Op == 0xCC || Op == 0xCD || Op == 0xCE ||
-        Op == 0xCF || Op == 0xE8 || Op == 0xE9 || Op == 0xEA ||
-        Op == 0xEB || Op == 0xF1 || Op == 0xF4 ||
-        (Op >= 0x70 && Op <= 0x7F) || (Op >= 0xE0 && Op <= 0xE3))
-    {
-        return FALSE;
-    }
-    if (Op == 0xFF && Offset + 1 < Length)
-    {
-        UCHAR Reg = (Bytes[Offset + 1] >> 3) & 7u;
-        if (Reg == 2u)
-        {
-            // These are the only calls relocated by the trampoline builder.
-            // A normal return reaches the guarded tail. An exceptional or
-            // non-returning call retains admission and blocks retirement.
-            return (Length == 6 && Offset == 0 && Bytes[1] == 0x15) ||
-                   (Length == 7 && Offset == 1 && Bytes[0] == 0x48 &&
-                    Bytes[2] == 0x15);
-        }
-        if (Reg >= 3u && Reg <= 5u)
-        {
-            return FALSE;
-        }
-    }
-    if (Op == 0x0F && Offset + 1 < Length)
-    {
-        UCHAR Next = Bytes[Offset + 1];
-        if ((Next >= 0x80 && Next <= 0x8F) || Next == 0x01 ||
-            Next == 0x05 || Next == 0x07 || Next == 0x0B ||
-            Next == 0x34 || Next == 0x35)
-        {
-            return FALSE;
-        }
-    }
-    return TRUE;
-}
-
 /**
- * @brief [DOWNSTREAM] Copy stolen instructions into an executable trampoline
- *        and relocate common RIP-relative forms used by ntoskrnl/win32k wrappers.
+ * @brief [DOWNSTREAM] Copy stolen instructions into a legacy detour trampoline
+ *        and relocate the RIP-relative forms of EptOriginRelocateInstruction.
  *
  * @param TrampolineBuffer Destination executable trampoline.
  * @param HookedInstructions Raw bytes read from the original target.
@@ -1182,20 +1117,15 @@ EptHookCopyInstructionsToTrampoline(PCHAR    TrampolineBuffer,
                                     PCHAR    HookedInstructions,
                                     SIZE_T   TargetAddress,
                                     SIZE_T   SizeOfHookedInstructions,
-                                    SIZE_T * TrampolineSize,
-                                    BOOLEAN  Guarded)
+                                    SIZE_T * TrampolineSize)
 {
-    SIZE_T ReadOffset;
-    SIZE_T WriteOffset;
-    SIZE_T TailSize = Guarded ? EPT_HOOK_ATOMIC_GUARDED_TAIL_SIZE
-                              : EPT_HOOK_ABSOLUTE_JUMP2_SIZE;
-
-    ReadOffset  = 0;
-    WriteOffset = 0;
+    SIZE_T ReadOffset  = 0;
+    SIZE_T WriteOffset = 0;
 
     while (ReadOffset < SizeOfHookedInstructions)
     {
         UINT32 InstructionLength;
+        UINT32 Written;
         PCHAR  Instruction;
 
         Instruction       = HookedInstructions + ReadOffset;
@@ -1205,93 +1135,19 @@ EptHookCopyInstructionsToTrampoline(PCHAR    TrampolineBuffer,
         {
             return FALSE;
         }
-        if (Guarded && !EptHookAtomicInstructionReachesTail(
-                           (const UCHAR *)Instruction, InstructionLength))
+
+        Written = EptOriginRelocateInstruction(
+            (EPT_ORIGIN_BYTE *)TrampolineBuffer + WriteOffset,
+            (EPT_ORIGIN_SIZE)(MAX_EXEC_TRAMPOLINE_SIZE - EPT_HOOK_ABSOLUTE_JUMP2_SIZE - WriteOffset),
+            (const EPT_ORIGIN_BYTE *)Instruction,
+            InstructionLength,
+            (EPT_ORIGIN_ADDRESS)TargetAddress + ReadOffset);
+        if (Written == 0)
         {
             return FALSE;
         }
 
-        //
-        // mov rax, qword ptr [rip + disp32]
-        //
-        // HyperDbg's trampoline pool is not guaranteed to be within +/-2GB of
-        // ntoskrnl, so preserving the original disp32 can point at unmapped pool
-        // memory. Expand this common 7-byte form to:
-        //
-        //   mov rax, absolute_address
-        //   mov rax, qword ptr [rax]
-        //
-        if (InstructionLength == 7 &&
-            (UCHAR)Instruction[0] == 0x48 &&
-            (UCHAR)Instruction[1] == 0x8B &&
-            (UCHAR)Instruction[2] == 0x05)
-        {
-            INT32  RipDisplacement;
-            UINT64 AbsoluteAddress;
-
-            if (WriteOffset + 13 + TailSize > MAX_EXEC_TRAMPOLINE_SIZE)
-            {
-                return FALSE;
-            }
-
-            RipDisplacement = *((PINT32)&Instruction[3]);
-            AbsoluteAddress = (UINT64)TargetAddress + ReadOffset + InstructionLength + RipDisplacement;
-
-            TrampolineBuffer[WriteOffset + 0] = 0x48;
-            TrampolineBuffer[WriteOffset + 1] = 0xB8;
-            *((PUINT64)&TrampolineBuffer[WriteOffset + 2]) = AbsoluteAddress;
-            TrampolineBuffer[WriteOffset + 10]             = 0x48;
-            TrampolineBuffer[WriteOffset + 11]             = 0x8B;
-            TrampolineBuffer[WriteOffset + 12]             = 0x00;
-            WriteOffset += 13;
-        }
-        //
-        // call qword ptr [rip + disp32]
-        //
-        // Some win32k syscall wrappers call a session-global guard through a
-        // RIP-relative indirect call in the first bytes. Relocate it through
-        // R11 so the trampoline can live outside +/-2GB of win32k.
-        //
-        else if (((InstructionLength == 7 &&
-                   (UCHAR)Instruction[0] == 0x48 &&
-                   (UCHAR)Instruction[1] == 0xFF &&
-                   (UCHAR)Instruction[2] == 0x15) ||
-                  (InstructionLength == 6 &&
-                   (UCHAR)Instruction[0] == 0xFF &&
-                   (UCHAR)Instruction[1] == 0x15)))
-        {
-            INT32  RipDisplacement;
-            UINT64 AbsoluteAddress;
-            UINT32 DisplacementOffset;
-
-            if (WriteOffset + 13 + TailSize > MAX_EXEC_TRAMPOLINE_SIZE)
-            {
-                return FALSE;
-            }
-
-            DisplacementOffset = InstructionLength == 7 ? 3 : 2;
-            RipDisplacement    = *((PINT32)&Instruction[DisplacementOffset]);
-            AbsoluteAddress    = (UINT64)TargetAddress + ReadOffset + InstructionLength + RipDisplacement;
-
-            TrampolineBuffer[WriteOffset + 0] = 0x49;
-            TrampolineBuffer[WriteOffset + 1] = 0xBB;
-            *((PUINT64)&TrampolineBuffer[WriteOffset + 2]) = AbsoluteAddress;
-            TrampolineBuffer[WriteOffset + 10]             = 0x41;
-            TrampolineBuffer[WriteOffset + 11]             = 0xFF;
-            TrampolineBuffer[WriteOffset + 12]             = 0x13;
-            WriteOffset += 13;
-        }
-        else
-        {
-            if (WriteOffset + InstructionLength + TailSize > MAX_EXEC_TRAMPOLINE_SIZE)
-            {
-                return FALSE;
-            }
-
-            RtlCopyMemory(TrampolineBuffer + WriteOffset, Instruction, InstructionLength);
-            WriteOffset += InstructionLength;
-        }
-
+        WriteOffset += Written;
         ReadOffset += InstructionLength;
     }
 
@@ -1321,7 +1177,8 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
     PHIDDEN_HOOKS_DETOUR_DETAILS DetourHookDetails;
     SIZE_T                       SizeOfHookedInstructions;
     SIZE_T                       SizeOfTrampolineInstructions;
-    SIZE_T                       SizeOfGuardedInstructions = 0;
+    SIZE_T                       MinimumDisplacedSize;
+    EPT_ORIGIN_SIZE              OriginSize;
     SIZE_T                       OffsetIntoPage;
     CR3_TYPE                     Cr3OfCurrentProcess;
     PCHAR                        GuardedTrampoline = NULL;
@@ -1347,8 +1204,12 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
     // Determine the number of instructions necessary to overwrite using Length Disassembler Engine
     // EPTHOOK2 only supports 64-bit kernel (32-bit LDE is not supported)
     //
+    // [DOWNSTREAM] The atomic entry patches one INT3, so its origins displace
+    // only the instruction under it (EptHookAtomicOrigin.h).
+    //
+    MinimumDisplacedSize = AtomicDetails != NULL ? 1 : 19;
     for (SizeOfHookedInstructions = 0;
-         SizeOfHookedInstructions < 19;)
+         SizeOfHookedInstructions < MinimumDisplacedSize;)
     {
         UINT32 Length = DisassemblerLengthDisassembleEngineInVmxRootOnTargetProcess(
             (PVOID)((UINT64)TargetFunctionInSafeMemory + SizeOfHookedInstructions),
@@ -1408,26 +1269,15 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
         return FALSE;
     }
 
-    if (!EptHookCopyInstructionsToTrampoline(Hook->Trampoline,
-                                             HookedInstructions,
-                                             (SIZE_T)TargetFunction,
-                                             SizeOfHookedInstructions,
-                                             &SizeOfTrampolineInstructions,
-                                             FALSE))
-    {
-        PoolManagerCallbackFreePool((UINT64)Hook->Trampoline);
-        Hook->Trampoline = PreviousTrampoline;
-        LogError("Err, could not relocate trampoline instructions");
-        return FALSE;
-    }
-
-    //
-    // Add the absolute jump back to the original function
-    //
-    EptHookWriteAbsoluteJump2(&Hook->Trampoline[SizeOfTrampolineInstructions], (SIZE_T)TargetFunction + SizeOfHookedInstructions);
-
     if (AtomicDetails != NULL)
     {
+        //
+        // [DOWNSTREAM] Both origins keep every instruction boundary unwindable
+        // to the caller (EptHookAtomicOrigin.h). The guarded origin pushes the
+        // continuation while it is still admitted, then enters the caller's
+        // permanent tail; that tail's ret consumes the continuation after the
+        // release, so nothing here executes after the reference drops.
+        //
         GuardedTrampoline = (PCHAR)PoolManagerCallbackRequestPool(
             EXEC_TRAMPOLINE, TRUE, MAX_EXEC_TRAMPOLINE_SIZE);
         if (GuardedTrampoline == NULL)
@@ -1436,30 +1286,49 @@ EptHookInstructionMemory(PEPT_HOOKED_PAGE_DETAIL Hook,
             Hook->Trampoline = PreviousTrampoline;
             return FALSE;
         }
-        if (!EptHookCopyInstructionsToTrampoline(
-                GuardedTrampoline,
-                HookedInstructions,
-                (SIZE_T)TargetFunction,
-                SizeOfHookedInstructions,
-                &SizeOfGuardedInstructions,
-                TRUE) ||
-            SizeOfGuardedInstructions != SizeOfTrampolineInstructions)
+        if (!EptHookAtomicBuildOrigin((EPT_ORIGIN_BYTE *)Hook->Trampoline,
+                                      MAX_EXEC_TRAMPOLINE_SIZE,
+                                      (const EPT_ORIGIN_BYTE *)HookedInstructions,
+                                      (EPT_ORIGIN_SIZE)SizeOfHookedInstructions,
+                                      (EPT_ORIGIN_ADDRESS)TargetFunction,
+                                      (EPT_ORIGIN_ADDRESS)AsmEptHookUnwindSkip8Body,
+                                      0,
+                                      &OriginSize) ||
+            !EptHookAtomicBuildOrigin((EPT_ORIGIN_BYTE *)GuardedTrampoline,
+                                      MAX_EXEC_TRAMPOLINE_SIZE,
+                                      (const EPT_ORIGIN_BYTE *)HookedInstructions,
+                                      (EPT_ORIGIN_SIZE)SizeOfHookedInstructions,
+                                      (EPT_ORIGIN_ADDRESS)TargetFunction,
+                                      (EPT_ORIGIN_ADDRESS)AsmEptHookUnwindSkip8Body,
+                                      (EPT_ORIGIN_ADDRESS)AtomicDetails->GuardedTailTarget,
+                                      &OriginSize))
         {
             PoolManagerCallbackFreePool((UINT64)GuardedTrampoline);
             PoolManagerCallbackFreePool((UINT64)Hook->Trampoline);
             Hook->Trampoline = PreviousTrampoline;
+            LogError("Err, the first instruction at %llx cannot be displaced by an atomic hook",
+                     (UINT64)TargetFunction);
             return FALSE;
         }
-        // Push the continuation while this trampoline is still admitted, then
-        // enter the caller's permanent stub; its ret consumes that address
-        // after the release. Nothing here executes after the reference drops.
-        EptHookWriteAbsoluteJump2(
-            &GuardedTrampoline[SizeOfTrampolineInstructions],
-            (SIZE_T)TargetFunction + SizeOfHookedInstructions);
-        EptHookWriteAbsoluteJump2(
-            &GuardedTrampoline[SizeOfTrampolineInstructions +
-                               EPT_HOOK_ABSOLUTE_JUMP2_SIZE - 1],
-            (SIZE_T)AtomicDetails->GuardedTailTarget);
+    }
+    else
+    {
+        if (!EptHookCopyInstructionsToTrampoline(Hook->Trampoline,
+                                                 HookedInstructions,
+                                                 (SIZE_T)TargetFunction,
+                                                 SizeOfHookedInstructions,
+                                                 &SizeOfTrampolineInstructions))
+        {
+            PoolManagerCallbackFreePool((UINT64)Hook->Trampoline);
+            Hook->Trampoline = PreviousTrampoline;
+            LogError("Err, could not relocate trampoline instructions");
+            return FALSE;
+        }
+
+        //
+        // Add the absolute jump back to the original function
+        //
+        EptHookWriteAbsoluteJump2(&Hook->Trampoline[SizeOfTrampolineInstructions], (SIZE_T)TargetFunction + SizeOfHookedInstructions);
     }
 
     //

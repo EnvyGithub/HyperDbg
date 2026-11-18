@@ -115,15 +115,11 @@ PVOID(*ExAllocatePoolWithTagOrig)
 #define MAX_EXEC_TRAMPOLINE_SIZE 100
 
 /**
- * @brief [DOWNSTREAM] Trampoline tail lengths written after copied instructions
- *
- * A plain trampoline ends with one EptHookWriteAbsoluteJump2. A guarded origin
- * first pushes the continuation, then enters the caller's permanent tail stub
- * through a second absolute jump (ADR 0086).
+ * @brief [DOWNSTREAM] Length of the EptHookWriteAbsoluteJump2 that ends a
+ *        legacy detour trampoline. Atomic origins are laid out by
+ *        EptHookAtomicOrigin.h.
  */
-#define EPT_HOOK_ABSOLUTE_JUMP2_SIZE  14
-#define EPT_HOOK_ATOMIC_GUARDED_TAIL_SIZE \
-    ((EPT_HOOK_ABSOLUTE_JUMP2_SIZE - 1) + EPT_HOOK_ABSOLUTE_JUMP2_SIZE)
+#define EPT_HOOK_ABSOLUTE_JUMP2_SIZE 14
 
 // ----------------------------------------------------------------------
 

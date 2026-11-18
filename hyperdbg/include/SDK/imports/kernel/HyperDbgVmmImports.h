@@ -478,7 +478,11 @@ ConfigureEptHook2(UINT32 CoreId,
 // primary handlers holding their own rundown; GuardedOrigin is for an entry
 // that still holds the VM-exit admission. Its tail pushes the continuation and
 // jumps to GuardedTailTarget, which the caller keeps executable forever and
-// which releases that admission before ret (ADR 0086).
+// which releases that admission before ret (ADR 0086). GuardedTailTarget is
+// entered with the continuation at [rsp] and may clobber r10 and the
+// arithmetic flags; it must not move rsp, so that every instruction boundary
+// still unwinds to the hooked function's caller. Installation fails for a
+// first instruction the origins cannot replay that way (EptHookAtomicOrigin.h).
 IMPORT_EXPORT_VMM VMM_ATOMIC_INLINE_INSTALL_STATUS
 ConfigureEptHook2Atomic(UINT32 CoreId,
                         PVOID  TargetAddress,

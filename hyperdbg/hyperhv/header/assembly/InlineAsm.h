@@ -308,6 +308,14 @@ AsmReadSsp();
 extern VOID
     AsmGeneralDetourHook(VOID);
 
+/**
+ * @brief [DOWNSTREAM] Unwind-only return address used by atomic EPT hook
+ * origins; never executed (EptHookAtomicOrigin.h)
+ *
+ */
+extern VOID
+AsmEptHookUnwindSkip8Body(VOID);
+
 //
 // ====================  Kernel Test Functions ====================
 // File : AsmKernelSideTests.asm
