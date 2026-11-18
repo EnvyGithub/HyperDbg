@@ -424,6 +424,9 @@ BOOLEAN
 EptHookReserveDemandChecked(UINT32 Count, UINT32 SplitCount);
 
 BOOLEAN
+EptHookReserveHookDemandChecked(UINT32 PageCount, UINT32 InlineHookCount, UINT32 SplitCount);
+
+BOOLEAN
 EptHookQuerySplitDemandV1(PVOID TargetAddress, UINT32 ProcessId,
                           VMM_EPT_SPLIT_DEMAND_V1 *Demand);
 

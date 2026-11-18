@@ -514,6 +514,18 @@ ConfigureEptHookQuerySplitDemandV1(PVOID TargetAddress, UINT32 ProcessId,
 IMPORT_EXPORT_VMM BOOLEAN
 ConfigureEptHookReserveDemandChecked(UINT32 HookCount, UINT32 SplitCount);
 
+// [DOWNSTREAM] Reserve exactly what one installation takes, by category:
+// PageCount tracking entries (a page not hooked yet), InlineHookCount detour
+// records and twice as many trampolines (atomic inline hooks), and SplitCount
+// splits (RequiredSplits of the page's demand query). An inline hook joining
+// an already hooked page passes PageCount 0 and SplitCount 0; an exact-call
+// hook passes InlineHookCount 0. Reservations add to the pool and entries not
+// taken stay until VMM stop, so callers reserve only what they will take.
+// FALSE means at least one queue request failed.
+IMPORT_EXPORT_VMM BOOLEAN
+ConfigureEptHookReserveHookDemandChecked(UINT32 PageCount, UINT32 InlineHookCount,
+                                         UINT32 SplitCount);
+
 IMPORT_EXPORT_VMM VMM_ATOMIC_INLINE_INSTALL_STATUS
 ConfigureEptHook2AtomicDemandV1(UINT32 CoreId, PVOID TargetAddress,
                                UINT32 ProcessId, PVOID *PlainOrigin,

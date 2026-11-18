@@ -191,17 +191,30 @@ EptEnqueuePoolReservation(void *Context, size_t Size, EPT_POOL_COUNT Count, EPT_
         (POOL_ALLOCATION_INTENTION)Intention) ? 1 : 0;
 }
 
+/**
+ * @brief [DOWNSTREAM] Reserve pool entries by the category an installation takes
+ * @details A newly hooked page takes one tracking entry, each atomic inline
+ * hook one detour record and two trampolines, and each processor whose 2MB
+ * region is still large one split. An inline hook on an already hooked page
+ * passes PageCount 0; an exact-call hook passes InlineHookCount 0.
+ */
 BOOLEAN
-EptHookReserveDemandChecked(UINT32 Count, UINT32 SplitCount)
+EptHookReserveHookDemandChecked(UINT32 PageCount, UINT32 InlineHookCount, UINT32 SplitCount)
 {
     const EPT_POOL_RESERVATION_REQUEST Requests[] = {
         {sizeof(VMM_EPT_DYNAMIC_SPLIT), SplitCount, SPLIT_2MB_PAGING_TO_4KB_PAGE},
-        {sizeof(EPT_HOOKED_PAGE_DETAIL), Count, TRACKING_HOOKED_PAGES},
-        {MAX_EXEC_TRAMPOLINE_SIZE, Count * 2u, EXEC_TRAMPOLINE},
-        {sizeof(HIDDEN_HOOKS_DETOUR_DETAILS), Count, DETOUR_HOOK_DETAILS}
+        {sizeof(EPT_HOOKED_PAGE_DETAIL), PageCount, TRACKING_HOOKED_PAGES},
+        {MAX_EXEC_TRAMPOLINE_SIZE, InlineHookCount * 2u, EXEC_TRAMPOLINE},
+        {sizeof(HIDDEN_HOOKS_DETOUR_DETAILS), InlineHookCount, DETOUR_HOOK_DETAILS}
     };
     return EptQueuePoolReservationBatch(Requests, RTL_NUMBER_OF(Requests),
                                         EptEnqueuePoolReservation, NULL) ? TRUE : FALSE;
+}
+
+BOOLEAN
+EptHookReserveDemandChecked(UINT32 Count, UINT32 SplitCount)
+{
+    return EptHookReserveHookDemandChecked(Count, Count, SplitCount);
 }
 
 BOOLEAN

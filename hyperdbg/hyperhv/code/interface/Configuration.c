@@ -433,6 +433,13 @@ ConfigureEptHookReserveDemandChecked(UINT32 HookCount, UINT32 SplitCount)
     return EptHookReserveDemandChecked(HookCount, SplitCount);
 }
 
+BOOLEAN
+ConfigureEptHookReserveHookDemandChecked(UINT32 PageCount, UINT32 InlineHookCount,
+                                         UINT32 SplitCount)
+{
+    return EptHookReserveHookDemandChecked(PageCount, InlineHookCount, SplitCount);
+}
+
 VMM_ATOMIC_INLINE_INSTALL_STATUS
 ConfigureEptHook2AtomicDemandV1(UINT32 CoreId, PVOID TargetAddress,
                                UINT32 ProcessId, PVOID *PlainOrigin,
