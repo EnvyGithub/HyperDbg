@@ -19,25 +19,48 @@ AsmEnableVmxOperation ENDP
 
 ;------------------------------------------------------------------------
 
-AsmVmxVmcall PROC
+; [DOWNSTREAM] A thread can be suspended on any instruction of this routine
+; (NtGetContextThread then unwinds its kernel stack). Without unwind data the
+; frame is unwound as a leaf, and every boundary after the first push takes
+; RFLAGS or a saved register as the return address, so the call fails with
+; STATUS_UNSUCCESSFUL. The frame is described below. RFLAGS is saved last and
+; restored by a helper, so that the epilog is lea/pop/ret, which the unwinder
+; recognizes (popfq inside an epilog is not), and lea leaves the flags alone.
 
-    pushfq
+AsmVmxVmcall PROC FRAME
 
     push    r10
+    .pushreg r10
     push    r11
+    .pushreg r11
     push    r12
+    .pushreg r12
+    pushfq
+    .allocstack 8
+    .endprolog
     mov     r10, 48564653H          ; [HVFS]
     mov     r11, 564d43414c4cH      ; [VMCALL]
     mov     r12, 4e4f485950455256H  ; [NOHYPERV]
     vmcall                          ; VmxVmcallHandler(UINT64 VmcallNumber, UINT64 OptionalParam1, UINT64 OptionalParam2, UINT64 OptionalParam3)
+    call    AsmVmxVmcallRestoreFlags
+    lea     rsp, [rsp+8]
     pop     r12
     pop     r11
     pop     r10
-
-    popfq
     ret                             ; Return type is NTSTATUS and it's on RAX from the previous function, no need to change anything
 
 AsmVmxVmcall ENDP
+
+; Loads the RFLAGS that AsmVmxVmcall saved just above this helper's return address.
+AsmVmxVmcallRestoreFlags PROC FRAME
+
+    push    qword ptr [rsp+8]
+    .allocstack 8
+    .endprolog
+    popfq
+    ret
+
+AsmVmxVmcallRestoreFlags ENDP
 
 ;------------------------------------------------------------------------
 
