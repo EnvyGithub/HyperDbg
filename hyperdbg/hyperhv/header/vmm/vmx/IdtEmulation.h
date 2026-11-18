@@ -232,6 +232,9 @@ IdtEmulationHandleExternalInterrupt(_Inout_ VIRTUAL_MACHINE_STATE *   VCpu,
 VOID
 IdtEmulationHandleNmiWindowExiting(_Inout_ VIRTUAL_MACHINE_STATE * VCpu);
 
+BOOLEAN
+IdtEmulationInjectPendingNmi(_Inout_ VIRTUAL_MACHINE_STATE * VCpu);
+
 VOID
 IdtEmulationHandleInterruptWindowExiting(_Inout_ VIRTUAL_MACHINE_STATE * VCpu);
 

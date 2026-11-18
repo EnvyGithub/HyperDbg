@@ -379,6 +379,12 @@ VmxVmexitHandler(_Inout_ PGUEST_REGS GuestRegs)
     //
     EptCoherenceSafePoint(VCpu);
     if (!VCpu->VmxoffState.IsVmxoffExecuted) EventNotifyGuestExecution(VCpu);
+
+    //
+    // [DOWNSTREAM] 挂起的 guest NMI 在这里注入：放在可能再置 MTF 的 coherence 安全点与
+    // 执行观察之后，本次退出的其他注入也已确定。
+    //
+    if (!VCpu->VmxoffState.IsVmxoffExecuted) IdtEmulationInjectPendingNmi(VCpu);
     VCpu->IsOnVmxRootMode = FALSE;
 
     //

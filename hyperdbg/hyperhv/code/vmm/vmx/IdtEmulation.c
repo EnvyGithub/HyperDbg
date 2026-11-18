@@ -188,12 +188,10 @@ IdtEmulationPrepareHostIdt(_Inout_ VIRTUAL_MACHINE_STATE * VCpu)
 VOID
 IdtEmulationhandleHostInterrupt(_Inout_ INTERRUPT_TRAP_FRAME * IntrTrapFrame)
 {
-    UINT64                     PageFaultCr2;
-    ULONG                      CurrentCore;
-    BOOLEAN                    Interruptible;
-    VMX_INTERRUPTIBILITY_STATE InterruptibilityState = {0};
-    CurrentCore                                      = PlatformCpuGetCurrentProcessorNumber();
-    VIRTUAL_MACHINE_STATE * VCpu                     = &g_GuestState[CurrentCore];
+    UINT64                  PageFaultCr2;
+    ULONG                   CurrentCore;
+    CurrentCore                  = PlatformCpuGetCurrentProcessorNumber();
+    VIRTUAL_MACHINE_STATE * VCpu = &g_GuestState[CurrentCore];
 
     //
     // Store the latest exception vector
@@ -217,38 +215,12 @@ IdtEmulationhandleHostInterrupt(_Inout_ INTERRUPT_TRAP_FRAME * IntrTrapFrame)
         if (!VmxBroadcastHandleNmiCallback((PVOID)IntrTrapFrame, FALSE))
         {
             //
-            // We cannot just use the NMI Window Exiting here because
-            // in certain scenarios, VMRESUME with Error 0x7 will happen
-            // Which means that the layout of the VMCS is wrong
+            // [DOWNSTREAM] 为 guest 挂起这个 NMI，由当前 VM-exit 的收尾注入
+            // （IdtEmulationInjectPendingNmi）。在这里直接注入，可能被被打断的退出处理随后
+            // 注入的事件覆盖，也可能落进 MTF 单步。NMI-window exiting 需要 "virtual NMIs"
+            // 控制位，本 VMM 未设置，单独使用会使 VM entry 以 0x7（控制字段无效）失败。
             //
-            // For the future reference, I think using NMI Windows Exiting
-            // here is also not useful but in theory it should serve as a
-            // backup plan if the system is not ready to receive NMIs, then
-            // we could inject it when the NMI Window is open but in reality
-            // it will corrupt the VMCS layout (VMRESUME 0x7 error)
-            //
-
-            //
-            // Check if interruptibility state allows NMIs or not
-            //
-            VmxVmread32P(VMCS_GUEST_INTERRUPTIBILITY_STATE, &InterruptibilityState.AsUInt);
-
-            Interruptible = !InterruptibilityState.BlockingByNmi;
-
-            if (Interruptible)
-            {
-                //
-                // Re-inject the NMI
-                //
-                EventInjectNmi(VCpu);
-            }
-            else
-            {
-                //
-                // Inject NMI when the NMI Window opened
-                //
-                HvSetNmiWindowExiting(TRUE);
-            }
+            VCpu->GuestNmiPending = TRUE;
         }
 
         break;
@@ -453,21 +425,13 @@ IdtEmulationHandleExceptionAndNmi(_Inout_ VIRTUAL_MACHINE_STATE *   VCpu,
 
     case EXCEPTION_VECTOR_NMI:
 
-        if (VCpu->EnableExternalInterruptsOnContinue ||
-            VCpu->EnableExternalInterruptsOnContinueMtf ||
-            VCpu->InstrumentationStepInMtf)
-        {
-            //
-            // Ignore the nmi
-            //
-        }
-        else
-        {
-            //
-            // Re-inject the interrupt/exception because it doesn't relate to us
-            //
-            EventInjectInterruptOrException(InterruptExit);
-        }
+        //
+        // [DOWNSTREAM] 这个 NMI 属于 guest。MTF 单步或调试器暂停窗口关闭外部中断时不再丢弃：
+        // 先挂起，由 IdtEmulationInjectPendingNmi 注入一次——现在可投递就在本次注入，
+        // 否则在第一个可投递的 VM-exit 收尾时注入。
+        //
+        VCpu->GuestNmiPending = TRUE;
+        IdtEmulationInjectPendingNmi(VCpu);
 
         break;
 
@@ -633,6 +597,61 @@ IdtEmulationHandleNmiWindowExiting(_Inout_ VIRTUAL_MACHINE_STATE * VCpu)
     // Disable NMI-window exiting since we have no more NMIs to inject
     //
     HvSetNmiWindowExiting(FALSE);
+}
+
+/**
+ * @brief [DOWNSTREAM] 本次 VM entry 能投递时，注入挂起的 guest NMI
+ * @details 以下情况继续挂起：
+ *  - MTF 单步或调试器暂停窗口关闭了外部中断，或 MTF 因其他原因已置位：带 MTF 注入向量
+ *    事件时，MTF VM-exit 落在 guest NMI 处理程序第一条指令之前，单步的使用者会看到错误的
+ *    指令；
+ *  - 本次 VM entry 已有别的事件要注入；
+ *  - guest 屏蔽 NMI（STI 或 MOV-SS 阴影，或正在其 NMI 处理程序内）。
+ * guest NMI 到达时与每次 VM-exit 收尾时调用。未设置 "virtual NMIs"，不能用 NMI-window
+ * exiting，被屏蔽的 NMI 等到之后的 VM-exit。
+ *
+ * @param VCpu The virtual processor's state
+ * @return BOOLEAN TRUE if the NMI was injected
+ */
+BOOLEAN
+IdtEmulationInjectPendingNmi(_Inout_ VIRTUAL_MACHINE_STATE * VCpu)
+{
+    UINT32                     ProcBasedControls = 0;
+    UINT32                     EntryInterruption = 0;
+    VMX_INTERRUPTIBILITY_STATE Interruptibility  = {0};
+
+    if (!VCpu->GuestNmiPending ||
+        VCpu->EnableExternalInterruptsOnContinue ||
+        VCpu->EnableExternalInterruptsOnContinueMtf ||
+        VCpu->InstrumentationStepInMtf)
+    {
+        return FALSE;
+    }
+
+    VmxVmread32P(VMCS_CTRL_PROCESSOR_BASED_VM_EXECUTION_CONTROLS, &ProcBasedControls);
+    if (ProcBasedControls & IA32_VMX_PROCBASED_CTLS_MONITOR_TRAP_FLAG_FLAG)
+    {
+        return FALSE;
+    }
+
+    //
+    // 第 31 位是 valid 位；VM-exit 会清除它，置位说明本次退出已排入别的事件
+    //
+    VmxVmread32P(VMCS_CTRL_VMENTRY_INTERRUPTION_INFORMATION_FIELD, &EntryInterruption);
+    if (EntryInterruption & (1u << 31))
+    {
+        return FALSE;
+    }
+
+    VmxVmread32P(VMCS_GUEST_INTERRUPTIBILITY_STATE, &Interruptibility.AsUInt);
+    if (Interruptibility.BlockingBySti || Interruptibility.BlockingByMovSs || Interruptibility.BlockingByNmi)
+    {
+        return FALSE;
+    }
+
+    VCpu->GuestNmiPending = FALSE;
+    EventInjectNmi(VCpu);
+    return TRUE;
 }
 
 /**

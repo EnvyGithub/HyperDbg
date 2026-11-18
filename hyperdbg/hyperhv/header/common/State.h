@@ -341,6 +341,8 @@ typedef struct _VIRTUAL_MACHINE_STATE
     UINT64           MtfHiddenReplayCookie;
     UINT64           CompletedHiddenReplayCookie;
     BOOLEAN          GuestExecutionStepPending;
+    // [DOWNSTREAM] 属于 guest 的 NMI 已到达、尚未注入；由 VM-exit 收尾在可投递时注入一次。
+    volatile BOOLEAN GuestNmiPending;
     volatile LONG    HiddenCoherenceKick;
     volatile LONG    NmiIpiPending;
     UINT32 NmiApicId;

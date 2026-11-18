@@ -1161,6 +1161,10 @@ DispatchEventException(VIRTUAL_MACHINE_STATE * VCpu)
     if (InterruptExit.InterruptionType == INTERRUPT_TYPE_NMI &&
         InterruptExit.Vector == EXCEPTION_VECTOR_NMI)
     {
+        // [DOWNSTREAM] NMI 是异步事件，没有可跳过的 guest 指令；Intel 对 NMI 退出未定义
+        // VMCS_VMEXIT_INSTRUCTION_LENGTH，内部与外部 NMI 都不能按它推进 RIP。
+        HvSuppressRipIncrement(VCpu);
+
         //
         // Check if we're waiting for an NMI on this core and if the guest is NOT in
         // a instrument step-in ('i' command) routine
@@ -1168,8 +1172,6 @@ DispatchEventException(VIRTUAL_MACHINE_STATE * VCpu)
         if (!VCpu->InstrumentationStepInMtf &&
             VmxBroadcastNmiHandler(VCpu, FALSE))
         {
-            // 内部 NMI 是异步通知，没有可跳过的 guest 指令；退出长度字段不适用。
-            HvSuppressRipIncrement(VCpu);
             return;
         }
     }
@@ -1204,6 +1206,13 @@ DispatchEventException(VIRTUAL_MACHINE_STATE * VCpu)
     //
     if (VCpu->InstrumentationStepInMtf)
     {
+        // [DOWNSTREAM] 单步期间到达的 NMI 不丢弃，留到单步结束后由 VM-exit 收尾注入。
+        if (InterruptExit.InterruptionType == INTERRUPT_TYPE_NMI &&
+            InterruptExit.Vector == EXCEPTION_VECTOR_NMI &&
+            EventTriggerResult != VMM_CALLBACK_TRIGGERING_EVENT_STATUS_SUCCESSFUL_IGNORE_EVENT)
+        {
+            VCpu->GuestNmiPending = TRUE;
+        }
         return;
     }
 
