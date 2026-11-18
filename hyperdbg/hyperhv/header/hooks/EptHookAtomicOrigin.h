@@ -28,25 +28,33 @@ typedef UINT64 EPT_ORIGIN_ADDRESS;
  * suspend are normal kernel APCs, so a thread can stop on any instruction
  * boundary of a trampoline and stay there.
  *
- * Drivers cannot register unwind data for pool code: RtlLookupFunctionEntry
- * finds no entry for a trampoline address, and RtlVirtualUnwind unwinds it as
- * a leaf whose return address is [rsp]. Copying a prologue that pushes or
- * allocates therefore breaks every boundary after its first stack write, and
- * so does a "push imm32 / mov [rsp+4], imm32 / ret" jump, whose first push
- * leaves half an address on top. These origins keep [rsp] at every boundary a
- * return address whose own unwind leads back to the caller, with each
- * nonvolatile register found where the hooked function's unwind data says:
+ * The APC looks up every frame with RtlpLookupFunctionEntryForStackWalks. A
+ * frame without a function entry is unwound as a leaf, whose return address
+ * is [rsp], only if it lies inside a loaded image; a frame in executable pool
+ * fails the call whatever the stack holds, and drivers cannot register unwind
+ * data for pool memory. The buffer an origin is built in must therefore lie in
+ * an image section without function entries: the EXEC_TRAMPOLINE pool
+ * callback has to supply such memory (HyperDbg's own pool manager does not).
+ *
+ * Every boundary is then unwound as a leaf. Copying a prologue that pushes or
+ * allocates breaks every boundary after its first stack write, and so does a
+ * "push imm32 / mov [rsp+4], imm32 / ret" jump, whose first push leaves half
+ * an address on top. These origins keep [rsp] at every boundary a return
+ * address whose own unwind leads back to the caller, with each nonvolatile
+ * register found where the hooked function's unwind data says:
  *
  *   Copy        a mov or lea that writes memory or a volatile register other
  *               than r10, executed as is, or one of two RIP-relative forms
  *               made absolute. rsp, r10, the flags and the nonvolatile
  *               registers stay as the caller left them, and [rsp] stays the
  *               caller's return address.
- *   StackAlloc  sub rsp, N becomes N/8 pushes of a pool address; every pushed
- *               slot unwinds as one more leaf frame, so the chain still ends
- *               at the caller. The original leaves that area uninitialized
- *               too. A final cmp reproduces the flags of the sub.
- *   Push        push reg pushes a pool placeholder, covers it with
+ *   StackAlloc  sub rsp, N becomes N/8 pushes of an address inside the
+ *               origin; every pushed slot unwinds as one more leaf frame, so
+ *               the chain still ends at the caller. The original leaves that
+ *               area uninitialized too. A final cmp reproduces the flags of
+ *               the sub.
+ *   Push        push reg pushes the origin's own address as a placeholder (a
+ *               leaf frame), covers it with
  *               AsmEptHookUnwindSkip8Body (an image frame that only skips the
  *               slot above it), overwrites the placeholder with the register
  *               and replaces the cover with Target + Length, whose own unwind
@@ -106,8 +114,8 @@ EptOriginCopyMayWrite(EPT_ORIGIN_SIZE Register)
 }
 
 /*
- * Copies one instruction to a trampoline. Executable pool is not guaranteed
- * to lie within +/-2 GB of the original, so the two RIP-relative forms found
+ * Copies one instruction to a trampoline. A trampoline buffer is not
+ * guaranteed to lie within +/-2 GB of the original, so the two RIP-relative forms found
  * in ntoskrnl entries and in win32k syscall wrappers (which call a
  * session-global guard in their first bytes) are made absolute:
  *
@@ -423,7 +431,8 @@ EptOriginFinish(EPT_ORIGIN_WRITER * Writer, EPT_ORIGIN_SIZE * Size)
 
 /*
  * Builds the plain origin (GuardedTail == 0) or the guarded origin of an
- * atomic hook into Buffer, the executable memory it will run from.
+ * atomic hook into Buffer, the executable memory it will run from, which must
+ * lie in an image section without function entries (see above).
  * UnwindSkip8 is the address of AsmEptHookUnwindSkip8Body.
  */
 static __inline int
@@ -466,9 +475,9 @@ EptHookAtomicBuildOrigin(EPT_ORIGIN_BYTE *       Buffer,
 
         EptOriginEmit(&Writer, MovR11, sizeof(MovR11));
         EptOriginEmitValue(&Writer, Continuation, 8);
-        /* [pool][caller]: a leaf frame */
+        /* [origin][caller]: the origin's own address is a leaf frame */
         EptOriginEmitRipQword(&Writer, EPT_ORIGIN_RIP_PUSH, (EPT_ORIGIN_ADDRESS)Buffer);
-        /* [skip8][pool][caller]: the cover skips the slot that becomes reg */
+        /* [skip8][origin][caller]: the cover skips the slot that becomes reg */
         EptOriginEmitRipQword(&Writer, EPT_ORIGIN_RIP_PUSH, UnwindSkip8);
         /* [skip8][reg][caller] */
         EptOriginEmit(&Writer, StoreRegister, sizeof(StoreRegister));
@@ -490,7 +499,7 @@ EptHookAtomicBuildOrigin(EPT_ORIGIN_BYTE *       Buffer,
         /* mov r10d, imm32 (slot count) */
         static const EPT_ORIGIN_BYTE MovR10d[] = {0x41, 0xBA};
         /*
-         * lea rax, [rip+0]   ; a pool address: each pushed copy is a leaf frame
+         * lea rax, [rip+0]   ; an address inside the origin: each pushed copy is a leaf frame
          * next: push rax
          * dec r10d
          * jnz next
