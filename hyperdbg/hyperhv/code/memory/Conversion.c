@@ -11,6 +11,37 @@
  */
 #include "pch.h"
 
+//
+// [DOWNSTREAM] 在 VMX non-root 切换 CR3 期间禁止抢占。Windows 只在下一个线程属于另一个
+// 进程时重载 CR3；线程在两次 CpuWriteCr3 之间被抢占时，外来 CR3 留在该处理器上，本进程
+// 下一个在此运行的线程会以外来页表返回用户态（#39）。提升到 DISPATCH_LEVEL 后线程不会被
+// 切走，中断处理只访问内核地址。VMX root 已关中断，不改 IRQL。
+//
+static BOOLEAN
+ConversionHoldForeignLayout(KIRQL * OldIrql)
+{
+#ifdef HYPERDBG_ENV_WINDOWS
+    if (VmxGetCurrentExecutionMode() == VmxExecutionModeRoot || KeGetCurrentIrql() >= DISPATCH_LEVEL)
+    {
+        return FALSE;
+    }
+    *OldIrql = PlatformIrqlRaiseToDpcLevel();
+    return TRUE;
+#else
+    UNREFERENCED_PARAMETER(OldIrql);
+    return FALSE;
+#endif
+}
+
+static VOID
+ConversionReleaseForeignLayout(BOOLEAN Held, KIRQL OldIrql)
+{
+    if (Held)
+    {
+        PlatformIrqlLower(OldIrql);
+    }
+}
+
 /**
  * @brief Converts Physical Address to Virtual Address
  *
@@ -41,19 +72,15 @@ _Use_decl_annotations_
 UINT64
 PhysicalAddressToVirtualAddressByProcessId(PVOID PhysicalAddress, UINT32 ProcessId)
 {
-    CR3_TYPE         CurrentProcessCr3;
-    UINT64           VirtualAddress;
-    PHYSICAL_ADDRESS PhysicalAddr;
+    PEPROCESS TargetEprocess;
+    CR3_TYPE  TargetCr3;
+    UINT64    VirtualAddress;
 
     //
-    // Switch to new process's memory layout
+    // [DOWNSTREAM] Look the process up before the IRQL is raised, and keep the
+    // reference until its directory table base is no longer loaded.
     //
-    CurrentProcessCr3 = SwitchToProcessMemoryLayout(ProcessId);
-
-    //
-    // Validate if process id is valid
-    //
-    if (CurrentProcessCr3.Flags == NULL64_ZERO)
+    if (PlatformProcessLookupByProcessId((HANDLE)ProcessId, &TargetEprocess) != STATUS_SUCCESS)
     {
         //
         // Pid is invalid
@@ -61,16 +88,10 @@ PhysicalAddressToVirtualAddressByProcessId(PVOID PhysicalAddress, UINT32 Process
         return NULL64_ZERO;
     }
 
-    //
-    // Read the virtual address based on new cr3
-    //
-    PhysicalAddr.QuadPart = (LONGLONG)PhysicalAddress;
-    VirtualAddress        = (UINT64)PlatformMemGetVirtualForPhysical(PhysicalAddr);
+    TargetCr3.Flags = ((NT_KPROCESS *)TargetEprocess)->DirectoryTableBase;
+    VirtualAddress  = PhysicalAddressToVirtualAddressByCr3(PhysicalAddress, TargetCr3);
 
-    //
-    // Restore the original process
-    //
-    SwitchToPreviousProcess(CurrentProcessCr3);
+    PlatformObjectDereference(TargetEprocess);
 
     return VirtualAddress;
 }
@@ -92,6 +113,10 @@ PhysicalAddressToVirtualAddressByCr3(PVOID PhysicalAddress, CR3_TYPE TargetCr3)
     CR3_TYPE         CurrentProcessCr3;
     UINT64           VirtualAddress;
     PHYSICAL_ADDRESS PhysicalAddr;
+    KIRQL            OldIrql = 0;
+    BOOLEAN          Held;
+
+    Held = ConversionHoldForeignLayout(&OldIrql);
 
     //
     // Switch to new process's memory layout
@@ -106,6 +131,7 @@ PhysicalAddressToVirtualAddressByCr3(PVOID PhysicalAddress, CR3_TYPE TargetCr3)
         //
         // Pid is invalid
         //
+        ConversionReleaseForeignLayout(Held, OldIrql);
         return NULL64_ZERO;
     }
 
@@ -119,6 +145,7 @@ PhysicalAddressToVirtualAddressByCr3(PVOID PhysicalAddress, CR3_TYPE TargetCr3)
     // Restore the original process
     //
     SwitchToPreviousProcess(CurrentProcessCr3);
+    ConversionReleaseForeignLayout(Held, OldIrql);
 
     return VirtualAddress;
 }
@@ -170,18 +197,15 @@ _Use_decl_annotations_
 UINT64
 VirtualAddressToPhysicalAddressByProcessId(PVOID VirtualAddress, UINT32 ProcessId)
 {
-    CR3_TYPE CurrentProcessCr3;
-    UINT64   PhysicalAddress;
+    PEPROCESS TargetEprocess;
+    CR3_TYPE  TargetCr3;
+    UINT64    PhysicalAddress;
 
     //
-    // Switch to new process's memory layout
+    // [DOWNSTREAM] Look the process up before the IRQL is raised, and keep the
+    // reference until its directory table base is no longer loaded.
     //
-    CurrentProcessCr3 = SwitchToProcessMemoryLayout(ProcessId);
-
-    //
-    // Validate if process id is valid
-    //
-    if (CurrentProcessCr3.Flags == NULL64_ZERO)
+    if (PlatformProcessLookupByProcessId((HANDLE)ProcessId, &TargetEprocess) != STATUS_SUCCESS)
     {
         //
         // Pid is invalid
@@ -189,15 +213,10 @@ VirtualAddressToPhysicalAddressByProcessId(PVOID VirtualAddress, UINT32 ProcessI
         return NULL64_ZERO;
     }
 
-    //
-    // Read the physical address based on new cr3
-    //
-    PhysicalAddress = PlatformMemGetPhysicalAddress(VirtualAddress).QuadPart;
+    TargetCr3.Flags = ((NT_KPROCESS *)TargetEprocess)->DirectoryTableBase;
+    PhysicalAddress = VirtualAddressToPhysicalAddressByProcessCr3(VirtualAddress, TargetCr3);
 
-    //
-    // Restore the original process
-    //
-    SwitchToPreviousProcess(CurrentProcessCr3);
+    PlatformObjectDereference(TargetEprocess);
 
     return PhysicalAddress;
 }
@@ -216,6 +235,10 @@ VirtualAddressToPhysicalAddressByProcessCr3(PVOID VirtualAddress, CR3_TYPE Targe
 {
     CR3_TYPE CurrentProcessCr3;
     UINT64   PhysicalAddress;
+    KIRQL    OldIrql = 0;
+    BOOLEAN  Held;
+
+    Held = ConversionHoldForeignLayout(&OldIrql);
 
     //
     // Switch to new process's memory layout
@@ -230,6 +253,7 @@ VirtualAddressToPhysicalAddressByProcessCr3(PVOID VirtualAddress, CR3_TYPE Targe
         //
         // Pid is invalid
         //
+        ConversionReleaseForeignLayout(Held, OldIrql);
         return NULL64_ZERO;
     }
 
@@ -242,6 +266,7 @@ VirtualAddressToPhysicalAddressByProcessCr3(PVOID VirtualAddress, CR3_TYPE Targe
     // Restore the original process
     //
     SwitchToPreviousProcess(CurrentProcessCr3);
+    ConversionReleaseForeignLayout(Held, OldIrql);
 
     return PhysicalAddress;
 }
@@ -257,37 +282,9 @@ _Use_decl_annotations_
 UINT64
 VirtualAddressToPhysicalAddressOnTargetProcess(PVOID VirtualAddress)
 {
-    CR3_TYPE CurrentCr3;
     CR3_TYPE GuestCr3;
-    UINT64   PhysicalAddress;
 
     GuestCr3.Flags = LayoutGetCurrentProcessCr3().Flags;
 
-    //
-    // Switch to new process's memory layout
-    //
-    CurrentCr3 = SwitchToProcessMemoryLayoutByCr3(GuestCr3);
-
-    //
-    // Validate if process id is valid
-    //
-    if (CurrentCr3.Flags == NULL64_ZERO)
-    {
-        //
-        // Pid is invalid
-        //
-        return NULL64_ZERO;
-    }
-
-    //
-    // Read the physical address based on new cr3
-    //
-    PhysicalAddress = PlatformMemGetPhysicalAddress(VirtualAddress).QuadPart;
-
-    //
-    // Restore the original process
-    //
-    SwitchToPreviousProcess(CurrentCr3);
-
-    return PhysicalAddress;
+    return VirtualAddressToPhysicalAddressByProcessCr3(VirtualAddress, GuestCr3);
 }
