@@ -1344,7 +1344,7 @@ EptCheckAndHandleEptHookBreakpoints(VIRTUAL_MACHINE_STATE * VCpu, UINT64 GuestRi
                 (VOID)EptCoherenceViolation(VCpu,HookedEntry,Retry);return TRUE;
             }
             if (EptCoherenceBreakpointRetry(HookedEntry))
-            { HvSuppressRipIncrement(VCpu); return TRUE; }
+            { EptCoherenceReleaseHeldReplay(VCpu); HvSuppressRipIncrement(VCpu); return TRUE; }
             TargetPage = EptGetPml1Entry(VCpu->EptPageTable, HookedEntry->PhysicalBaseAddress);
             if (TargetPage == NULL || !TargetPage->ExecuteAccess ||
                 TargetPage->PageFrameNumber != HookedEntry->PhysicalBaseAddressOfFakePageContents)

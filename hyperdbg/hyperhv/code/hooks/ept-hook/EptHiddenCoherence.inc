@@ -57,12 +57,30 @@ static EPT_PML1_ENTRY EptCoherenceDenied(EPT_HOOKED_PAGE_DETAIL *Page)
     EPT_PML1_ENTRY Entry=Page->OriginalEntry;
     Entry.ReadAccess=1;Entry.WriteAccess=0;Entry.ExecuteAccess=0;return Entry;
 }
+// 事务的发起核自己推进事务：GUEST owner 的后续退出转 WRITING 重新开放原页，或 4096 次退出后
+// 转 FAULT→RETIRED；ROOT owner 在 VMX root 里写完即发布 RESUME。两者都不靠别的核跑 DPC，所以
+// 不为它们保留回放，也不替它们退回放。CONTROL 的 Owner 是 ~0，任何核都不是发起核。
+static BOOLEAN EptCoherenceOwnedByCpu(VIRTUAL_MACHINE_STATE *Cpu)
+{
+    return g_HiddenCoherence.Gate!=0&&g_HiddenCoherence.Published==g_HiddenCoherence.Gate&&
+           g_HiddenCoherence.Owner==Cpu->CoreId;
+}
+// 被留在重试同一条指令的循环里的核不能带着扣住的外部中断离开。控制事务靠全核 DPC 轮次收口，
+// 扣着中断的核收不到 DPC，事务结束不了，这个核也就永远等不到放行。退掉本核的回放身份——
+// EptHookRetireMtfRestorePointForUnhook 同时放开外部中断并消费已置的 MTF——指令等事务结束后
+// 重做，下一次仍从 fake 页的 0xCC 触发同一个隐藏断点。没有回放时是空操作。
+VOID EptCoherenceReleaseHeldReplay(VIRTUAL_MACHINE_STATE *Cpu)
+{
+    if(Cpu->MtfEptHookRestorePoint!=NULL&&!EptCoherenceOwnedByCpu(Cpu))
+        EptHookRetireMtfRestorePointForUnhook(Cpu,Cpu->MtfEptHookRestorePoint->PhysicalBaseAddress,FALSE);
+}
 BOOLEAN EptCoherenceApply(VIRTUAL_MACHINE_STATE *Cpu)
 {
     const LONG64 Gate=CpuInterlockedCompareExchange64(&g_HiddenCoherence.Gate,0,0);
     UINT64 State=EptCoherenceState();LONG Phase=(LONG)(State&7u);
     if(Gate==0||g_HiddenCoherence.Published!=Gate||Phase==0||Phase==EPT_COH_WRITING)return TRUE;
     if(Cpu->CoreId>=g_HiddenCoherence.Cpus)return FALSE;
+    BOOLEAN Replaying=FALSE;
     if((UINT64)CpuInterlockedCompareExchange64(&g_HiddenCoherence.Ack[Cpu->CoreId],0,0)!=State)
     {
         for(UINT32 i=0;i<g_HiddenCoherence.Count;i++)
@@ -71,7 +89,14 @@ BOOLEAN EptCoherenceApply(VIRTUAL_MACHINE_STATE *Cpu)
             PEPT_PML1_ENTRY Pte=EptGetPml1Entry(Cpu->EptPageTable,Page->PhysicalBaseAddress);
             if(Pte==NULL)return FALSE;
             EPT_PML1_ENTRY Entry=Page->ChangedEntry;
-            if(Phase==EPT_COH_QUIESCE||Phase==EPT_COH_FAULT)Entry=EptCoherenceDenied(Page);
+            // 本核正停在这一页的回放窗口里：原页已映射 R+X、外部中断已扣住，MTF 一条指令后到。
+            // 撤它的执行权会让回放取指永久失败，而中断扣着不放，这个核再也跑不到控制事务收口
+            // 要的 DPC，事务与该核互相等死。回放执行的是原页而非 fake 页，让它先跑完不违反
+            // quiesce；撤执行与确认由 EptCoherenceFinishMtf 在 MTF 上完成，所以本轮不确认。
+            if((Phase==EPT_COH_QUIESCE||Phase==EPT_COH_FAULT)&&Cpu->MtfEptHookRestorePoint==Page&&
+               !EptCoherenceOwnedByCpu(Cpu))
+            { Entry=Page->OriginalEntry;Entry.WriteAccess=0;Replaying=TRUE; }
+            else if(Phase==EPT_COH_QUIESCE||Phase==EPT_COH_FAULT)Entry=EptCoherenceDenied(Page);
             else if(Phase==EPT_COH_REPAIR)
             { EptHookRetireMtfRestorePointForUnhook(Cpu,Page->PhysicalBaseAddress,FALSE);Entry=Page->ChangedEntry; }
             else if(Phase==EPT_COH_RETIRED||g_HiddenCoherence.RestoreOriginal)
@@ -82,6 +107,8 @@ BOOLEAN EptCoherenceApply(VIRTUAL_MACHINE_STATE *Cpu)
         }
         if(EptInveptSingleContext(Cpu->EptPointer.AsUInt)!=0)return FALSE;
         if(g_HiddenCoherence.Gate!=Gate||EptCoherenceState()!=State||g_HiddenCoherence.Published!=Gate)return FALSE;
+        // 保留的回放未完成前不确认：事务要等它，不能一边确认已撤执行一边仍开着原页执行。
+        if(Replaying)return TRUE;
         CpuInterlockedExchange64(&g_HiddenCoherence.Ack[Cpu->CoreId],(LONG64)State);
     }
     // 故障先全核撤销执行，再开放 original；不允许一核可写原页而另一核仍执行 fake。
@@ -289,15 +316,16 @@ static BOOLEAN EptCoherenceClaim(VIRTUAL_MACHINE_STATE *Cpu,UINT32 Kind)
 BOOLEAN EptCoherenceViolation(VIRTUAL_MACHINE_STATE *Cpu,EPT_HOOKED_PAGE_DETAIL *Page,
     VMX_EXIT_QUALIFICATION_EPT_VIOLATION Qualification)
 {
+    BOOLEAN ReplayGranted=FALSE;
     if(!Page->IsHiddenBreakpoint)return FALSE;
     if(Page->CoherenceFault&&g_HiddenCoherence.Gate!=0&&g_HiddenCoherence.Published==g_HiddenCoherence.Gate&&
        EptCoherenceContains(Page)&&EptCoherenceCurrentPhase()!=EPT_COH_RETIRED)
-    {HvSuppressRipIncrement(Cpu);return TRUE;}
+    {EptCoherenceReleaseHeldReplay(Cpu);HvSuppressRipIncrement(Cpu);return TRUE;}
     if(Page->CoherenceFault)
     {
         PEPT_PML1_ENTRY Pte=EptGetPml1Entry(Cpu->EptPageTable,Page->PhysicalBaseAddress);
         if(Pte){Pte->AsUInt=Page->OriginalEntry.AsUInt;(VOID)EptInveptSingleContext(Cpu->EptPointer.AsUInt);}
-        HvSuppressRipIncrement(Cpu);return TRUE;
+        EptCoherenceReleaseHeldReplay(Cpu);HvSuppressRipIncrement(Cpu);return TRUE;
     }
     LONG64 Gate=CpuInterlockedCompareExchange64(&g_HiddenCoherence.Gate,0,0);
     if(Gate==0)
@@ -334,10 +362,14 @@ BOOLEAN EptCoherenceViolation(VIRTUAL_MACHINE_STATE *Cpu,EPT_HOOKED_PAGE_DETAIL 
             PEPT_PML1_ENTRY Pte=EptGetPml1Entry(Cpu->EptPageTable,P->PhysicalBaseAddress);
             if(!Pte){Granted=FALSE;break;}Pte->AsUInt=P->OriginalEntry.AsUInt;
         }
-        if(Granted&&EptInveptSingleContext(Cpu->EptPointer.AsUInt)==0)EptCoherencePhase(EPT_COH_WRITING);
+        if(Granted&&EptInveptSingleContext(Cpu->EptPointer.AsUInt)==0)
+        {EptCoherencePhase(EPT_COH_WRITING);ReplayGranted=TRUE;}
         else {(VOID)EptCoherenceRevokeOwner(Cpu);EptCoherenceFault(Cpu,STATUS_UNSUCCESSFUL);}
     }
 Retry:
+    // 这里一律原地重做同一条指令。刚授予写回放的那一次例外：本核已拿到原页映射，下一条指令
+    // 就能跑完并取得 MTF，不能把它退掉。
+    if(!ReplayGranted)EptCoherenceReleaseHeldReplay(Cpu);
     HvSuppressRipIncrement(Cpu);return TRUE;
 }
 BOOLEAN EptCoherenceBreakpointRetry(EPT_HOOKED_PAGE_DETAIL *Page)
