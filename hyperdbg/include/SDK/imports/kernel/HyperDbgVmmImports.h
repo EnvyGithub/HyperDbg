@@ -1229,6 +1229,9 @@ IMPORT_EXPORT_VMM NTSTATUS ConfigureEptBeginCoherentWriteFromRootV1(UINT64 Cr3,U
 IMPORT_EXPORT_VMM NTSTATUS ConfigureEptEndCoherentWriteFromRootV1(UINT64 Token,PBOOLEAN Unknown);
 IMPORT_EXPORT_VMM BOOLEAN ConfigureEptQueryCoherenceFaultV1(UINT64 PhysicalPage,UINT64 *Epoch,NTSTATUS *Status);
 IMPORT_EXPORT_VMM BOOLEAN ConfigureEptRecoverCoherenceV1(VOID);
+// 与 ConfigureEptHookUnHookSingleAddress 相同；控制面准入被拒（隐藏页写事务持有 coherence gate，
+// 未做任何修改）返回 STATUS_DEVICE_BUSY，撤销本身失败返回 STATUS_UNSUCCESSFUL。
+IMPORT_EXPORT_VMM NTSTATUS ConfigureEptHookUnHookSingleAddressV1(UINT64 VirtualAddress,UINT64 PhysAddress,UINT32 ProcessId);
 
 IMPORT_EXPORT_VMM NTSTATUS ConfigureEptRepairHiddenPageV1(UINT64 PhysicalPage,UINT64 ExpectedFaultEpoch);
 

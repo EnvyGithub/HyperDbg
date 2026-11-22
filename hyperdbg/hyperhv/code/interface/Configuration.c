@@ -258,6 +258,21 @@ ConfigureEptHookUnHookSingleAddress(UINT64 VirtualAddress,
     return Result;
 }
 
+// [DOWNSTREAM] 与 ConfigureEptHookUnHookSingleAddress 相同，另把控制面准入被拒单独报出：
+// 另一核的隐藏页写事务（guest 写或 root 写）持有 coherence gate 时 EptCoherenceControlEnter
+// 立即失败、不等待，此时未做任何修改，返回 STATUS_DEVICE_BUSY；撤销本身失败返回 STATUS_UNSUCCESSFUL。
+NTSTATUS
+ConfigureEptHookUnHookSingleAddressV1(UINT64 VirtualAddress,
+                                      UINT64 PhysAddress,
+                                      UINT32 ProcessId)
+{
+    BOOLEAN Result;
+    if (!EptControlAcquireExclusive()) return STATUS_DEVICE_BUSY;
+    Result = EptHookUnHookSingleAddress(VirtualAddress, PhysAddress, ProcessId);
+    EptControlReleaseExclusive();
+    return Result ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
+}
+
 /**
  * @brief Remove single hook from the hooked pages list and invalidate TLB
  * @details Should be called from vmx root-mode and it's the responsibility

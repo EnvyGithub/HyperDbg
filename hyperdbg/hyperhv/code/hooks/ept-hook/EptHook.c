@@ -3337,6 +3337,15 @@ EptHookPerformUnHookSingleAddress(UINT64                              VirtualAdd
             {
                 continue;
             }
+            // [DOWNSTREAM] 删除已提交而恢复轮未确认时，VA 已移出数组，只剩回执；撤销者重试同一 VA
+            // 要按回执找回这一页，否则回执永远消费不掉，该页的修复与其他 VA 的删除一直被挡。
+            if (VirtualAddress != NULL64_ZERO && CurrEntity->CoherenceRemovalPending == VirtualAddress)
+            {
+                return EptHookUnHookSingleAddressHiddenBreakpoint(CurrEntity,
+                                                                  VirtualAddress,
+                                                                  ApplyDirectlyFromVmxRoot,
+                                                                  TargetUnhookingDetails);
+            }
             //
             // It's a hidden breakpoint
             //
