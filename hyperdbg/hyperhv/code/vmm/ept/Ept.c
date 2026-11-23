@@ -735,14 +735,13 @@ EptAllocateAndCreateIdentityPageTable(VOID)
     SIZE_T              EntryIndex;
 
     //
-    // Allocate all paging structures as 4KB aligned pages
+    // [DOWNSTREAM] 整张表约 4 MiB，从非分页池分配，不要求物理连续。各子表在结构内按页对齐，
+    // 非分页池对不小于一页的分配返回页对齐地址，所以每张子表落在单个物理页内；下级表的
+    // PFN 与 EPTP 都按所在页逐个换算物理地址。原先用 MmAllocateContiguousMemory 分配整块，
+    // 长时间运行后物理内存碎片化时找不到这么大的连续块，VMM enable 失败。
+    // 分配结果已清零，未用表项均为 Not Present。
     //
-
-    //
-    // Allocate address anywhere in the OS's memory space and
-    // zero out all entries to ensure all unused entries are marked Not Present
-    //
-    PageTable = PlatformMemAllocateContiguousZeroedMemory(sizeof(VMM_EPT_PAGE_TABLE));
+    PageTable = PlatformMemAllocateZeroedNonPagedPool(sizeof(VMM_EPT_PAGE_TABLE));
 
     if (PageTable == NULL)
     {
@@ -923,7 +922,7 @@ EptFreeIdentityPageTable(_In_opt_ PVMM_EPT_PAGE_TABLE EptPageTable)
         }
     }
 
-    PlatformMemFreeContiguousMemory(EptPageTable);
+    PlatformMemFreePool(EptPageTable);
 }
 
 /**
